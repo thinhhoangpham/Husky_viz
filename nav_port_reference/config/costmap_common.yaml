@@ -1,0 +1,42 @@
+# Shared costmap settings, loaded into both the local and global costmap.
+#
+# NOTE on structure: because the costmaps declare `plugins:`, every layer reads
+# its parameters from ITS OWN namespace, named after the plugin instance. Putting
+# observation_sources at the costmap root (the pre-Hydro layout) is silently
+# ignored -- the costmap then subscribes to nothing and stays empty, which is
+# exactly the bug that let the robot drive into a tree with move_base running.
+# So the sensor config lives under `obstacles:` and the inflation under `inflation:`.
+
+# Husky is 0.99 x 0.67 m; a circumscribed radius is safe for a skid-steer that
+# scrubs sideways while turning.
+robot_radius: 0.55
+transform_tolerance: 0.5
+
+obstacles:
+  # The OS0 is a 3D PointCloud2, which costmap_2d reads natively -- no
+  # pointcloud_to_laserscan bridge needed.
+  observation_sources: os0
+  os0:
+    sensor_frame: os0_lidar
+    data_type: PointCloud2
+    topic: /os0_cloud_node/points
+    marking: true             # add obstacles where rays hit
+    clearing: true            # clear free space along the ray
+    # Height gate in the costmap frame. Ground sits near z=0 and canopy well above
+    # the robot, so 0.15-1.2 m keeps trunks/benches and drops both. This is the
+    # most failure-prone setting: too low and the ground itself becomes an obstacle.
+    # Short ranges on purpose. At 6 m the planner saw a tree early and routed
+    # a wide arc, taking the robot off the trail and onto the grass. At 3 m it
+    # holds the straight waypoint line (which follows the trail) until an
+    # obstacle is genuinely close, then makes a tight local deviation.
+    min_obstacle_height: 0.15
+    max_obstacle_height: 1.2
+    obstacle_range: 3.0
+    raytrace_range: 4.0
+
+inflation:
+  # Small inflation = tight detours. A large radius made the robot swing far
+  # off the trail; 0.35 m is just past the 0.55 m robot radius, and the steep
+  # cost falloff keeps the penalty local to the obstacle.
+  inflation_radius: 0.35
+  cost_scaling_factor: 8.0

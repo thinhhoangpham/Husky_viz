@@ -1,0 +1,654 @@
+#!/usr/bin/env python3
+"""Autonomous waypoint driver for the Gazebo Husky (ROS 1 Noetic, Python 3).
+
+*** DELIBERATELY-VULNERABLE VARIANT (authorized security-research simulation). ***
+This is a modified copy of the "legitimate autonomous driver". It has been made
+attackable so that documented ROS / GPS / sensor-spoofing attacks all produce a
+visible effect on a simulated Clearpath Husky. The pristine original is preserved
+at auto_drive_waypoints.py.bak -- edit this file, not that one.
+
+Pose source (why it is what it is):
+  The 5 waypoints are FIXED absolute WORLD coordinates (think GPS points). Steering
+  runs on the robot's sensors, in the WORLD frame the waypoints are defined in:
+    - POSITION from the GPS sensor /navsat/fix (sensor_msgs/NavSatFix), straight
+      from the hector_gazebo GPS plugin (NOT robot_localization navsat_transform),
+      plugin datum referenceLatitude=49.9, referenceLongitude=8.9. Spoof
+      /navsat/fix and the robot's believed position moves.
+    - HEADING from the EKF /odometry/filtered (nav_msgs/Odometry) yaw. The raw IMU
+      /imu/data orientation is DEAD in this sim (it stays stuck near +-90 deg,
+      only toggling sign, while the robot physically spins a full 360), so it can
+      never be a heading source. The EKF yaw, by contrast, is SMOOTH and TRACKS
+      real rotation with a CONSTANT frame offset and no drift-flip -- so heading
+      is taken from /odometry/filtered. (The EKF still fuses /imu/data, so IMU
+      spoofing can still perturb the fused yaw.) Only the EKF *yaw* is used;
+      position is NOT taken from the EKF.
+  There is NO odom-frame indirection for POSITION and NO runtime world<->odom
+  position calibration (that scheme steered in the drifting EKF/odom frame and
+  physically curved the robot off into the grass -- removed entirely). Heading
+  uses only a single CONSTANT yaw offset from the EKF frame, measured once.
+
+Frame alignment (position + heading), measured ONCE at startup and again after
+each respawn settle -- FIXED offsets that do NOT drift. POSITION and HEADING use
+TWO INDEPENDENT constants. Both are MEASURED against the robot's TRUE CURRENT world
+pose sampled from /gazebo/model_states at the alignment instant -- NOT the hardcoded
+SPAWN_* constants. The robot spawns at z=3.3 and DROPS/settles onto the terrain, so
+its true settled pose differs from SPAWN_* (measured ~51 deg off in yaw); solving
+against SPAWN_* built a wrong frame and drove the robot off-line from step one.
+Using /gazebo/model_states here is one-time ground-truth CALIBRATION, NOT steering
+(steering still uses GPS position + EKF yaw):
+  - POSITION rotation phi_pos (GPS-local ENU -> world; a fixed ~-90 deg datum
+    rotation, pose-independent): the GPS-local vector and the TRUE world vector both
+    point from the shared datum origin (world (0,0) maps to the GPS datum), so their
+    bearing difference is the rotation:
+        phi_pos = atan2(true_y, true_x) - atan2(gps_north, gps_east)
+        world_position = R(phi_pos) * gps_local + t,
+        t = (true_x, true_y) - R(phi_pos) * gps_local_at_alignment
+    (measured live: at true world (43.5, 1.0) the GPS decoded to (east=-1.40,
+    north=43.09); world_x = north, world_y = -east, i.e. phi_pos = -90 deg.)
+  - HEADING offset phi_yaw (SEPARATE constant): the EKF yaw is in the EKF/odom
+    frame, a constant rotation from the world frame, reconciled against the TRUE
+    current yaw:
+        phi_yaw = true_yaw - ekf_yaw_at_alignment
+        world_yaw = ekf_yaw + phi_yaw.
+  GPS position is ABSOLUTE (not integrated) and the EKF yaw offset is constant, so
+  these offsets do not accumulate error mid-lap. Both are logged at each alignment.
+
+Node identity (FIXED — a later phase attacks these, so do not rename):
+    node name : husky_auto_drive
+    params    : ~linear_speed    (default 0.5 m/s, re-read live every iteration)
+                ~world_waypoints (re-read live on every re-anchor)
+    input     : /navsat/fix        (sensor_msgs/NavSatFix) -> GPS position (STEERING)
+                /odometry/filtered (nav_msgs/Odometry)     -> EKF yaw, heading
+                    (STEERING; only the yaw is used, NOT the EKF position)
+                /gazebo/model_states (gazebo_msgs/ModelStates) -> ground truth,
+                    used ONLY for one-time alignment calibration and the respawn
+                    settle check, NEVER for steering
+    output    : /kb_teleop/cmd_vel   (geometry_msgs/Twist) -> velocity commands
+                    (launcher remaps /kb_teleop/cmd_vel:=/cmd_vel)
+
+Behaviour: drives to 5 waypoints in order using a turn-in-place-then-go-straight
+controller, directly in the Gazebo WORLD frame. After reaching the final waypoint
+it RESPAWNS to the spawn pose and drives the route again, forever. On each respawn
+the GPS position + EKF-yaw -> world alignment is recomputed after the model settles
+at the spawn pose (GPS position is absolute; the EKF-yaw offset is a constant).
+
+Run inside the container:
+    source /opt/ros/noetic/setup.bash && python3 /workspace/auto_drive_waypoints.py
+"""
+
+import math
+
+import rospy
+from geometry_msgs.msg import Twist
+from gazebo_msgs.msg import ModelState, ModelStates
+from gazebo_msgs.srv import SetModelState
+from geometry_msgs.msg import PoseWithCovarianceStamped
+from nav_msgs.msg import Odometry
+from sensor_msgs.msg import NavSatFix
+from robot_localization.srv import SetPose
+
+# --------------------------------------------------------------------------
+# TUNABLES — edit these alone to change the driving behaviour.
+# --------------------------------------------------------------------------
+DEFAULT_LINEAR_SPEED = 0.5     # m/s, forward speed (overridable via ~linear_speed)
+ARRIVAL_TOLERANCE = 0.7        # m, advance to next waypoint when within this
+HEADING_TOLERANCE = 0.10       # rad, stop turning-in-place once aligned below this
+ANGULAR_GAIN = 1.5             # proportional gain on heading error (1/s)
+MAX_ANGULAR_SPEED = 1.0        # rad/s, cap on turn rate
+CONTROL_RATE_HZ = 20.0         # control-loop frequency
+
+# --------------------------------------------------------------------------
+# GPS / EKF sensor facts (measured live this session — asserted here).
+# --------------------------------------------------------------------------
+# GPS position topic: hector_gazebo GPS plugin, frame "gps_link". Its datum is the
+# plugin referenceLatitude/referenceLongitude below; world origin (0,0) maps there.
+GPS_TOPIC = "/navsat/fix"          # sensor_msgs/NavSatFix (STEERING position)
+# Heading topic: EKF fused odometry. Only its YAW is used (NOT its position). The
+# raw IMU /imu/data orientation is DEAD in this sim (stuck near +-90 deg while the
+# robot spins 360), so the EKF yaw -- smooth, tracks real rotation, constant frame
+# offset -- is the heading source instead.
+EKF_TOPIC = "/odometry/filtered"   # nav_msgs/Odometry (STEERING heading, yaw only)
+GPS_REF_LAT = 49.9                 # plugin referenceLatitude  (gps.urdf.xacro)
+GPS_REF_LON = 8.9                  # plugin referenceLongitude (gps.urdf.xacro)
+EARTH_RADIUS = 6378137.0           # m, WGS84 equatorial radius (hector convention)
+
+# --------------------------------------------------------------------------
+# RESPAWN / LOOP TUNABLES.
+# --------------------------------------------------------------------------
+GAZEBO_MODEL_NAME = "husky"                       # Gazebo model to teleport
+SET_MODEL_STATE_SRV = "/gazebo/set_model_state"   # gazebo_msgs/SetModelState
+SET_POSE_SRV = "/set_pose"                         # robot_localization/SetPose
+ODOM_FRAME = "odom"                                # frame_id of the odometry topics
+MODEL_STATES_TOPIC = "/gazebo/model_states"        # gazebo_msgs/ModelStates, ground truth
+ALIGN_TIMEOUT = 30.0                              # s, total retry budget for GPS + EKF alignment
+ALIGN_RETRY_TIMEOUT = 2.0                          # s, per-message wait within the retry loop
+
+# Spawn pose the model is TELEPORTED back to on respawn, in the world frame. This
+# MUST match add_husky_park_1.launch. NOTE: these are the teleport target and the
+# settle-check band ONLY. They are NOT used as the alignment reference -- the robot
+# drops from z=3.3 and settles to a slightly different pose, so _align_frames()
+# reads the TRUE settled pose from /gazebo/model_states instead (see that method).
+SPAWN_X = 45.64
+SPAWN_Y = 0.02
+SPAWN_Z = 3.3
+SPAWN_YAW = 2.6132
+
+# After a respawn, wait for the ground-truth world pose to read within this of
+# the spawn pose and HOLD there before re-aligning and starting the next lap.
+RESET_SETTLE_TOLERANCE = 0.5   # m, "near spawn pose" radius for both x and y
+RESET_STABLE_SECONDS = 1.5     # s, how long it must stay near the spawn pose
+RESET_SETTLE_TIMEOUT = 15.0    # s, give up (and log) if it never settles
+
+# The 5 waypoints in Gazebo WORLD coordinates (metres), in visiting order.
+WORLD_WAYPOINTS = [
+    (38.26, 1.25),
+    (27.11, 1.10),
+    (1.16, -2.40),
+    (-15.95, -3.33),
+    (-30.77, -3.45),
+]
+
+
+def yaw_from_quaternion(q):
+    """Extract the yaw (rotation about z) from a geometry_msgs/Quaternion."""
+    siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
+    cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+    return math.atan2(siny_cosp, cosy_cosp)
+
+
+def normalize_angle(a):
+    """Wrap an angle to (-pi, pi]."""
+    return math.atan2(math.sin(a), math.cos(a))
+
+
+def quaternion_from_yaw(yaw):
+    """Return (x, y, z, w) for a rotation of `yaw` about the z axis."""
+    half = 0.5 * yaw
+    return (0.0, 0.0, math.sin(half), math.cos(half))
+
+
+def gps_to_local(lat, lon):
+    """Decode a NavSatFix lat/lon into GPS-local ENU metres (hector convention).
+
+    Measured live, WGS84 R=EARTH_RADIUS, plugin datum (GPS_REF_LAT, GPS_REF_LON):
+        north = (lat - ref_lat) * pi/180 * R
+        east  = (lon - ref_lon) * pi/180 * R * cos(ref_lat)
+    Returns (east, north).
+    """
+    north = math.radians(lat - GPS_REF_LAT) * EARTH_RADIUS
+    east = (math.radians(lon - GPS_REF_LON) * EARTH_RADIUS
+            * math.cos(math.radians(GPS_REF_LAT)))
+    return east, north
+
+
+class WaypointDriver(object):
+    def __init__(self):
+        # VULNERABLE CHANGE 1: ~linear_speed is NOT cached for driving; it is
+        # re-read fresh every iteration in step() so `rosparam set` lands live.
+        # This initial read is only for the startup log line below.
+        self.linear_speed = rospy.get_param("~linear_speed", DEFAULT_LINEAR_SPEED)
+
+        # Latest sensor readings feeding STEERING.
+        # GPS -> local ENU position; EKF -> yaw in the EKF/odom frame.
+        self.have_gps = False
+        self.gps_east = 0.0        # GPS-local ENU east  (m)
+        self.gps_north = 0.0       # GPS-local ENU north (m)
+        self.have_ekf = False
+        self.ekf_yaw = 0.0         # EKF yaw in the EKF/odom frame (rad)
+
+        # Latest ground-truth world pose from /gazebo/model_states. Kept ONLY for
+        # the respawn settle check -- NEVER for steering.
+        self.have_gt = False
+        self.gt_x = 0.0
+        self.gt_y = 0.0
+
+        # Fixed alignment, solved by _align_frames() at startup and rebuilt on every
+        # respawn. Constant offsets; do NOT drift (GPS position is absolute, EKF yaw
+        # offset is constant). POSITION rotation and HEADING offset are TWO
+        # INDEPENDENT constants, each solved from the known spawn pose.
+        self.aligned = False
+        self._phi_pos = 0.0        # rotation GPS-local -> world for POSITION (rad)
+        self._cos_p = 1.0          # cos(phi_pos)
+        self._sin_p = 0.0          # sin(phi_pos)
+        self._tx = 0.0             # world-frame translation x
+        self._ty = 0.0             # world-frame translation y
+        self._phi_yaw = 0.0        # EKF-yaw -> world-yaw offset for HEADING (rad)
+
+        # Live WORLD-frame steering pose: position from GPS, yaw from the EKF.
+        self.x = 0.0               # world x (from GPS)
+        self.y = 0.0               # world y (from GPS)
+        self.yaw = 0.0             # world yaw (from EKF)
+
+        # Goals are the fixed WORLD waypoints (re-read live each anchor). No frame
+        # conversion: steering pose and goals are both in the Gazebo world frame.
+        self.goals = None          # list of (x, y) in the world frame
+        self.goal_index = 0
+        self.lap = 1               # current lap number (1-based)
+        # `finished` means the current lap reached WP5 and a respawn is pending.
+        self.finished = False
+
+        self.cmd_pub = rospy.Publisher("/kb_teleop/cmd_vel", Twist, queue_size=1)
+        # Ground-truth subscriber: respawn settle check only.
+        self.state_sub = rospy.Subscriber(
+            MODEL_STATES_TOPIC, ModelStates, self.model_states_callback,
+            queue_size=1)
+        # Steering subscribers: GPS for position, EKF for heading (yaw only).
+        self.gps_sub = rospy.Subscriber(
+            GPS_TOPIC, NavSatFix, self.gps_callback, queue_size=1)
+        self.ekf_sub = rospy.Subscriber(
+            EKF_TOPIC, Odometry, self.ekf_callback, queue_size=1)
+
+        # Services used to respawn the robot to the start each lap.
+        rospy.loginfo("husky_auto_drive: waiting for respawn services ...")
+        rospy.wait_for_service(SET_MODEL_STATE_SRV)
+        rospy.wait_for_service(SET_POSE_SRV)
+        self.set_model_state = rospy.ServiceProxy(SET_MODEL_STATE_SRV, SetModelState)
+        self.set_pose = rospy.ServiceProxy(SET_POSE_SRV, SetPose)
+
+        rospy.loginfo("husky_auto_drive: linear_speed = %.3f m/s (re-read live)",
+                      self.linear_speed)
+        rospy.loginfo("husky_auto_drive: steering on GPS %s (position) + EKF %s "
+                      "(heading, yaw only), world frame", GPS_TOPIC, EKF_TOPIC)
+
+        # Startup alignment (re-run each respawn), then anchor goals. If alignment
+        # does not complete here, step() keeps the robot stopped and keeps retrying;
+        # goals are anchored only once aligned so they use a valid world pose.
+        self._align_frames()
+        if self.aligned:
+            self._anchor_goals()
+
+    def gps_callback(self, msg):
+        """Track the STEERING position from the real GPS sensor (/navsat/fix).
+
+        Decodes lat/lon into GPS-local ENU, then maps into the world frame via the
+        fixed alignment. Spoofed /navsat/fix directly corrupts believed position.
+        """
+        self.gps_east, self.gps_north = gps_to_local(msg.latitude, msg.longitude)
+        self.have_gps = True
+        self._update_world_pose()
+
+    def ekf_callback(self, msg):
+        """Track the STEERING heading from the EKF (/odometry/filtered).
+
+        Only the yaw is used (NOT the EKF position). The EKF yaw is smooth and
+        tracks real rotation with a constant frame offset; the alignment offset
+        phi_yaw maps it into the world frame. Used instead of the raw IMU, which is
+        dead in this sim. The EKF still fuses /imu/data, so IMU spoofing can still
+        perturb this yaw.
+        """
+        self.ekf_yaw = yaw_from_quaternion(msg.pose.pose.orientation)
+        self.have_ekf = True
+        self._update_world_pose()
+
+    def _update_world_pose(self):
+        """Recompute the live WORLD-frame steering pose from GPS + EKF + alignment."""
+        if not self.aligned:
+            return
+        # Position: world = R(phi_pos) * (east, north) + t
+        self.x = self._tx + self._cos_p * self.gps_east - self._sin_p * self.gps_north
+        self.y = self._ty + self._sin_p * self.gps_east + self._cos_p * self.gps_north
+        # Heading: world_yaw = ekf_yaw + phi_yaw (a SEPARATE constant from phi_pos)
+        self.yaw = normalize_angle(self.ekf_yaw + self._phi_yaw)
+
+    def model_states_callback(self, msg):
+        """Track the ground-truth world pose (respawn settle check only)."""
+        try:
+            i = msg.name.index(GAZEBO_MODEL_NAME)
+        except ValueError:
+            return  # model not spawned yet
+        pose = msg.pose[i]
+        self.gt_x = pose.position.x
+        self.gt_y = pose.position.y
+        self.have_gt = True
+
+    def _align_frames(self):
+        """Solve the fixed alignment from ONE GPS + ONE EKF + ONE ground-truth
+        sample, using the robot's TRUE CURRENT world pose as the world reference.
+
+        The hardcoded SPAWN_* constants are NOT the reference: the robot spawns at
+        z=3.3 and DROPS/settles onto the terrain, so by the time we sample the
+        sensors its actual world pose differs from SPAWN_* (measured: true yaw off
+        by ~51 deg). Solving the offsets against SPAWN_* therefore built the driver
+        a wrong heading/position frame and it drove ~51 deg off-line from step one.
+        Instead we read the TRUE current world pose from /gazebo/model_states at the
+        alignment instant and solve against that.
+
+        NOTE: /gazebo/model_states is used ONLY here, at the alignment instant, to
+        establish the one-time frame offset -- this is legitimate ground-truth
+        CALIBRATION, not steering. Steering still uses GPS position + EKF yaw. This
+        does NOT reintroduce ground-truth steering.
+
+        POSITION and HEADING are TWO INDEPENDENT constants, MEASURED each alignment:
+
+        1. Position rotation phi_pos (fixed GPS-datum rotation, ~-90 deg,
+           pose-independent): the GPS-local vector and the world vector both point
+           from the shared datum origin (world (0,0) maps to the GPS datum), so
+           their bearing difference is the rotation, referenced to the TRUE current
+           world position:
+               phi_pos = atan2(true_y, true_x) - atan2(north, east)
+           Then the translation makes R(phi_pos)*(east,north)+t reproduce the TRUE
+           current world position exactly:
+               t = (true_x, true_y) - R(phi_pos) * (east, north)
+        2. Heading offset phi_yaw (SEPARATE): the EKF yaw is in the EKF/odom frame,
+           a constant rotation from the world frame, referenced to the TRUE yaw:
+               phi_yaw   = true_yaw - ekf_yaw_at_alignment
+               world_yaw = ekf_yaw + phi_yaw.
+
+        Runs at startup and after each respawn settle. GPS position is absolute and
+        the EKF yaw offset is constant, so neither accumulates error within a lap.
+        """
+        rospy.loginfo("husky_auto_drive: aligning GPS/EKF -> world frame ...")
+        # Robustly wait until a GPS, an EKF, AND a ground-truth sample are in hand.
+        # The one-shot wait_for_message was too tight at startup and would time out,
+        # fall back to an identity transform, and drive OFF-FRAME straight into
+        # obstacles. All three topics publish steadily at multi-Hz, so retry
+        # (per-message timeout) until each arrives, up to ALIGN_TIMEOUT total. If it
+        # genuinely never completes, leave self.aligned False so step() keeps the
+        # robot stopped -- never drive off-frame.
+        gps_msg = None
+        ekf_msg = None
+        true_pose = None   # (true_x, true_y, true_yaw) from /gazebo/model_states
+        deadline = rospy.Time.now() + rospy.Duration(ALIGN_TIMEOUT)
+        while not rospy.is_shutdown() and rospy.Time.now() < deadline:
+            if gps_msg is None:
+                try:
+                    gps_msg = rospy.wait_for_message(
+                        GPS_TOPIC, NavSatFix, timeout=ALIGN_RETRY_TIMEOUT)
+                except rospy.ROSException:
+                    gps_msg = None
+            if ekf_msg is None:
+                try:
+                    ekf_msg = rospy.wait_for_message(
+                        EKF_TOPIC, Odometry, timeout=ALIGN_RETRY_TIMEOUT)
+                except rospy.ROSException:
+                    ekf_msg = None
+            if true_pose is None:
+                # Fresh ground-truth sample (avoid a stale cached one).
+                try:
+                    gt_msg = rospy.wait_for_message(
+                        MODEL_STATES_TOPIC, ModelStates,
+                        timeout=ALIGN_RETRY_TIMEOUT)
+                    idx = gt_msg.name.index(GAZEBO_MODEL_NAME)
+                    gp = gt_msg.pose[idx]
+                    true_pose = (gp.position.x, gp.position.y,
+                                 yaw_from_quaternion(gp.orientation))
+                except (rospy.ROSException, ValueError):
+                    true_pose = None
+            if gps_msg is not None and ekf_msg is not None and true_pose is not None:
+                break
+            rospy.loginfo("husky_auto_drive: waiting for GPS/EKF/truth ... "
+                          "(gps=%s ekf=%s truth=%s)",
+                          "ok" if gps_msg is not None else "-",
+                          "ok" if ekf_msg is not None else "-",
+                          "ok" if true_pose is not None else "-")
+
+        if gps_msg is None or ekf_msg is None or true_pose is None:
+            rospy.logwarn("husky_auto_drive: GPS/EKF/truth alignment did not "
+                          "complete within %.0fs; staying STOPPED and NOT driving "
+                          "off-frame (will retry)", ALIGN_TIMEOUT)
+            self.aligned = False
+            return
+
+        east, north = gps_to_local(gps_msg.latitude, gps_msg.longitude)
+        ekf_yaw = yaw_from_quaternion(ekf_msg.pose.pose.orientation)
+        true_x, true_y, true_yaw = true_pose
+
+        # 1. POSITION rotation: bearing of the TRUE world vector minus bearing of the
+        #    gps-local vector (both from the shared datum origin), then solve the
+        #    translation so the transform reproduces the TRUE current world position.
+        phi_pos = normalize_angle(
+            math.atan2(true_y, true_x) - math.atan2(north, east))
+        self._phi_pos = phi_pos
+        self._cos_p = math.cos(phi_pos)
+        self._sin_p = math.sin(phi_pos)
+        rot_x = self._cos_p * east - self._sin_p * north
+        rot_y = self._sin_p * east + self._cos_p * north
+        self._tx = true_x - rot_x
+        self._ty = true_y - rot_y
+
+        # 2. HEADING offset: SEPARATE constant, from the EKF yaw vs the TRUE yaw.
+        self._phi_yaw = normalize_angle(true_yaw - ekf_yaw)
+
+        self.aligned = True
+
+        # Refresh the live pose immediately from the samples we just used.
+        self.gps_east, self.gps_north = east, north
+        self.ekf_yaw = ekf_yaw
+        self.have_gps = True
+        self.have_ekf = True
+        self._update_world_pose()
+
+        # Log the true reference pose and both offsets so the start heading error
+        # (world_yaw_est - true_yaw) can be confirmed ~0.
+        rospy.loginfo(
+            "husky_auto_drive: aligned against TRUE pose (%.2f, %.2f, yaw %.3f = "
+            "%.1f deg)  GPS-local(east %.2f, north %.2f) ekf_yaw %.3f  ->  "
+            "world_est(%.2f, %.2f, yaw %.3f)  phi_pos=%.3f rad (%.1f deg)  "
+            "phi_yaw=%.3f rad (%.1f deg)",
+            true_x, true_y, true_yaw, math.degrees(true_yaw),
+            east, north, ekf_yaw, self.x, self.y, self.yaw,
+            phi_pos, math.degrees(phi_pos),
+            self._phi_yaw, math.degrees(self._phi_yaw))
+
+    def _anchor_goals(self):
+        """Set the goals to the fixed WORLD-frame waypoints (no conversion).
+
+        VULNERABLE CHANGE 1: ~world_waypoints is re-read fresh here on every
+        (re-)anchor, so a `rosparam set ~world_waypoints ...` rewrite lands live.
+        Goals are plain world coordinates -- steering pose is already in the world
+        frame (GPS + EKF yaw via the alignment), so no rotation is applied to them.
+        """
+        param_waypoints = rospy.get_param("~world_waypoints", None)
+        source = param_waypoints if param_waypoints else WORLD_WAYPOINTS
+        self.goals = [(float(p[0]), float(p[1])) for p in source]
+        rospy.loginfo("husky_auto_drive: %d world waypoints (from %s); "
+                      "robot at world (%.2f, %.2f, yaw %.2f)",
+                      len(self.goals),
+                      "~world_waypoints" if param_waypoints else "WORLD_WAYPOINTS",
+                      self.x, self.y, self.yaw)
+        for i, (wx, wy) in enumerate(self.goals):
+            rospy.loginfo("  WP%d -> world (%.2f, %.2f)", i + 1, wx, wy)
+
+    def _publish(self, linear, angular):
+        cmd = Twist()
+        cmd.linear.x = linear
+        cmd.angular.z = angular
+        self.cmd_pub.publish(cmd)
+
+    def step(self):
+        """One control iteration."""
+        # VULNERABLE CHANGE 1: re-read ~linear_speed fresh every iteration so a
+        # `rosparam set /husky_auto_drive/linear_speed <v>` takes effect live.
+        self.linear_speed = rospy.get_param("~linear_speed", DEFAULT_LINEAR_SPEED)
+        # Never drive off-frame: if the GPS/EKF -> world alignment has not completed,
+        # keep the robot STOPPED and keep retrying alignment. Only when aligned do we
+        # enter the waypoint control below. (self.aligned implies both a GPS and an
+        # EKF sample were received, so no separate have_gps/have_ekf gate is needed.)
+        if not self.aligned:
+            self._publish(0.0, 0.0)
+            self._align_frames()
+            if self.aligned:
+                self._anchor_goals()
+            return
+        if self.goals is None:
+            self._publish(0.0, 0.0)
+            return
+        if self.finished:
+            self._publish(0.0, 0.0)
+            return
+
+        gx, gy = self.goals[self.goal_index]
+        dx = gx - self.x
+        dy = gy - self.y
+        distance = math.hypot(dx, dy)
+
+        # Arrived at current waypoint?
+        if distance <= ARRIVAL_TOLERANCE:
+            rospy.loginfo("husky_auto_drive: lap %d reached WP%d (dist %.2f m)",
+                          self.lap, self.goal_index + 1, distance)
+            self.goal_index += 1
+            if self.goal_index >= len(self.goals):
+                # Final waypoint of this lap reached; a respawn is now pending.
+                self.finished = True
+                self._publish(0.0, 0.0)
+                rospy.loginfo("husky_auto_drive: lap %d complete "
+                              "(all waypoints reached)", self.lap)
+                return
+            self._publish(0.0, 0.0)
+            return
+
+        # Heading error toward the goal.
+        desired_yaw = math.atan2(dy, dx)
+        heading_error = normalize_angle(desired_yaw - self.yaw)
+
+        if abs(heading_error) > HEADING_TOLERANCE:
+            # Turn in place to face the goal.
+            angular = ANGULAR_GAIN * heading_error
+            angular = max(-MAX_ANGULAR_SPEED, min(MAX_ANGULAR_SPEED, angular))
+            self._publish(0.0, angular)
+        else:
+            # Aligned: drive straight, with a small angular correction to hold heading.
+            angular = ANGULAR_GAIN * heading_error
+            angular = max(-MAX_ANGULAR_SPEED, min(MAX_ANGULAR_SPEED, angular))
+            self._publish(self.linear_speed, angular)
+
+        rospy.loginfo_throttle(
+            1.0,
+            "husky_auto_drive: heading WP%d  dist=%.2f m  hdg_err=%.2f rad" % (
+                self.goal_index + 1, distance, heading_error))
+
+    def _teleport_model_to_spawn(self):
+        """Teleport the Gazebo model back to its spawn pose with zero twist."""
+        state = ModelState()
+        state.model_name = GAZEBO_MODEL_NAME
+        state.reference_frame = "world"
+        state.pose.position.x = SPAWN_X
+        state.pose.position.y = SPAWN_Y
+        state.pose.position.z = SPAWN_Z
+        qx, qy, qz, qw = quaternion_from_yaw(SPAWN_YAW)
+        state.pose.orientation.x = qx
+        state.pose.orientation.y = qy
+        state.pose.orientation.z = qz
+        state.pose.orientation.w = qw
+        # Twist defaults to all zeros -> the model is placed at rest.
+        resp = self.set_model_state(state)
+        if not resp.success:
+            rospy.logwarn("husky_auto_drive: set_model_state failed: %s",
+                          resp.status_message)
+        return resp.success
+
+    def _reset_fused_odometry(self):
+        """Reset /odometry/filtered to the origin via robot_localization/set_pose.
+
+        Kept so the EKF baseline stays sane after each teleport. The driver now
+        reads heading yaw from /odometry/filtered, but this reset runs BEFORE the
+        subsequent _align_frames() re-samples the EKF, so phi_yaw is measured against
+        the post-reset yaw -- the heading offset stays self-consistent regardless.
+        """
+        msg = PoseWithCovarianceStamped()
+        msg.header.stamp = rospy.Time.now()
+        msg.header.frame_id = ODOM_FRAME
+        # Position and orientation default to the origin / identity quaternion...
+        msg.pose.pose.orientation.w = 1.0
+        # ...with a small, confident covariance on the diagonal.
+        for i in range(6):
+            msg.pose.covariance[i * 6 + i] = 1e-6
+        self.set_pose(msg)
+
+    def _wait_for_odom_settled(self):
+        """Block until the world pose reads near the spawn pose and holds there.
+
+        Returns True if it settled within RESET_SETTLE_TIMEOUT, else False.
+        """
+        rate = rospy.Rate(CONTROL_RATE_HZ)
+        deadline = rospy.Time.now() + rospy.Duration(RESET_SETTLE_TIMEOUT)
+        stable_since = None
+        while not rospy.is_shutdown() and rospy.Time.now() < deadline:
+            # Keep commanding zero velocity while we wait.
+            self._publish(0.0, 0.0)
+            # Use the trustworthy /gazebo/model_states pose to confirm the physical
+            # model actually returned to the spawn pose before re-aligning. Steering
+            # never uses this -- only this settle check does.
+            near = (abs(self.gt_x - SPAWN_X) <= RESET_SETTLE_TOLERANCE and
+                    abs(self.gt_y - SPAWN_Y) <= RESET_SETTLE_TOLERANCE)
+            if near:
+                if stable_since is None:
+                    stable_since = rospy.Time.now()
+                elif (rospy.Time.now() - stable_since).to_sec() >= RESET_STABLE_SECONDS:
+                    rospy.loginfo(
+                        "husky_auto_drive: pose settled at the spawn pose "
+                        "(x=%.2f, y=%.2f)", self.gt_x, self.gt_y)
+                    return True
+            else:
+                stable_since = None  # left the spawn-pose band; restart the timer
+            rate.sleep()
+        return False
+
+    def _respawn_to_start(self):
+        """Teleport the model to the spawn pose, re-align GPS+EKF, re-anchor.
+
+        Steps, in order:
+          1. Teleport the Gazebo model to the spawn pose.
+          2. Reset the fused EKF odometry to origin (keeps the EKF baseline sane).
+          3. Wait for the ground-truth world pose to read near the spawn pose and
+             hold there.
+          4. RE-RUN the GPS+EKF -> world alignment against the freshly-settled spawn
+             pose (recomputes phi_pos + translation and the phi_yaw heading offset;
+             the offset is measured against whatever EKF yaw is reported once settled,
+             so the EKF reset above does not matter). GPS is absolute so this is simple.
+          5. Re-anchor the goals (plain world waypoints; re-read live).
+        """
+        rospy.loginfo("husky_auto_drive: lap %d complete -- respawning to start",
+                      self.lap)
+        # Stop the robot before moving it.
+        self._publish(0.0, 0.0)
+        self._teleport_model_to_spawn()
+        self._reset_fused_odometry()
+
+        settled = self._wait_for_odom_settled()
+        if not settled:
+            rospy.logwarn(
+                "husky_auto_drive: pose did NOT settle near the spawn pose within "
+                "%.0fs (x=%.2f, y=%.2f); re-aligning anyway",
+                RESET_SETTLE_TIMEOUT, self.gt_x, self.gt_y)
+
+        # Rebuild the GPS+EKF -> world alignment for this lap against the settled
+        # spawn pose, then re-anchor and start the lap.
+        self.lap += 1
+        self.goal_index = 0
+        self.finished = False
+        self._align_frames()
+        # Anchor only once aligned; if re-alignment failed, step() keeps the robot
+        # stopped and keeps retrying rather than driving off-frame.
+        if self.aligned:
+            self._anchor_goals()
+        rospy.loginfo("husky_auto_drive: starting lap %d", self.lap)
+
+    def run(self):
+        rate = rospy.Rate(CONTROL_RATE_HZ)
+        while not rospy.is_shutdown():
+            if self.finished:
+                # Reached WP5: respawn to the start and loop again.
+                self._respawn_to_start()
+                continue
+            self.step()
+            rate.sleep()
+
+
+def main():
+    rospy.init_node("husky_auto_drive")
+    driver = WaypointDriver()
+    try:
+        driver.run()
+    except rospy.ROSInterruptException:
+        pass
+    finally:
+        # Best-effort stop on exit.
+        try:
+            driver._publish(0.0, 0.0)
+        except Exception:
+            pass
+
+
+if __name__ == "__main__":
+    main()

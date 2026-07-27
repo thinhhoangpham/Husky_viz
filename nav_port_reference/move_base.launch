@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<!--
+  move_base with our own costmap configs.
+
+  Not husky_navigation/launch/move_base.launch: that one expects a LaserScan on
+  topic 'scan' and, for some demos, a static map. Ours reads the OS0's PointCloud2
+  directly and runs mapless (rolling global costmap), which is what this park
+  simulation actually provides.
+-->
+<launch>
+  <node pkg="move_base" type="move_base" respawn="false" name="move_base" output="screen">
+    <rosparam file="/sim_config/costmap_common.yaml" command="load" ns="global_costmap"/>
+    <rosparam file="/sim_config/costmap_common.yaml" command="load" ns="local_costmap"/>
+    <rosparam file="/sim_config/costmap_local.yaml"  command="load"/>
+    <rosparam file="/sim_config/costmap_global.yaml" command="load"/>
+    <rosparam file="/sim_config/planner.yaml"        command="load"/>
+
+    <!-- twist_mux input: /cmd_vel is the lowest-priority mux channel, the same one
+         fixer_husky uses, so the drive path is identical. -->
+    <remap from="cmd_vel" to="/cmd_vel"/>
+    <remap from="odom" to="/odometry/filtered"/>
+  </node>
+</launch>

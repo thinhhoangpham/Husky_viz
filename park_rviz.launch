@@ -1,0 +1,59 @@
+<launch>
+
+  <!-- Live park simulation, headless, viewed in RViz as a 2D top-down costmap. -->
+
+  <arg name="world_name" default="/workspace/natural_environments_ros/natural_enviroment/worlds/park.world"/>
+
+  <param name="use_sim_time" value="true"/>
+
+  <!--
+    We include gazebo_ros/empty_world.launch directly rather than the researchers'
+    create_park.launch. create_park.launch pulls in simulator_empty_world.launch,
+    which hardcodes gui="true" and exposes no arg to override it, so there is no
+    way to go headless through that path.
+
+    gzclient is deliberately not started: it was measured at 1.5 GiB in this
+    container, while the Docker VM ceiling is 9.7 GiB and the park world alone
+    consumes ~7.5 GiB in gzserver. Dropping the GUI is what makes this fit.
+
+    Use gui:=false, NOT headless:=true. In gazebo_ros, headless controls the
+    recording/rendering path and does not disable the GUI client; gui:=false is
+    what actually suppresses gzclient.
+
+    The park world takes minutes to load (its terrain mesh is 304 MB). A Gazebo
+    error about a model named "Untitled2" with a dead absolute mesh path is
+    EXPECTED and harmless; see park_world_notes.md.
+  -->
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="world_name" value="$(arg world_name)"/>
+    <arg name="gui" value="false"/>
+    <arg name="paused" value="false"/>
+    <arg name="use_sim_time" value="true"/>
+  </include>
+
+  <!--
+    Spawns the Husky at x=47 y=1 z=4.0 yaw=3.05 and brings up husky_control
+    (controllers + twist_mux + teleop). Defaults kept as-is.
+
+    robot_description and robot_state_publisher are NOT set here: this include
+    chain (husky_control/control.launch -> husky_description) already provides
+    both. Declaring them again produces a second TF publisher and conflicting
+    transforms.
+  -->
+  <include file="$(find natural_environments)/launch/add_husky_park_1.launch"/>
+
+  <!--
+    costmap_params.yaml declares a top-level "costmap:" namespace, so the node
+    must be named costmap_node for the params to land at /costmap_node/costmap/...
+    Until the robot finishes spawning, this node logs TF timeout warnings; that
+    is expected and it retries on its own.
+  -->
+  <node name="costmap_node" pkg="costmap_2d" type="costmap_2d_node" output="screen">
+    <rosparam file="/workspace/costmap_params.yaml" command="load"/>
+  </node>
+
+  <!-- required="true": closing RViz tears down the whole launch. -->
+  <node name="rviz" pkg="rviz" type="rviz" required="true"
+        args="-d /workspace/park_rviz.rviz"/>
+
+</launch>

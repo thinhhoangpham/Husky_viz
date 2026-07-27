@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>System Calls Ridge Plot</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 5px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 100%;
+            margin: 0;
+            background-color: white;
+            padding: 10px;
+        }
+        h1 {
+            text-align: center;
+            color: #333;
+            margin-bottom: 10px;
+        }
+        .dataset-control {
+            text-align: center;
+            margin-bottom: 10px;
+            font-size: 14px;
+            color: #333;
+        }
+        .dataset-control label {
+            font-weight: bold;
+            margin-right: 6px;
+        }
+        .dataset-control select {
+            font-size: 14px;
+            padding: 3px 6px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            background-color: white;
+            color: #333;
+        }
+        .chart-container {
+            display: flex;
+            justify-content: center;
+            margin: 5px 0;
+        }
+        .info {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #f8f9fa;
+            border-radius: 4px;
+            border-left: 4px solid #007bff;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>System Calls Distribution Over Time</h1>
+
+        <div class="dataset-control">
+            <label for="datasetSelect">Dataset:</label>
+            <select id="datasetSelect">
+                <option value="umdhusky-data_collection-syscall-auto-gps-no-cam-processed.csv" selected>Autonomous (GPS, no cam)</option>
+                <option value="umdhusky-data_collection-syscall-man-gps-no-cam-processed.csv">Manual (GPS, no cam)</option>
+                <option value="umdhusky-data_collection-syscall-gps-no-cam-processed.csv">GPS, no cam</option>
+                <option value="umdhusky-data_collection-syscall-full-cam-processed.csv">Camera on</option>
+            </select>
+        </div>
+
+        <div class="chart-container">
+            <div id="chart"></div>
+        </div>
+        
+    </div>
+
+    <script src="ridge-plot.js"></script>
+</body>
+</html>

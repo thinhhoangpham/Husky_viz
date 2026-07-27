@@ -1,0 +1,909 @@
+
+// Constants & SVGs
+var margin = {top: 20, right: 20, bottom: 30, left: 140};
+var width = document.body.clientWidth - margin.left - margin.right;
+var height = 1400 - margin.top - margin.bottom;
+
+var svg = d3.select("body").append("svg")
+    .attr("width", width + margin.left + margin.right)
+    .attr("height", height + margin.top + margin.bottom)
+  .append("g")
+    .attr("transform", "translate(" + margin.left + "," + margin.top + ")");
+
+var tooltip = d3.select('#tooltip');
+
+// Data file
+var CSV_PATH = 'umdhusky-data_collection-syscall-auto-gps-no-cam-processed.csv';
+
+// Accessors/Columns
+var COL_EPOCH = 'Epoch Time';
+var COL_NODE = 'Node';
+var COL_SYSCALL = 'System Call';
+
+// Scales
+var xScale = d3.time.scale().range([0, Math.max(600, width - 260)]);
+var yScale = d3.scale.ordinal(); // band positions per node
+var arcWidthScale = d3.scale.linear().range([0.8, 8]);
+var dotSizeScale = d3.scale.sqrt().range([1, 24]); // Square root scale for dot sizing
+var colorScale = d3.scale.category20(); // Will be replaced with loaded colors
+
+// Layout
+var nodePadding = 20;
+var rowHeight = 49;
+var plotYOffset = 28; // push graph below the top time axis
+var NUM_BINS = 120;
+var activeSyscalls = new Set(); // Set of active system calls (empty = show all)
+var callStatusFilter = 'all'; // 'all' | 'unfinished' | 'resumed' | 'normal'
+
+// Globals for resize
+var gState = { nodes: null, links: null, timeDomain: null, globalMaxBinTotal: 1, colors: null };
+var redrawArcs = null; // Will be set by draw function
+
+// Time tick formatting (24h) that adapts to resolution
+var multiTimeFormat = d3.time.format.multi([
+  [".%L", function(d) { return d.getMilliseconds(); }], // Only for sub-second if needed
+  ["%H:%M:%S", function() { return true; }] // Always show HH:MM:SS
+]);
+
+function setAxisTicks(axis, domain) {
+  var spanMs = domain[1].getTime() - domain[0].getTime();
+  // Dynamically adjust tick intervals
+  if (spanMs <= 60 * 1000) { // Up to 1 minute, show every 5 seconds
+    axis.ticks(d3.time.seconds, 5);
+  } else if (spanMs <= 5 * 60 * 1000) { // Up to 5 minutes, show every 30 seconds
+    axis.ticks(d3.time.seconds, 30);
+  } else if (spanMs <= 30 * 60 * 1000) { // Up to 30 minutes, show every 5 minutes
+    axis.ticks(d3.time.minutes, 5);
+  } else {
+    axis.ticks(d3.time.hours, 1); // Over 30 minutes, show every hour
+  }
+}
+
+// Derived graph
+// nodes: each unique Node plus central_os
+// links: each row becomes a link from Node -> central_os at time t with syscall type
+
+function parseRow(d) {
+  var t = +d[COL_EPOCH]; // float seconds since epoch
+  // guard: D3 v3 time scale expects Date
+  return {
+    epoch: t,
+    date: new Date(t * 1000),
+    node: d[COL_NODE],
+    syscall: d[COL_SYSCALL],
+    unfinished: +d['Unfinished Call'] || 0,
+    resumed: +d['Resumed Call'] || 0
+  };
+}
+
+function byKey(obj, key, init) {
+  if (!obj.hasOwnProperty(key)) obj[key] = init;
+  return obj[key];
+}
+
+function buildGraph(rows) {
+  var nodeKeyToIndex = {};
+  var nodes = [];
+  var links = [];
+
+  // Add central node
+  nodeKeyToIndex['central_os'] = nodes.length;
+  nodes.push({ id: 'central_os', label: 'central_os' });
+
+  rows.forEach(function(r) {
+    if (!r.node) return;
+    if (!nodeKeyToIndex.hasOwnProperty(r.node)) {
+      nodeKeyToIndex[r.node] = nodes.length;
+      nodes.push({ id: r.node, label: r.node });
+    }
+    links.push({
+      source: nodeKeyToIndex[r.node],
+      target: nodeKeyToIndex['central_os'],
+      date: r.date,
+      epoch: r.epoch,
+      syscall: r.syscall,
+      unfinished: r.unfinished || 0,
+      resumed: r.resumed || 0
+    });
+  });
+
+  return { nodes: nodes, links: links, nodeKeyToIndex: nodeKeyToIndex };
+}
+
+function layoutNodes(nodes, links) {
+  // Order nodes: all non-central alphabetically, central at center row
+  var others = nodes.filter(function(n) { return n.id !== 'central_os'; })
+                   .sort(function(a, b) { return d3.ascending(a.label, b.label); });
+  var ordered = others.slice();
+  ordered.splice(Math.floor(ordered.length/2), 0, nodes[0]); // insert central_os roughly in middle
+
+  var totalHeight = Math.max(height, ordered.length * rowHeight + nodePadding*2);
+  
+  // Calculate spacing manually to respect rowHeight
+  var startY = nodePadding;
+  ordered.forEach(function(n, i) { 
+    n.y = startY + i * rowHeight; 
+  });
+  
+  // Set up yScale for reference but don't use it for positioning
+  yScale.domain(ordered.map(function(n){return n.id;}))
+        .range(ordered.map(function(n){return n.y;}));
+  return { ordered: ordered, totalHeight: totalHeight };
+}
+
+function draw(nodes, links, timeDomain) {
+  xScale.domain(timeDomain);
+
+  d3.select('svg')
+    .attr('height', height + margin.top + margin.bottom);
+
+  // Axes
+  var xAxis = d3.svg.axis().scale(xScale).orient('top').tickFormat(d3.time.format("%H:%M:%S"));
+  setAxisTicks(xAxis, timeDomain);
+
+  svg.append('g')
+    .attr('class', 'x axis')
+    .call(xAxis)
+    .style('fill', gState.colors.ui.axis)
+    .style('stroke', gState.colors.ui.axis);
+
+  // Node labels (created first for z-order)
+  var nodeG = svg.append('g').attr('class', 'nodes');
+  
+  // Add node labels
+  nodeG.selectAll('text.node-label')
+    .data(nodes)
+    .enter().append('text')
+      .attr('class', 'node-label')
+      .attr('x', -15)
+      .attr('y', function(d){ return d.y + plotYOffset; })
+      .attr('dy', '0.32em')
+      .style('text-anchor', 'end')
+      .style('font-size', '11px')
+      .style('fill', gState.colors.ui.text)
+      .text(function(d){ return d.label; })
+      .on('mouseover', function(d){
+        // Fade all arcs and dots except those from this node
+        arcG.selectAll('path.bin-arc').style('stroke-opacity', function(arc) {
+          return arc.nodeId === d.id ? 0.95 : 0.08;
+        });
+        arcG.selectAll('circle.arc-dot').style('opacity', function(arc) {
+          return arc.nodeId === d.id ? 0.95 : 0.08;
+        });
+        arcG.selectAll('path.arc').style('stroke-opacity', function(arc) {
+          return nodes[arc.source].id === d.id ? 0.95 : 0.08;
+        });
+        arcG.selectAll('circle.raw-arc-dot').style('opacity', function(arc) {
+          return nodes[arc.source].id === d.id ? 0.95 : 0.08;
+        });
+      })
+      .on('mouseout', function(){
+        arcG.selectAll('path.bin-arc').style('stroke-opacity', 0.9);
+        arcG.selectAll('circle.arc-dot').style('opacity', 0.9);
+        arcG.selectAll('path.arc').style('stroke-opacity', 0.9);
+        arcG.selectAll('circle.raw-arc-dot').style('opacity', 0.9);
+      });
+
+  // Horizontal guideline lines removed
+
+  // Zoom overlay
+  var zoom = d3.behavior.zoom()
+    .x(xScale)
+    .scaleExtent([1, 100000])
+    .on('zoom', onZoomed);
+
+  var zoomPane = svg.append('rect')
+    .attr('class', 'zoom-pane')
+    .attr('x', 0)
+    .attr('y', plotYOffset - 24)
+    .attr('width', xScale.range()[1])
+    .attr('height', Math.max(1000, height))
+    .style('fill', 'transparent')
+    .style('cursor', 'default')
+    .style('pointer-events', 'none')
+    .call(zoom);
+
+  // Enable zoom only when user holds Shift
+  var zoomKeyActive = false;
+  function updateZoomKeyState(active) {
+    zoomKeyActive = active;
+    zoomPane.style('pointer-events', active ? 'all' : 'none')
+            .style('cursor', active ? 'zoom-in' : 'default');
+  }
+  d3.select(window)
+    .on('keydown.zoomtoggle', function() {
+      var e = d3.event; if (!e) return;
+      if (e.shiftKey) updateZoomKeyState(true);
+    })
+    .on('keyup.zoomtoggle', function() {
+      updateZoomKeyState(false);
+    })
+    .on('blur.zoomtoggle', function(){ updateZoomKeyState(false); });
+
+  // Prepare arc generator: arcs between (x(t), y(node)) and (x(t), y(central))
+  var centralY = nodes.filter(function(n){return n.id==='central_os';})[0].y;
+
+  // group links by time bucket for width aggregation (optional)
+  // Here we simply use one path per link
+
+  var arcG = svg.append('g').attr('class', 'arcs');
+
+  redrawArcs = function() {
+    var extent = xScale.domain();
+    var spanMs = extent[1].getTime() - extent[0].getTime();
+    var useBins = true; // always keep binning regardless of zoom level
+
+    arcG.selectAll('*').remove();
+
+    var nodeMinMaxX = {}; // To store min/max x for each node, moved outside if (useBins)
+
+    if (useBins) {
+      // Calculate time range in seconds and round up to nearest half or full minute
+      var t0 = extent[0].getTime();
+      var t1 = extent[1].getTime();
+      
+      // Calculate time range in seconds
+      var timeRangeSeconds = (t1 - t0) / 1000;
+      
+      // Round up to the nearest half or full minute
+      var minutes = Math.ceil(timeRangeSeconds / 30) * 0.5; // Round up to nearest 0.5 minute
+      if (minutes < 1) minutes = 1; // Minimum 1 minute
+      
+      // Calculate number of bins: 120 bins per minute
+      var totalBins = Math.ceil(minutes * 120);
+      
+      // Calculate step size in milliseconds
+      var step = (t1 - t0) / totalBins;
+      if (step <= 0) step = 1;
+
+      var bins = d3.range(totalBins).map(function(i){
+        return { i: i, t0: new Date(t0 + i*step), t1: new Date(t0 + (i+1)*step), countsByNode: {}, unfinishedByNodeByType: {}, resumedByNodeByType: {} };
+      });
+
+      links.forEach(function(l){
+        var tt = l.date.getTime();
+        if (tt < t0 || tt > t1) return;
+        var bi = Math.min(totalBins - 1, Math.max(0, Math.floor((tt - t0) / step)));
+        var bin = bins[bi];
+        var nodeId = nodes[l.source].id; // original nodes array here
+        if (!bin.countsByNode[nodeId]) bin.countsByNode[nodeId] = { total: 0, byType: {} };
+        bin.countsByNode[nodeId].total += 1;
+        var ty = l.syscall;
+        bin.countsByNode[nodeId].byType[ty] = (bin.countsByNode[nodeId].byType[ty] || 0) + 1;
+        // accumulate unfinished/resumed per bin per node per system call type
+        if (l.unfinished === 1) {
+          if (!bin.unfinishedByNodeByType[nodeId]) bin.unfinishedByNodeByType[nodeId] = {};
+          bin.unfinishedByNodeByType[nodeId][ty] = (bin.unfinishedByNodeByType[nodeId][ty] || 0) + 1;
+        }
+        if (l.resumed === 1) {
+          if (!bin.resumedByNodeByType[nodeId]) bin.resumedByNodeByType[nodeId] = {};
+          bin.resumedByNodeByType[nodeId][ty] = (bin.resumedByNodeByType[nodeId][ty] || 0) + 1;
+        }
+      });
+
+      // Build per-node per-system-call per-status entries from bins
+      var entries = [];
+
+      bins.forEach(function(b){
+        for (var nid in b.countsByNode) {
+          var n = b.countsByNode[nid];
+          // Create separate entry for each system call type and status combination
+          for (var syscallType in n.byType) {
+            var count = n.byType[syscallType];
+            if (count > 0) { // Only create entries for system calls that actually occurred
+              var hasUnfinished = b.unfinishedByNodeByType && b.unfinishedByNodeByType[nid] && b.unfinishedByNodeByType[nid][syscallType] > 0;
+              var hasResumed = b.resumedByNodeByType && b.resumedByNodeByType[nid] && b.resumedByNodeByType[nid][syscallType] > 0;
+              
+              // Create separate entries for each status with actual counts
+              var unfinishedCount = hasUnfinished ? (b.unfinishedByNodeByType[nid][syscallType] || 0) : 0;
+              var resumedCount = hasResumed ? (b.resumedByNodeByType[nid][syscallType] || 0) : 0;
+              var normalCount = count - unfinishedCount - resumedCount;
+              
+              if (unfinishedCount > 0) {
+                entries.push({ 
+                  nodeId: nid, 
+                  bin: b, 
+                  maxType: syscallType, 
+                  total: unfinishedCount,
+                  status: 'unfinished'
+                });
+              }
+              if (resumedCount > 0) {
+                entries.push({ 
+                  nodeId: nid, 
+                  bin: b, 
+                  maxType: syscallType, 
+                  total: resumedCount,
+                  status: 'resumed'
+                });
+              }
+              if (normalCount > 0) {
+                entries.push({ 
+                  nodeId: nid, 
+                  bin: b, 
+                  maxType: syscallType, 
+                  total: normalCount,
+                  status: 'normal'
+                });
+              }
+            }
+          }
+
+          // Update min/max x for node (only need to do this once per node per bin)
+          var binMidX = xScale(new Date((b.t0.getTime() + b.t1.getTime())/2));
+          if (!nodeMinMaxX[nid]) {
+            nodeMinMaxX[nid] = { minX: binMidX, maxX: binMidX };
+          } else {
+            nodeMinMaxX[nid].minX = Math.min(nodeMinMaxX[nid].minX, binMidX);
+            nodeMinMaxX[nid].maxX = Math.max(nodeMinMaxX[nid].maxX, binMidX);
+          }
+        }
+      });
+
+      // Filter entries by active system calls (if any are selected)
+      if (activeSyscalls.size > 0) {
+        entries = entries.filter(function(entry) {
+          return activeSyscalls.has(entry.maxType);
+        });
+      }
+      
+      // Filter entries by call status
+      if (callStatusFilter !== 'all') {
+        entries = entries.filter(function(entry) {
+          return entry.status === callStatusFilter;
+        });
+      }
+      
+      // Sort entries by bin count (largest first) so smaller arcs are drawn on top
+      entries.sort(function(a, b) { return b.total - a.total; });
+
+      // Set linear domain for count-based thickness using global max across full timeline
+      arcWidthScale.domain([1, Math.max(1, gState.globalMaxBinTotal)]);
+      
+      // Set square root domain for dot sizing using global max across full timeline
+      // This ensures consistent dot sizing across all zoom levels
+      dotSizeScale.domain([1, Math.max(1, gState.globalMaxBinTotal)]);
+
+      // Create arcs
+      var arcPaths = arcG.selectAll('path.bin-arc')
+        .data(entries)
+        .enter().append('path')
+          .attr('class', 'bin-arc')
+          .style('fill', 'none')
+          .style('stroke', function(d){
+            // Simple 3-color scheme based on status
+            if (d.status === 'unfinished') {
+              return '#ff0000'; // Red for unfinished
+            } else if (d.status === 'resumed') {
+              return '#00ff00'; // Green for resumed
+            } else {
+              return '#0000ff'; // Blue for normal
+            }
+          })
+          .style('stroke-opacity', 0.9)
+          .style('stroke-width', function(d){ return arcWidthScale(d.total); })
+          .style('stroke-dasharray', 'none') // Remove dashed lines, use solid lines only
+          .attr('d', function(d){
+            var idx = nodes.map(function(n){return n.id;}).indexOf(d.nodeId);
+            var y1 = nodes[idx].y + plotYOffset;
+            var centralIdx = nodes.map(function(n){return n.id;}).indexOf('central_os');
+            var y2 = nodes[centralIdx].y + plotYOffset;
+            var x = xScale(new Date((d.bin.t0.getTime() + d.bin.t1.getTime())/2));
+            var dy = Math.abs(y2 - y1);
+            var r = Math.max(6, dy/2);
+            var yStart = Math.min(y1, y2), yEnd = Math.max(y1, y2);
+            // Connect from node center to central_os center
+            return 'M' + x + ',' + yStart + 'A' + r + ',' + r + ' 0 0,1 ' + x + ',' + yEnd;
+          })
+          .on('mouseover', function(d){
+            tooltip.style('display','block').text(d.nodeId + ' — ' + d.maxType + ' (' + d.total + ')');
+            
+            // Highlight only this specific arc
+            arcG.selectAll('path.bin-arc')
+              .style('stroke-opacity', function(x){ return x === d ? 0.95 : 0.12; });
+            arcG.selectAll('circle.arc-dot')
+              .style('opacity', function(x){ return x === d ? 0.95 : 0.12; });
+            
+            // Move the two labels (node and central_os) near the arc midpoint
+            var midX = xScale(new Date((d.bin.t0.getTime() + d.bin.t1.getTime())/2));
+            var hoveredNodeIdx = nodes.map(function(n){return n.id;}).indexOf(d.nodeId);
+            var centralOSIdx = nodes.map(function(n){return n.id;}).indexOf('central_os');
+            var hoveredNodeY = nodes[hoveredNodeIdx].y + plotYOffset;
+            var centralOSY = nodes[centralOSIdx].y + plotYOffset;
+            
+            svg.selectAll('text.node-label')
+              .filter(function(n){ return n.id === d.nodeId || n.id === 'central_os'; })
+              .transition().duration(120)
+              .attr('x', function(n){ return midX + (n.id === 'central_os' ? -12 : 12); })
+              .attr('y', function(n){ return n.id === 'central_os' ? centralOSY + 15 : hoveredNodeY - 15; })
+              .style('text-anchor', function(n){ return n.id === 'central_os' ? 'end' : 'start'; });
+          })
+          .on('mousemove', function(){ var e=d3.event; tooltip.style('left',(e.clientX+10)+'px').style('top',(e.clientY+10)+'px'); })
+          .on('mouseout', function(d){
+            tooltip.style('display','none');
+            // Restore arc and dot opacities
+            arcG.selectAll('path.bin-arc').style('stroke-opacity', 0.9);
+            arcG.selectAll('circle.arc-dot').style('opacity', 0.9);
+            // Restore moved labels to left gutter
+            svg.selectAll('text.node-label')
+              .filter(function(n){ return n.id === 'central_os' || n.id === d.nodeId; })
+              .transition().duration(120)
+              .attr('x', -15)
+              .attr('y', function(n){
+                return n.y + plotYOffset; // Directly use n.y, which is the original layout y
+              })
+              .style('text-anchor', 'end');
+          });
+
+      // Add dots at arc endpoints
+      arcG.selectAll('circle.arc-dot')
+        .data(entries)
+        .enter().append('circle')
+          .attr('class', 'arc-dot')
+          .attr('cx', function(d){
+            return xScale(new Date((d.bin.t0.getTime() + d.bin.t1.getTime())/2));
+          })
+          .attr('cy', function(d){
+            var idx = nodes.map(function(n){return n.id;}).indexOf(d.nodeId);
+            var y1 = nodes[idx].y + plotYOffset;
+            var centralIdx = nodes.map(function(n){return n.id;}).indexOf('central_os');
+            var y2 = nodes[centralIdx].y + plotYOffset;
+            // Position at the source node (where the arc starts)
+            return y1;
+          })
+          .attr('r', function(d){ return dotSizeScale(d.total); })
+          .style('fill', function(d){ return colorScale(d.maxType); })
+          .style('stroke', gState.colors.ui.nodeBorder)
+          .style('stroke-width', 1)
+          .style('opacity', 0.9)
+          .on('mouseover', function(d){
+            tooltip.style('display','block').text(d.nodeId + ' — ' + d.maxType + ' (' + d.total + ')');
+            
+            // Highlight this specific dot and all arcs from the same node in the same bin
+            var binTime = d.bin.t0.getTime();
+            var nodeId = d.nodeId;
+            
+            arcG.selectAll('path.bin-arc')
+              .style('stroke-opacity', function(x){ 
+                return (x.bin.t0.getTime() === binTime && x.nodeId === nodeId) ? 0.95 : 0.12; 
+              });
+            arcG.selectAll('circle.arc-dot')
+              .style('opacity', function(x){ 
+                return (x.bin.t0.getTime() === binTime && x.nodeId === nodeId) ? 0.95 : 0.12; 
+              });
+            
+            // Move the two labels (node and central_os) near the arc midpoint
+            var midX = xScale(new Date((d.bin.t0.getTime() + d.bin.t1.getTime())/2));
+            var hoveredNodeIdx = nodes.map(function(n){return n.id;}).indexOf(d.nodeId);
+            var centralOSIdx = nodes.map(function(n){return n.id;}).indexOf('central_os');
+            var hoveredNodeY = nodes[hoveredNodeIdx].y + plotYOffset;
+            var centralOSY = nodes[centralOSIdx].y + plotYOffset;
+            
+            svg.selectAll('text.node-label')
+              .filter(function(n){ return n.id === d.nodeId || n.id === 'central_os'; })
+              .transition().duration(120)
+              .attr('x', function(n){ return midX + (n.id === 'central_os' ? -12 : 12); })
+              .attr('y', function(n){ return n.id === 'central_os' ? centralOSY + 15 : hoveredNodeY - 15; })
+              .style('text-anchor', function(n){ return n.id === 'central_os' ? 'end' : 'start'; });
+          })
+          .on('mousemove', function(){ var e=d3.event; tooltip.style('left',(e.clientX+10)+'px').style('top',(e.clientY+10)+'px'); })
+          .on('mouseout', function(d){
+            tooltip.style('display','none');
+            // Restore arc and dot opacities
+            arcG.selectAll('path.bin-arc').style('stroke-opacity', 0.9);
+            arcG.selectAll('circle.arc-dot').style('opacity', 0.9);
+            // Restore moved labels to left gutter
+            svg.selectAll('text.node-label')
+              .filter(function(n){ return n.id === 'central_os' || n.id === d.nodeId; })
+              .transition().duration(120)
+              .attr('x', -15)
+              .attr('y', function(n){
+                return n.y + plotYOffset; // Directly use n.y, which is the original layout y
+              })
+              .style('text-anchor', 'end');
+          });
+
+
+    } else {
+      // Raw arcs in detailed view - This block is currently not used due to useBins = true
+      // However, nodeMinMaxX calculation would be needed for raw arcs too if this block were active
+      // For now, setting x1/x2 to the same value if no bins/arcs found handles this implicitly
+      var rawLinks = links.filter(function(l){ return l.date >= extent[0] && l.date <= extent[1]; });
+      
+      // Sort raw links by system call frequency (if available) for consistent drawing order
+      rawLinks.sort(function(a, b) {
+        var freqA = gState.colors.systemCallFrequency[a.syscall] || 0;
+        var freqB = gState.colors.systemCallFrequency[b.syscall] || 0;
+        return freqB - freqA; // Most frequent first (drawn first, so less frequent appear on top)
+      });
+      
+      arcG.selectAll('path.arc')
+        .data(rawLinks)
+        .enter().append('path')
+          .attr('class', 'arc')
+          .style('fill', 'none')
+          .style('stroke', function(d){
+            // Simple 3-color scheme based on status
+            if (d.unfinished === 1) {
+              return '#ff0000'; // Red for unfinished
+            } else if (d.resumed === 1) {
+              return '#00ff00'; // Green for resumed
+            } else {
+              return '#0000ff'; // Blue for normal
+            }
+          })
+          .style('stroke-width', function(d){ return arcWidthScale(1); })
+          .style('stroke-opacity', 0.9)
+          .attr('d', function(d){
+            var x = xScale(d.date);
+            var y1 = nodes[d.source].y + plotYOffset;
+            var y2 = nodes[d.target].y + plotYOffset;
+            var dy = Math.abs(y2 - y1);
+            var r = Math.max(6, dy/2);
+            var yStart = Math.min(y1, y2), yEnd = Math.max(y1, y2);
+            // Connect from node center to central_os center
+            return 'M' + x + ',' + yStart + 'A' + r + ',' + r + ' 0 0,1 ' + x + ',' + yEnd;
+          })
+          .on('mouseover', function(d){
+            tooltip.style('display', 'block')
+                   .text(d.syscall + ' @ ' + d.epoch + ' — ' + nodes[d.source].label + ' → central_os');
+          })
+          .on('mousemove', function(){ var e=d3.event; tooltip.style('left',(e.clientX+10)+'px').style('top',(e.clientY+10)+'px'); })
+          .on('mouseout', function(){ tooltip.style('display', 'none'); });
+
+      // Add dots for raw arcs
+      arcG.selectAll('circle.raw-arc-dot')
+        .data(rawLinks)
+        .enter().append('circle')
+          .attr('class', 'raw-arc-dot')
+          .attr('cx', function(d){ return xScale(d.date); })
+          .attr('cy', function(d){
+            var y1 = nodes[d.source].y + plotYOffset;
+            // Position at the source node (where the arc starts)
+            return y1;
+          })
+          .attr('r', function(d){ return dotSizeScale(1); }) // Single system call = count of 1
+          .style('fill', function(d){ return colorScale(d.syscall); })
+          .style('stroke', gState.colors.ui.nodeBorder)
+          .style('stroke-width', 1)
+          .style('opacity', 0.9)
+          .on('mouseover', function(d){
+            tooltip.style('display', 'block')
+                   .text(d.syscall + ' @ ' + d.epoch + ' — ' + nodes[d.source].label + ' → central_os');
+          })
+          .on('mousemove', function(){ var e=d3.event; tooltip.style('left',(e.clientX+10)+'px').style('top',(e.clientY+10)+'px'); })
+          .on('mouseout', function(){ tooltip.style('display', 'none'); });
+    }
+
+    // Guidelines removed - no longer updating horizontal lines
+
+    // Update axis
+    var xAxis2 = d3.svg.axis().scale(xScale).orient('top').tickFormat(d3.time.format("%H:%M:%S"));
+    setAxisTicks(xAxis2, xScale.domain());
+    svg.select('g.x.axis').call(xAxis2);
+  }
+
+  function onZoomed() {
+    redrawArcs();
+    // The guidelines are updated within redrawArcs now, so this might not be needed for x2
+    // svg.selectAll('line.node-guideline').attr('x2', xScale.range()[1]);
+  }
+
+
+  // initial render
+  redrawArcs();
+
+  // Keyboard and wheel panning when zoomed in
+  function isZoomedIn() {
+    var dom = xScale.domain();
+    var spanMs = dom[1].getTime() - dom[0].getTime();
+    var fullMs = timeDomain[1].getTime() - timeDomain[0].getTime();
+    return spanMs < fullMs; // true when zoomed in
+  }
+
+  function panByPixels(px) {
+    if (px === 0) return;
+    var dom = xScale.domain();
+    var spanMs = dom[1].getTime() - dom[0].getTime();
+    var rng = xScale.range();
+    var widthPx = rng[1] - rng[0];
+    if (widthPx <= 0) return;
+    var deltaMs = px / widthPx * spanMs;
+    xScale.domain([ new Date(dom[0].getTime() + deltaMs), new Date(dom[1].getTime() + deltaMs) ]);
+    redrawArcs();
+  }
+
+  d3.select(window)
+    .on('keydown.pan', function() {
+      var e = d3.event; if (!e) return;
+      if (!isZoomedIn()) return;
+      if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') {
+        e.preventDefault();
+        panByPixels(-0.1 * (xScale.range()[1] - xScale.range()[0]));
+      } else if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') {
+        e.preventDefault();
+        panByPixels(0.1 * (xScale.range()[1] - xScale.range()[0]));
+      }
+    })
+    .on('wheel.hpan', function() {
+      var e = d3.event; if (!e) return;
+      if (!isZoomedIn()) return;
+      // Use horizontal wheel/trackpad motion for pan when not holding Shift (reserved for zoom)
+      if (!e.shiftKey && Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+        try { e.preventDefault(); } catch(_) {}
+        panByPixels(e.deltaX);
+      }
+    });
+
+  // Zoom-to-fit: reset domain to full dataset extent
+  function zoomToFit() {
+    xScale.domain(timeDomain);
+    redrawArcs();
+  }
+
+  // Add a small fixed-position button
+  if (d3.select('#zoomFitBtn').empty()) {
+    d3.select('body').append('button')
+      .attr('id', 'zoomFitBtn')
+      .text('Fit')
+      .style('position', 'fixed')
+      .style('bottom', '16px')
+      .style('right', '16px')
+      .style('padding', '6px 10px')
+      .style('border', '1px solid #ccc')
+      .style('border-radius', '4px')
+      .style('background', '#fff')
+      .style('cursor', 'pointer')
+      .on('click', function(){ zoomToFit(); });
+  }
+
+  // Keyboard shortcut: press 'f' to fit
+  d3.select(window).on('keydown.fit', function(){
+    var e = d3.event; if (!e) return;
+    if (e.key === 'f' || e.key === 'F') { e.preventDefault(); zoomToFit(); }
+  });
+}
+
+function buildLegend(syscalls) {
+  var legend = d3.select('#legend');
+  
+  // Apply legend styling from loaded colors
+  legend.style('background', 'rgba(0,0,0,0.8)')
+         .style('color', gState.colors.ui.text)
+         .style('border-color', gState.colors.ui.button.border);
+  
+  var items = legend.selectAll('div.legend-item')
+    .data(syscalls)
+    .enter().append('div')
+      .attr('class', 'legend-item')
+      .style('cursor', 'pointer')
+      .style('opacity', function(d) { 
+        return activeSyscalls.size === 0 || activeSyscalls.has(d) ? 1.0 : 0.3; 
+      })
+      .on('click', function(d) {
+        // Single click: toggle hide/show for this item
+        if (activeSyscalls.has(d)) {
+          activeSyscalls.delete(d);
+        } else {
+          activeSyscalls.add(d);
+        }
+        
+        // Update legend opacity
+        legend.selectAll('div.legend-item')
+          .style('opacity', function(syscall) { 
+            return activeSyscalls.size === 0 || activeSyscalls.has(syscall) ? 1.0 : 0.3; 
+          });
+        
+        // Redraw arcs with new filter
+        redrawArcs();
+      })
+      .on('dblclick', function(d) {
+        // Double click: isolate this item (hide all others)
+        activeSyscalls.clear();
+        activeSyscalls.add(d);
+        
+        // Update legend opacity
+        legend.selectAll('div.legend-item')
+          .style('opacity', function(syscall) { 
+            return syscall === d ? 1.0 : 0.3; 
+          });
+        
+        // Redraw arcs with new filter
+        redrawArcs();
+      });
+      
+  items.append('span')
+    .attr('class', 'swatch')
+    .style('background', function(d){ return colorScale(d); });
+  items.append('span').text(function(d){ 
+    var freq = gState.colors.systemCallFrequency[d] || 0;
+    return d + ' (' + freq.toLocaleString() + ')';
+  });
+  
+}
+
+
+function onResize() {
+  if (!gState.nodes || !gState.links) return;
+  var outer = d3.select('svg');
+  var newWidth = document.body.clientWidth - margin.left - margin.right;
+  width = newWidth;
+  xScale.range([0, Math.max(600, width - 260)]);
+  outer.attr('width', width + margin.left + margin.right);
+
+  // Update axis
+  var xAxis = d3.svg.axis().scale(xScale).orient('top').tickFormat(d3.time.format("%H:%M:%S"));
+  setAxisTicks(xAxis, gState.timeDomain);
+  svg.select('g.x.axis').call(xAxis);
+
+  // Guidelines removed - no longer updating horizontal lines
+
+  // Trigger re-binning / redraw
+  // Reuse zoom handler logic by calling redraw sequence similar to onZoomed
+  // (simple approach: dispatch resize by re-calling draw domain logic)
+  // Update axis again based on possibly changed domain
+  var xAxis2 = d3.svg.axis().scale(xScale).orient('top').tickFormat(d3.time.format("%H:%M:%S"));
+  setAxisTicks(xAxis2, xScale.domain());
+  svg.select('g.x.axis').call(xAxis2);
+
+  // Update node label positions
+  svg.selectAll('text.node-label')
+    .attr('y', function(d){ return d.y + plotYOffset; });
+}
+
+function init() {
+  // Load colors first
+  d3.json('colors.json', function(error, colors) {
+    if (error) { console.error(error); return; }
+    gState.colors = colors;
+    
+    // Apply background and text colors from loaded colors
+    d3.select('body')
+      .style('background-color', colors.ui.background)
+      .style('color', colors.ui.text);
+    
+    // Load and process data
+    d3.csv(CSV_PATH, function(err, raw) {
+      if (err) { console.error(err); return; }
+
+      // Map
+      var rows = raw.map(parseRow).filter(function(r){ return isFinite(r.epoch) && r.node && r.syscall; });
+      if (rows.length === 0) { return; }
+
+      // Time domain: from min to max
+      var minDate = d3.min(rows, function(r){ return r.date; });
+      var maxDate = d3.max(rows, function(r){ return r.date; });
+      // Expand a bit for padding
+      minDate = new Date(minDate.getTime() - 5*1000);
+      maxDate = new Date(maxDate.getTime() + 5*1000);
+
+      // Graph
+      var graph = buildGraph(rows);
+      var layout = layoutNodes(graph.nodes, graph.links);
+
+      // Resize outer svg height if needed
+      d3.select('svg').attr('height', layout.totalHeight + plotYOffset + margin.top + margin.bottom);
+
+      // Prepare color domain as unique syscalls using loaded colors, ordered by frequency
+      var syscallSet = d3.set(rows.map(function(r){ return r.syscall; })).values();
+      // Sort by frequency (most frequent first) using the frequency data from colors.json
+      syscallSet.sort(function(a, b) {
+        var freqA = colors.systemCallFrequency[a] || 0;
+        var freqB = colors.systemCallFrequency[b] || 0;
+        return freqB - freqA; // Descending order (most frequent first)
+      });
+      // Use loaded colors for system calls
+      colorScale = d3.scale.ordinal()
+        .domain(syscallSet)
+        .range(syscallSet.map(function(type) { 
+          return colors.systemCalls[type] || colors.systemCalls['read']; // fallback to read color
+        }));
+
+      // Width scale: if multiple events at the exact same second for a pair, aggregate would be better
+      arcWidthScale.domain([1, 5]);
+
+      gState.nodes = graph.nodes;
+      gState.links = graph.links;
+      gState.timeDomain = [minDate, maxDate];
+
+      // Precompute globalMaxBinTotal using time-based binning (120 bins per minute)
+      (function computeGlobalMax() {
+    var t0 = minDate.getTime();
+    var t1 = maxDate.getTime();
+    
+    // Calculate time range in seconds and round up to nearest half or full minute
+    var timeRangeSeconds = (t1 - t0) / 1000;
+    var minutes = Math.ceil(timeRangeSeconds / 30) * 0.5; // Round up to nearest 0.5 minute
+    if (minutes < 1) minutes = 1; // Minimum 1 minute
+    
+    // Calculate number of bins: 120 bins per minute
+    var totalBins = Math.ceil(minutes * 120);
+    
+    var step = (t1 - t0) / totalBins;
+    if (step <= 0) step = 1;
+    var bins = d3.range(totalBins).map(function(i){
+      return { countsByNode: {} , t0: new Date(t0 + i*step), t1: new Date(t0 + (i+1)*step)};
+    });
+    graph.links.forEach(function(l){
+      var tt = l.date.getTime();
+      if (tt < t0 || tt > t1) return;
+      var bi = Math.min(totalBins - 1, Math.max(0, Math.floor((tt - t0)/step)));
+      var bin = bins[bi];
+      var nodeId = graph.nodes[l.source].id;
+      if (!bin.countsByNode[nodeId]) bin.countsByNode[nodeId] = { total: 0, byType: {} };
+      bin.countsByNode[nodeId].total += 1;
+      var ty = l.syscall;
+      bin.countsByNode[nodeId].byType[ty] = (bin.countsByNode[nodeId].byType[ty] || 0) + 1;
+    });
+    var maxTotal = 1;
+    bins.forEach(function(b){
+      for (var nid in b.countsByNode) {
+        var n = b.countsByNode[nid];
+        // Check each system call type count, not just total
+        for (var syscallType in n.byType) {
+          if (n.byType[syscallType] > maxTotal) maxTotal = n.byType[syscallType];
+        }
+      }
+    });
+    gState.globalMaxBinTotal = maxTotal;
+  })();
+
+      draw(graph.nodes, graph.links, gState.timeDomain);
+      buildLegend(syscallSet);
+      
+      // Setup filter toggle buttons after a short delay to ensure DOM is ready
+      setTimeout(function() {
+        setupFilterToggleButtons();
+      }, 100);
+
+      // Bind resize
+      window.addEventListener('resize', onResize);
+    });
+  });
+}
+
+function setupFilterToggleButtons() {
+  d3.select('#showAllFilterBtn')
+    .on('click', function(){
+      callStatusFilter = 'all';
+      // Remove active class from all buttons
+      d3.selectAll('#filterToggleBtns button').classed('active', false);
+      // Add active class to clicked button
+      d3.select(this).classed('active', true);
+      redrawArcs();
+    });
+
+  d3.select('#unfinishedFilterBtn')
+    .on('click', function(){
+      callStatusFilter = 'unfinished';
+      // Remove active class from all buttons
+      d3.selectAll('#filterToggleBtns button').classed('active', false);
+      // Add active class to clicked button
+      d3.select(this).classed('active', true);
+      redrawArcs();
+    });
+
+  d3.select('#resumedFilterBtn')
+    .on('click', function(){
+      callStatusFilter = 'resumed';
+      // Remove active class from all buttons
+      d3.selectAll('#filterToggleBtns button').classed('active', false);
+      // Add active class to clicked button
+      d3.select(this).classed('active', true);
+      redrawArcs();
+    });
+    
+  d3.select('#normalFilterBtn')
+    .on('click', function(){
+      callStatusFilter = 'normal';
+      // Remove active class from all buttons
+      d3.selectAll('#filterToggleBtns button').classed('active', false);
+      // Add active class to clicked button
+      d3.select(this).classed('active', true);
+      redrawArcs();
+    });
+}
+
+
+init();
+

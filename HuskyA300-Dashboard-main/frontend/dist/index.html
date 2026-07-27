@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Husky Dashboard</title>
+  <script type="module" crossorigin src="/assets/index-CoNifUyB.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/index-C7rnQU6l.css">
+</head>
+
+<body>
+  <div id="toolbar">
+    <button id="liveModeBtn">Go back to Live</button>
+    <button id="bagPanelBtn">Bag files playback</button>
+    <button id="playBtn" style="display:none">Play</button>
+
+    <div id="timeControls">
+      <label for="timeSlider">Time</label>
+      <input id="timeSlider" type="range" min="0" max="0" value="0" step="0.04">
+      <span id="timeLabel">t = 0.00 s</span>
+      <button id="liveBtn" title="Jump to live">Live</button>
+    </div>
+
+    <!-- View Menu -->
+    <div class="dropdown">
+      <button id="viewMenuBtn">View ▼</button>
+      <div class="dropdown-content">
+
+        <!-- Topics Submenu -->
+        <div class="dropdown-item has-submenu">
+          <span>Topics ▶</span>
+          <div class="submenu-content">
+            <label><input type="checkbox" id="toggleGlobalCostmap" checked> Global Costmap</label>
+            <label><input type="checkbox" id="toggleLocalCostmap" checked> Local Costmap</label>
+            <label><input type="checkbox" id="toggleLidar" checked> Lidar Scan</label>
+            <label><input type="checkbox" id="togglePlan" checked> Plan Path</label>
+            <label><input type="checkbox" id="toggleGoal" checked> Goal Pose</label>
+          </div>
+        </div>
+
+        <!-- Windows Submenu -->
+        <div class="dropdown-item has-submenu">
+          <span>Windows ▶</span>
+          <div class="submenu-content">
+            <label><input type="checkbox" id="toggleCmdOverlay"> Cmd Vel Plot</label>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <div id="status">—</div>
+  </div>
+
+  <div id="canvas-wrap">
+    <canvas id="view"></canvas>
+
+    <!-- cmd_vel analysis overlay; absolutely positioned on top of canvas -->
+    <div id="cmdOverlay" class="cmd-overlay hidden">
+      <div class="cmd-overlay-header">
+        <span class="cmd-overlay-title">cmd_vel analysis</span>
+      </div>
+      <div class="cmd-overlay-body">
+        <canvas id="cmdOverlayCanvas"></canvas>
+        <div class="cmd-overlay-metrics">
+          <div id="cmdInstantNumbers" class="cmd-metrics-block"></div>
+          <div id="cmdPrefixNumbers" class="cmd-metrics-block"></div>
+        </div>
+      </div>
+      <div class="cmd-overlay-footer">
+        <span class="cmd-overlay-hint">
+          Bag mode only · start → slider time
+        </span>
+      </div>
+    </div>
+  </div>
+
+  <div id="bagPanel" class="hidden">
+    <div id="bagPanelInner">
+      <div class="bag-panel-header">
+        <h3>Choose a bag file</h3>
+        <button id="bagPanelClose" class="small">✕</button>
+      </div>
+      <div id="bagPanelBody">
+        <p id="bagPanelStatus" class="muted">Loading…</p>
+        <ul id="bagList" class="bag-list"></ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- TS entry -->
+</body>
+
+</html>

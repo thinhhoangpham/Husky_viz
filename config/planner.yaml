@@ -1,0 +1,48 @@
+# Planner tuning. Values track the Husky's real limits so the plans are drivable.
+
+controller_frequency: 5.0
+planner_frequency: 1.0
+recovery_behaviour_enabled: true
+clearing_rotation_allowed: true
+
+NavfnROS:
+  allow_unknown: true      # the park is unmapped; treat unseen cells as free
+  default_tolerance: 0.3
+
+TrajectoryPlannerROS:
+  # Husky limits. Cruise speed matches the dataset's 0.3 m/s so the runs are
+  # comparable to fixer_husky's.
+  max_vel_x: 0.5
+  min_vel_x: 0.1
+  max_vel_theta: 1.0
+  min_vel_theta: -1.0
+  min_in_place_vel_theta: 0.3
+  acc_lim_x: 2.0
+  acc_lim_theta: 3.0
+
+  holonomic_robot: false   # skid-steer, cannot strafe
+  escape_vel: -0.15        # reverse out if wedged
+
+  # Final heading does not matter on a waypoint route -- only arriving does.
+  # A tight tolerance made the robot latch at each waypoint and spin in place
+  # forever trying to hit an exact yaw, which a skid-steer keeps overshooting.
+  # A value above pi accepts any heading, so it drives straight on to the next one.
+  yaw_goal_tolerance: 3.15
+  xy_goal_tolerance: 0.5
+  latch_xy_goal_tolerance: true
+
+  # Forward simulation: score 2 s of future motion for each candidate command.
+  # This is what makes it plan around an obstacle instead of reacting into it.
+  sim_time: 2.0
+  sim_granularity: 0.05
+  vx_samples: 8
+  vtheta_samples: 20
+
+  # Heavily weight staying ON the global path (96) over beelining to the goal
+  # (8). This is what stops the robot drifting far off the trail between
+  # obstacles -- it returns to the line as soon as it has cleared one.
+  path_distance_bias: 96.0
+  goal_distance_bias: 8.0
+  occdist_scale: 0.02
+  heading_lookahead: 0.325
+  dwa: true

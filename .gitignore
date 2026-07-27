@@ -1,0 +1,101 @@
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+*.bak
+
+# ---------------------------------------------------------------------------
+# ROS / catkin build artifacts
+# ---------------------------------------------------------------------------
+build/
+devel/
+install/
+logs/
+.catkin_workspace
+.catkin_tools/
+*.rosinstall
+
+# ---------------------------------------------------------------------------
+# ROS bags and recorded sensor data (huge)
+# ---------------------------------------------------------------------------
+*.bag
+*.bag.active
+*.bag.orig.*
+# Raw dataset dumps (images, ground-truth, lidar, imu, tacho) — ~100 GB, not source
+bag files/
+
+# ---------------------------------------------------------------------------
+# External data bundle (multi-GB ML embeddings, CSVs, model dumps — not source)
+# ---------------------------------------------------------------------------
+DoD SAFE-*/
+
+# ---------------------------------------------------------------------------
+# Archives and large processed datasets
+# ---------------------------------------------------------------------------
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+# Large processed CSV datasets kept in the repo root (17-70 MB each)
+*.csv
+
+# ---------------------------------------------------------------------------
+# Vendored ROS package trees — excluded from this repo by request.
+# ---------------------------------------------------------------------------
+models_opt/
+natural_environments_ros_opt/
+
+# ---------------------------------------------------------------------------
+# Large Gazebo model geometry / textures (binary assets, hundreds of MB)
+# model.sdf / model.config (the source descriptors) are still tracked.
+# ---------------------------------------------------------------------------
+*.blend
+*.blend1
+*.dae
+*.obj
+*.fbx
+*.mtl
+# Model texture / baked-map images (large PBR maps under models_opt/)
+models_opt/**/*.png
+models_opt/**/*.jpg
+models_opt/**/*.jpeg
+models_opt/**/*.tif
+models_opt/**/*.tga
+
+# ---------------------------------------------------------------------------
+# Logs and misc large binary/log output
+# ---------------------------------------------------------------------------
+*.log
+*.pgm
+
+# ---------------------------------------------------------------------------
+# Editor / IDE cruft
+# ---------------------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ---------------------------------------------------------------------------
+# Claude local settings (machine-specific, may contain local paths)
+# ---------------------------------------------------------------------------
+.claude/settings.local.json
+.claude/*.tmp.*
+
+# ---------------------------------------------------------------------------
+# Stray corrupted-filename duplicate of park_1_lidar_trajectory.gif
+# (leading bytes are non-printing; match by the mangled prefix)
+# ---------------------------------------------------------------------------
+*Husky viz*park_1_lidar_trajectory.gif
+
+# ---------------------------------------------------------------------------
+# macOS junk
+# ---------------------------------------------------------------------------
+.DS_Store
+# AppleDouble resource-fork sidecar files (the ._* files scattered in the tree)
+._*

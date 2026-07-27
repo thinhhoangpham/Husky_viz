@@ -1,0 +1,20 @@
+# Global costmap. There is no prior map of the park, so this is "mapless"
+# navigation: a large rolling window centred on the robot that the global planner
+# routes through using only what the lidar has seen so far.
+global_costmap:
+  global_frame: odom
+  robot_base_frame: base_link
+  update_frequency: 2.0
+  publish_frequency: 1.0
+  static_map: false
+  rolling_window: true
+  # Must be large enough to CONTAIN the goal, or NavfnROS cannot plan and
+  # move_base falls back to rotate-recovery (the robot spinning in place).
+  # The longest waypoint leg here is wp2->wp3 at ~26 m, so 24x24 (12 m radius)
+  # put the goal off the map. 80x80 covers every leg with margin.
+  width: 80.0
+  height: 80.0
+  resolution: 0.15
+  plugins:
+    - {name: obstacles,  type: "costmap_2d::ObstacleLayer"}
+    - {name: inflation,  type: "costmap_2d::InflationLayer"}

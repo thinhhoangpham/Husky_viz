@@ -1,0 +1,46 @@
+<launch>
+
+  <!-- Bag to replay. Path contains a space ("bag files"), so it is quoted
+       inside the rosbag play args below. -->
+  <arg name="bag_path" default="/workspace/bag files/park_1_bag/park_1.bag"/>
+
+  <!-- Playback rate handed to rosbag play via -r. -->
+  <arg name="rate" default="1.0"/>
+
+  <!-- The bag's message timestamps are simulation-clock values starting near
+       t=18440 s. Everything must therefore run off /clock (published by
+       rosbag play with the clock flag) instead of wall time, or TF lookups fail. -->
+  <param name="use_sim_time" value="true"/>
+
+  <!-- robot_description is only for RViz to draw the robot meshes.
+       robot_state_publisher is deliberately NOT launched: the bag already
+       contains the complete TF tree (odom->base_link, base_link->wheels
+       dynamic; base_link->sensors and os0_sensor->os0_lidar static).
+       Running it would publish duplicate, conflicting transforms for the
+       same links. -->
+  <param name="robot_description"
+         command="$(find xacro)/xacro /workspace/natural_environments_ros/husky/husky_description/urdf/husky.urdf.xacro"/>
+
+  <!-- Costmap params file declares a top-level `costmap:` namespace, so it
+       must be loaded into a node named costmap_node for the params to land
+       at /costmap_node/costmap/... -->
+  <node pkg="costmap_2d" type="costmap_2d_node" name="costmap_node" output="screen">
+    <rosparam file="/workspace/costmap_params.yaml" command="load"/>
+  </node>
+
+  <!-- RViz is required="true": closing the window tears down the whole
+       launch cleanly. -->
+  <node pkg="rviz" type="rviz" name="rviz" required="true"
+        args="-d /workspace/natural_environments_ros/husky/husky_viz/rviz/robot.rviz"/>
+
+  <!-- Playback starts as part of this same launch so the costmap node is up
+       before the first scan arrives; started later it would miss earlier
+       scans and the blobs would not match the robot's path.
+       Only four topics are played: the bag is 44.6 GB and roughly 35 GB of
+       that is raw camera imagery that nothing here consumes.
+       NOT required="true": when the bag ends we want RViz and the costmap
+       node to keep running so the final costmap stays on screen. -->
+  <node pkg="rosbag" type="play" name="rosbag_play" output="screen"
+        args="--clock -r $(arg rate) --topics /tf /tf_static /os0_cloud_node/points /odometry/filtered --bags &quot;$(arg bag_path)&quot;"/>
+
+</launch>

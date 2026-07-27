@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<!--
+  move_base with our own costmap configs.
+
+  Not husky_navigation/launch/move_base.launch: that one expects a LaserScan on
+  topic 'scan' and, for some demos, a static map. Ours reads the OS0's PointCloud2
+  directly and runs mapless (rolling global costmap), which is what this park
+  simulation actually provides.
+
+  Native port note: the reference launch loaded /sim_config/*.yaml (its Docker
+  path). Here the configs live in the native tree at
+  /home/thinh/Documents/Husky_viz/config/*.yaml, referenced by absolute path so
+  this launch works regardless of the caller's working directory.
+-->
+<launch>
+  <node pkg="move_base" type="move_base" respawn="false" name="move_base" output="screen">
+    <rosparam file="/home/thinh/Documents/Husky_viz/config/costmap_common.yaml" command="load" ns="global_costmap"/>
+    <rosparam file="/home/thinh/Documents/Husky_viz/config/costmap_common.yaml" command="load" ns="local_costmap"/>
+    <rosparam file="/home/thinh/Documents/Husky_viz/config/costmap_local.yaml"  command="load"/>
+    <rosparam file="/home/thinh/Documents/Husky_viz/config/costmap_global.yaml" command="load"/>
+    <rosparam file="/home/thinh/Documents/Husky_viz/config/planner.yaml"        command="load"/>
+
+    <!-- twist_mux input: /cmd_vel is the lowest-priority mux channel, the same one
+         the driver uses, so the drive path is identical. -->
+    <remap from="cmd_vel" to="/cmd_vel"/>
+    <remap from="odom" to="/odometry/filtered"/>
+  </node>
+</launch>

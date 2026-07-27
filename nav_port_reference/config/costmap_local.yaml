@@ -1,0 +1,14 @@
+# Local costmap: a small window that travels with the robot, used by the local
+# planner for immediate obstacle avoidance.
+local_costmap:
+  global_frame: odom
+  robot_base_frame: base_link
+  update_frequency: 5.0
+  publish_frequency: 2.0
+  rolling_window: true
+  width: 8.0
+  height: 8.0
+  resolution: 0.1
+  plugins:
+    - {name: obstacles,  type: "costmap_2d::ObstacleLayer"}
+    - {name: inflation,  type: "costmap_2d::InflationLayer"}

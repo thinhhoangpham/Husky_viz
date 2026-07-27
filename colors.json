@@ -1,0 +1,61 @@
+{
+  "systemCalls": {
+    "clock_gettime": "#8dd3c7",
+    "futex": "#ffffb3", 
+    "write": "#bebada",
+    "select": "#fb8072",
+    "recvfrom": "#80b1d3",
+    "read": "#fdb462",
+    "brk": "#b3de69",
+    "clock_nanosleep": "#fccde5",
+    "close": "#d9d9d9",
+    "poll": "#bc80bd",
+    "times": "#ccebc5",
+    "epoll_ctl": "#ffed6f",
+    "sendto": "#a8e6cf",
+    "openat": "#ffb3ba",
+    "fstat": "#bae1ff",
+    "shutdown": "#ffdfba"
+  },
+  "systemCallFrequency": {
+    "clock_gettime": 18422,
+    "futex": 8891,
+    "write": 3278,
+    "select": 2631,
+    "recvfrom": 2294,
+    "read": 2034,
+    "brk": 1680,
+    "clock_nanosleep": 551,
+    "close": 73,
+    "poll": 65,
+    "times": 32,
+    "epoll_ctl": 23,
+    "sendto": 18,
+    "openat": 18,
+    "fstat": 12,
+    "shutdown": 8
+  },
+  "streams": {
+    "unfinished": "#8B0000",
+    "resumed": "#00008B",
+    "normal": "#006400"
+  },
+  "statusColors": {
+    "unfinished": "#8B0000",
+    "resumed": "#00008B",
+    "normal": "#006400",
+    "neutral": "#888888"
+  },
+  "ui": {
+    "background": "#111111",
+    "axis": "#ffffff",
+    "grid": "#444444",
+    "text": "#ffffff",
+    "button": {
+      "background": "#111111",
+      "border": "#666666",
+      "active": "#555555",
+      "text": "#ffffff"
+    }
+  }
+}
