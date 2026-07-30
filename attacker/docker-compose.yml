@@ -1,0 +1,16 @@
+services:
+  attacker:
+    build: .
+    image: husky-attacker
+    # Default bridge (docker0): the container gets its own IP and reaches the
+    # NATIVE host master via the docker0 gateway IP passed in ROBOT_HOST_IP.
+    environment:
+      # Supply at runtime: ROBOT_HOST_IP=<docker0 gateway IP>. No hardcoding.
+      ROS_MASTER_URI: "http://${ROBOT_HOST_IP}:11311"
+    volumes:
+      # Repo mounted rw so bind-mounted attack_*.py can write their CSVs.
+      - ../:/repo
+    working_dir: /repo
+    # Keep STDIN/TTY for interactive `docker compose run` sessions.
+    stdin_open: true
+    tty: true
