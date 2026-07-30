@@ -73,7 +73,9 @@ attacker/
 - **`docker-compose.yml`** — one service on the default bridge (own container
   IP). Reads `ROBOT_HOST_IP` from the environment and sets
   `ROS_MASTER_URI=http://${ROBOT_HOST_IP}:11311`. Bind-mounts the repo root
-  read-only so the scripts are visible inside the container.
+  read-only so the scripts are visible inside the container. (Implementation
+  note: the mount is actually read-write, because the Phase 3 attack scripts
+  write their output CSVs into the mounted repo tree.)
 - **`entrypoint.sh`** — derives the container's own IP, exports `ROS_IP` so the
   attacker's callback address is correct, then runs the passed command or drops
   to an interactive shell.

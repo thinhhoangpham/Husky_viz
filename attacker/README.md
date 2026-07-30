@@ -30,14 +30,14 @@ docker compose build
 ## Phase 1 — Reachability
 
 ```bash
-docker compose run --rm attacker ./scan.sh
+docker compose run --rm attacker ./attacker/scan.sh
 ```
 Expect exactly the host on `11311/tcp open`. FAIL → fix Phase 0 / firewall.
 
 ## Phase 2 — Enumeration
 
 ```bash
-docker compose run --rm attacker ./enum.sh
+docker compose run --rm attacker ./attacker/enum.sh
 ```
 Expect node/topic/param lists (`/husky_velocity_controller/cmd_vel`,
 `/compass/data`, `/navsat/fix`, …). Hang here after Phase 1 passed → the
@@ -46,10 +46,10 @@ host `ROS_IP` fix in Phase 0.
 ## Phase 3 — Exploitation
 
 ```bash
-docker compose run --rm attacker ./attack.sh cmd_vel  --duration 8
-docker compose run --rm attacker ./attack.sh compass  --yaw 1.5708
-docker compose run --rm attacker ./attack.sh odom
-docker compose run --rm attacker ./attack.sh param
+docker compose run --rm attacker ./attacker/attack.sh cmd_vel  --duration 8
+docker compose run --rm attacker ./attacker/attack.sh compass  --yaw 1.5708
+docker compose run --rm attacker ./attacker/attack.sh odom
+docker compose run --rm attacker ./attacker/attack.sh param
 ```
 Watch the robot obey in the Gazebo (noVNC) view. CSVs land under `/repo`
 (the mounted repo) — pass `--csv /tmp/x.csv` to redirect.
