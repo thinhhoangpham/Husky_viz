@@ -1,0 +1,16 @@
+services:
+  operator:
+    build: .
+    image: husky-operator
+    # Default bridge (docker0): own IP; reaches the NATIVE host master via the
+    # docker0 gateway IP passed in ROBOT_HOST_IP.
+    environment:
+      # Supply at runtime: ROBOT_HOST_IP=<docker0 gateway IP>. No hardcoding.
+      ROS_MASTER_URI: "http://${ROBOT_HOST_IP}:11311"
+    volumes:
+      # Repo mounted rw so operator.py can write operator_run.csv, and so its
+      # `from send_mapless_goal import ...` resolves from /repo.
+      - ../:/repo
+    working_dir: /repo
+    stdin_open: true
+    tty: true
