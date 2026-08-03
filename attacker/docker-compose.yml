@@ -14,3 +14,8 @@ services:
     # Keep STDIN/TTY for interactive `docker compose run` sessions.
     stdin_open: true
     tty: true
+
+networks:
+  default:
+    name: husky_lan
+    external: true

@@ -14,3 +14,8 @@ services:
     working_dir: /repo
     stdin_open: true
     tty: true
+
+networks:
+  default:
+    name: husky_lan
+    external: true

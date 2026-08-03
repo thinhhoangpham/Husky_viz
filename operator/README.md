@@ -19,9 +19,15 @@ SUCCEEDED`, and `operator_run.csv` was written to the repo root.
 ## Phase 0 — Host prep + world (host terminal 1)
 
 ```bash
-ROBOT_HOST_IP="$(ip -4 addr show docker0 | awk '/inet /{print $2}' | cut -d/ -f1)"
-echo "docker0 gateway = ${ROBOT_HOST_IP}"
-export ROS_IP="${ROBOT_HOST_IP}"
+# One-time: create the shared LAN both the operator and attacker containers join.
+docker network create husky_lan 2>/dev/null || true
+
+# The gateway of husky_lan is how containers reach the NATIVE robot/master.
+GW="$(docker network inspect husky_lan --format '{{(index .IPAM.Config 0).Gateway}}')"
+echo "husky_lan gateway = ${GW}"
+
+# Launch the native sim advertising on that gateway (NOT docker0).
+export ROS_IP="${GW}"
 export ROS_MASTER_URI="http://${ROS_IP}:11311"
 ./load-park-stock-husky.sh          # world only (no robot), master off localhost
 ```
@@ -32,7 +38,8 @@ both `ROS_IP` and `ROS_MASTER_URI` BEFORE launching the sim.
 ## Phase 1 — Spawn the robot, idle (host terminal 2)
 
 ```bash
-export ROS_IP="$(ip -4 addr show docker0 | awk '/inet /{print $2}' | cut -d/ -f1)"
+GW="$(docker network inspect husky_lan --format '{{(index .IPAM.Config 0).Gateway}}')"
+export ROS_IP="${GW}"
 export ROS_MASTER_URI="http://${ROS_IP}:11311"
 ./spawn-robot-idle.sh               # spawn stock husky + mapless move_base, then idle
 ```
@@ -42,7 +49,7 @@ Waits at "IDLE — waiting for a remote operator goal." Robot visible in Gazebo.
 
 ```bash
 cd operator
-export ROBOT_HOST_IP="$(ip -4 addr show docker0 | awk '/inet /{print $2}' | cut -d/ -f1)"
+export ROBOT_HOST_IP="$(docker network inspect husky_lan --format '{{(index .IPAM.Config 0).Gateway}}')"
 docker compose build
 docker compose run --rm operator ./operator/operate.py --goal-x 10 --goal-y 0
 ```
