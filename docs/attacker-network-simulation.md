@@ -326,3 +326,95 @@ discovers and reaches the **natively run** master over docker0 and injects via
 the existing `attack_*.py` unchanged. Runbook and host-side rebind steps:
 `attacker/README.md`. Design spec:
 `docs/superpowers/specs/2026-07-30-tier2-attacker-container-design.md`.
+
+---
+
+## Implemented: operator container (Tier 3 groundwork)
+
+The §10 **operator** (setup 1 — a remote ROS command node) is implemented under
+`operator/`: its own IP on docker0, sends one move_base goal to the natively-run
+stock Husky, watches telemetry, and exports a normal-baseline CSV for the attack
+comparisons. Robot spawn is decoupled into the host-side `spawn-robot-idle.sh`
+(the world stays robot-less; the robot is spawned separately, then idles ready
+for the operator). Runbook: `operator/README.md`. Design:
+`docs/superpowers/specs/2026-08-02-operator-container-design.md`. It establishes
+the operator↔robot wire that a future Tier 3 attacker container (C) will sit on;
+the attacker-in-the-middle itself remains deferred.
+
+---
+
+## 9. Operator setup — what the robot↔operator link actually is
+
+Expands §4 with the analysis needed to model a **realistic** operator boundary
+(the only genuine cross-network wire on a field robot — see §10). There are
+three real operator setups, and *which one* you model decides whether the
+attacked wire even carries ROS.
+
+| # | Operator setup | Wire protocol | ROS/network attacker can hit it? |
+|---|---|---|---|
+| **1** | **Another ROS machine** (laptop with `ROS_MASTER_URI` → robot; runs `teleop_twist_keyboard`/RViz/rqt) | raw **plaintext TCPROS** | **Yes, directly.** Both Tier 2 (it's a peer on the trust-anyone graph) AND Tier 3 (its link is plaintext ROS on the wire). Most faithful Tier 3 target. |
+| **2** | **Web app / dashboard** (browser, no ROS; robot runs `rosbridge`/custom server — e.g. `HuskyA300-Dashboard-main`) | JSON/WebSocket, often TLS | Partially — attack the WS stream or the app's auth, not raw ROS. But a compromised dashboard host pivots **straight onto the onboard trust-anyone graph** → all Tier 2 attacks apply. |
+| **3** | **Dedicated remote control** (RC radio / gamepad) | proprietary RF / USB HID — **not TCP/IP** | **No.** That's an RF-security problem; a `joy_node` translates it to `cmd_vel` *onboard*. Out of scope for a network attacker. |
+
+**Which is more realistic — ROS laptop vs. web app?** Depends on stage:
+
+- **ROS laptop (setup 1)** dominates **development / research / early field trials** —
+  common, but mostly among the engineers who *build* the robot.
+- **Web app (setup 2)** dominates **production deployment.** The operator is a
+  non-engineer (warehouse worker, farmer) who will never install ROS; fleets need
+  one console for many robots; remote operation must not put raw ROS on the
+  internet, so a dashboard over HTTPS/WSS is used instead. Clearpath ships a web
+  dashboard for exactly this reason.
+
+For a **deployed field Husky**, the web app is the more truthful operator picture.
+But note the nuance: **even with a web app, raw plaintext ROS still runs onboard**
+— the dashboard is only a rosbridge translation layer bolted on top. So the
+dashboard is both the *realistic* operator surface **and** the biggest risk: the
+whole robot's security collapses to the dashboard's, and breaching it (weak
+password, exposed rosbridge, XSS) lands the attacker directly on the onboard
+trust-anyone graph where every Tier 2 attack already works.
+
+**Two setups, two different demos (they don't conflict):**
+
+- **Web app as the realistic *entry point*** → models *how the attacker gets onto
+  the ROS network*: breach the dashboard → pivot to onboard ROS → run the existing
+  `attack_*.py` (Tier 2). This is a complete, realistic attack chain using what is
+  **already built** — no Tier 3 needed — and matches the repo's
+  `HuskyA300-Dashboard-main`.
+- **ROS laptop as the realistic Tier 3 *target*** → models *plaintext ROS on the
+  operator wire* being sniffed/replayed/MITM'd (§10).
+
+## 10. Tier 3 — realistic split: robot↔operator, NOT sensor↔controller
+
+A Tier 3 (on-the-wire) demo needs two victim nodes on **different hosts** so
+there is a real wire to intercept. The tempting split — *put a sensor node in its
+own container* — is **contrived and must not be used**: on a real Husky the
+sensors (GPS, IMU, compass, encoders) are mounted on the chassis and wired to the
+robot's **own CPU**, so their driver nodes run onboard and talk to the controller
+over **loopback**. There is no network wire between sensor and controller;
+manufacturing one would demonstrate a vulnerability that does not exist (the same
+"theater" failure §5 warns about for a Gazebo attacker model).
+
+The only genuine cross-network wire on a field robot is **robot ↔ operator**
+(and, less commonly, robot ↔ a second onboard compute box over an internal
+Ethernet switch; or robot ↔ cloud backend, usually TLS-wrapped). So the faithful
+Tier 3 split keeps **everything onboard together** and separates the operator:
+
+```
+Container A (the ROBOT):     roscore + gazebo + controller + ALL sensor drivers
+                             — sensors talk to the controller over loopback
+                               INSIDE this container, exactly as on real hardware
+Container B (the OPERATOR):  a ROS teleop/command node + a telemetry subscriber
+                             (operator setup 1), on a separate IP
+        ↕  A↔B command+telemetry traffic crosses the bridge — the REAL wire
+Container C (the ATTACKER):  sits between A and B (ARP-spoof), with
+                             tcpdump / ettercap / scapy (a NEW image — the Tier 2
+                             image deliberately has none of these)
+```
+
+Tier 3 attack types on that wire: **sniff** (read plaintext GPS/`cmd_vel`),
+**replay** (re-inject captured packets), **MITM/inject** (rewrite Twist/heading in
+flight). These are **new scripts**, not the Tier 2 `attack_*.py`. Effort is high
+(the two-host split + containerized Gazebo + kernel-level ARP-spoof caveats +
+NET_ADMIN/NET_RAW); deferred to its own design cycle. Sniffing is the achievable,
+dramatic first step; full in-flight MITM of framed TCPROS is a real project.
