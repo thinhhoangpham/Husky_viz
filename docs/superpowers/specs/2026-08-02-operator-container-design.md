@@ -95,7 +95,7 @@ operator/
   entrypoint.sh       # derive container IP -> export ROS_IP  (verbatim from attacker/)
   docker-compose.yml  # docker0 bridge; ROS_MASTER_URI from ROBOT_HOST_IP;
                       #   repo bind-mounted rw at /repo (operator writes its CSV).
-  operator.py         # the operator node (see §5-6).
+  operate.py         # the operator node (see §5-6).
   README.md           # runbook: host prep -> spawn-robot-idle.sh -> operator.
 ```
 
@@ -181,7 +181,7 @@ against the operator's baseline.
 2. **Spawn the robot** — `./spawn-robot-idle.sh` — spawns the stock Husky + mapless
    move_base, then idles (robot ready, no goal).
 3. **Build** — `cd operator && export ROBOT_HOST_IP && docker compose build`.
-4. **Operate** — `docker compose run --rm operator ./operator/operator.py
+4. **Operate** — `docker compose run --rm operator ./operator/operate.py
    --goal-x <x> --goal-y <y> [--csv operator_run.csv]`. Watch the robot drive in
    Gazebo; the console streams telemetry; `operator_run.csv` lands in the repo.
 

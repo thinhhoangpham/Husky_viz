@@ -76,7 +76,7 @@ export ROS_IP="${ROBOT_HOST_IP}" ROS_MASTER_URI="http://${ROS_IP}:11311"
 then IDLE (no goal) until Ctrl-C, tearing everything down on exit.
 
 This is the ROBOT SIDE of the operator demo: it makes the robot ready so a
-REMOTE operator (operator/operator.py, a separate container) can send a goal.
+REMOTE operator (operator/operate.py, a separate container) can send a goal.
 It deliberately does NOT send any goal itself — that is the operator's job.
 
 Reuses send_mapless_goal.py's bring-up verbatim (imported, that file is not
@@ -162,21 +162,21 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 ---
 
-## Task 1: Operator node — `operator/operator.py`
+## Task 1: Operator node — `operator/operate.py`
 
 The operator: send ONE odom-frame move_base goal to a target point, watch
 telemetry to console, and write the 11-column baseline CSV. No robot bring-up.
 
 **Files:**
-- Create: `operator/operator.py`
+- Create: `operator/operate.py`
 
 **Interfaces:**
 - Consumes: a running `move_base` action server on the master (from Task 0's `spawn-robot-idle.sh`), reachable via `ROS_MASTER_URI`. Imports `yaw_of` from `send_mapless_goal` for consistent yaw extraction.
 - Produces: `operator_run.csv` (default; `--csv` overrides). CSV header exactly:
   `elapsed_time, fused_x, fused_y, fused_yaw, fused_yaw_deg, planner_linear_x, planner_angular_z, ctrl_linear_x, ctrl_angular_z, ref_x, ref_y`
-- CLI: `operator.py --goal-x <float> --goal-y <float> [--csv PATH] [--timeout SEC]`; defaults `--goal-x 10 --goal-y 0`, `--csv operator_run.csv`, `--timeout 180`.
+- CLI: `operate.py --goal-x <float> --goal-y <float> [--csv PATH] [--timeout SEC]`; defaults `--goal-x 10 --goal-y 0`, `--csv operator_run.csv`, `--timeout 180`.
 
-- [ ] **Step 1: Write `operator/operator.py`**
+- [ ] **Step 1: Write `operator/operate.py`**
 
 ```python
 #!/usr/bin/env python3
@@ -353,21 +353,21 @@ if __name__ == "__main__":
 
 - [ ] **Step 2: Make executable**
 
-Run: `chmod +x operator/operator.py`
+Run: `chmod +x operator/operate.py`
 
 - [ ] **Step 3: Deferred to Task 3's live test**
 
-`operator.py` runs inside the container against the master; it is verified end
+`operate.py` runs inside the container against the master; it is verified end
 to end in Task 3 (needs docker0 + a live robot). No standalone unit test exists
 for this repo's ROS scripts. Confirm now only that it byte-compiles:
 
-Run: `python3 -m py_compile operator/operator.py`
+Run: `python3 -m py_compile operator/operate.py`
 Expected: exit 0, no output.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add operator/operator.py
+git add operator/operate.py
 git commit -m "feat(operator): operator node — one odom goal + telemetry + baseline CSV
 
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
@@ -386,8 +386,8 @@ mounted rw for the CSV.
 - Create: `operator/docker-compose.yml`
 
 **Interfaces:**
-- Consumes: `operator/operator.py` (Task 1), and the repo files (`send_mapless_goal.py`) via the `/repo` bind mount so the import in `operator.py` resolves.
-- Produces: `docker compose run --rm operator ./operator/operator.py ...` runnable against the host master.
+- Consumes: `operator/operate.py` (Task 1), and the repo files (`send_mapless_goal.py`) via the `/repo` bind mount so the import in `operate.py` resolves.
+- Produces: `docker compose run --rm operator ./operator/operate.py ...` runnable against the host master.
 
 - [ ] **Step 1: Write `operator/Dockerfile`**
 
@@ -402,7 +402,7 @@ RUN apt-get update \
         ros-noetic-move-base-msgs ros-noetic-actionlib ros-noetic-tf \
     && rm -rf /var/lib/apt/lists/*
 
-# operator.py is bind-mounted with the repo at /repo at runtime.
+# operate.py is bind-mounted with the repo at /repo at runtime.
 WORKDIR /repo
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
@@ -442,7 +442,7 @@ services:
       # Supply at runtime: ROBOT_HOST_IP=<docker0 gateway IP>. No hardcoding.
       ROS_MASTER_URI: "http://${ROBOT_HOST_IP}:11311"
     volumes:
-      # Repo mounted rw so operator.py can write operator_run.csv, and so its
+      # Repo mounted rw so operate.py can write operator_run.csv, and so its
       # `from send_mapless_goal import ...` resolves from /repo.
       - ../:/repo
     working_dir: /repo
@@ -510,7 +510,7 @@ Terminal 3 (host): run the operator container:
 ```bash
 cd operator
 export ROBOT_HOST_IP="$(ip -4 addr show docker0 | awk '/inet /{print $2}' | cut -d/ -f1)"
-docker compose run --rm operator ./operator/operator.py --goal-x 10 --goal-y 0
+docker compose run --rm operator ./operator/operate.py --goal-x 10 --goal-y 0
 ```
 Expected: console streams `state=ACTIVE pos=(...) dist_to_goal=...` decreasing,
 ending `Final move_base state: SUCCEEDED`. Robot drives in Gazebo. Exit code 0.
@@ -573,7 +573,7 @@ Waits at "IDLE — waiting for a remote operator goal." Robot visible in Gazebo.
 cd operator
 export ROBOT_HOST_IP="$(ip -4 addr show docker0 | awk '/inet /{print $2}' | cut -d/ -f1)"
 docker compose build
-docker compose run --rm operator ./operator/operator.py --goal-x 10 --goal-y 0
+docker compose run --rm operator ./operator/operate.py --goal-x 10 --goal-y 0
 ```
 Watch the robot drive to the point in Gazebo; the console streams telemetry;
 `operator_run.csv` lands in the repo root. Override output with `--csv path`.

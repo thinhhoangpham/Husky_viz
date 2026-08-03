@@ -8,7 +8,7 @@ RUN apt-get update \
         ros-noetic-move-base-msgs ros-noetic-actionlib ros-noetic-tf iproute2 \
     && rm -rf /var/lib/apt/lists/*
 
-# operator.py is bind-mounted with the repo at /repo at runtime.
+# operate.py is bind-mounted with the repo at /repo at runtime.
 WORKDIR /repo
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh

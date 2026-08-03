@@ -8,7 +8,7 @@ services:
       # Supply at runtime: ROBOT_HOST_IP=<docker0 gateway IP>. No hardcoding.
       ROS_MASTER_URI: "http://${ROBOT_HOST_IP}:11311"
     volumes:
-      # Repo mounted rw so operator.py can write operator_run.csv, and so its
+      # Repo mounted rw so operate.py can write operator_run.csv, and so its
       # `from send_mapless_goal import ...` resolves from /repo.
       - ../:/repo
     working_dir: /repo
