@@ -23,9 +23,7 @@ from actionlib_msgs.msg import GoalStatus
 from geometry_msgs.msg import Twist
 from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
 from nav_msgs.msg import Odometry
-from tf.transformations import quaternion_from_euler
-
-from send_mapless_goal import yaw_of  # consistent yaw extraction; file unmodified
+from tf.transformations import quaternion_from_euler, euler_from_quaternion
 
 ODOM_TOPIC = "/odometry/filtered"
 PLANNER_CMD_TOPIC = "/cmd_vel"                              # move_base output
@@ -39,6 +37,11 @@ STATUS_TEXT = {
 CSV_HEADER = ["elapsed_time", "fused_x", "fused_y", "fused_yaw", "fused_yaw_deg",
               "planner_linear_x", "planner_angular_z",
               "ctrl_linear_x", "ctrl_angular_z", "ref_x", "ref_y"]
+
+
+def yaw_of(odom):
+    q = odom.pose.pose.orientation
+    return euler_from_quaternion([q.x, q.y, q.z, q.w])[2]
 
 
 class Operator(object):
