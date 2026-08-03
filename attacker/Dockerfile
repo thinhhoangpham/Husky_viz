@@ -3,7 +3,7 @@ FROM ros:noetic-ros-core
 # nmap = Phase 1 reachability scan; iproute2 = derive container IP for ROS_IP;
 # ros-noetic-move-base-msgs = MoveBaseActionGoal type used by attack_goal.py.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends nmap iproute2 ros-noetic-move-base-msgs \
+    && apt-get install -y --no-install-recommends nmap iproute2 ros-noetic-move-base-msgs ros-noetic-gazebo-msgs \
     && rm -rf /var/lib/apt/lists/*
 
 # Attack scripts are bind-mounted here at runtime (see docker-compose.yml).

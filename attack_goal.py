@@ -45,6 +45,8 @@ import rospy
 from move_base_msgs.msg import MoveBaseActionGoal
 from nav_msgs.msg import Odometry
 
+from goal_marker import place_goal_marker
+
 
 class GoalHijackAttack(object):
     def __init__(self, args):
@@ -177,6 +179,9 @@ class GoalHijackAttack(object):
             rospy.loginfo("INJECTING absolute fake goal: (%.2f,%.2f) "
                           "(real was (%.2f,%.2f))", fake[0], fake[1],
                           real[0], real[1])
+
+        # Visual: RED disc on the ground at the injected fake goal (best-effort).
+        place_goal_marker("goal_marker_fake", fake[0], fake[1], "1 0 0")
 
         self._start_wall = time.time()
         rate = rospy.Rate(self.args.rate)

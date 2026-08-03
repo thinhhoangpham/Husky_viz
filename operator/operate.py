@@ -14,6 +14,7 @@ stay in the attack CSVs.
 import argparse
 import csv
 import math
+import os
 import sys
 import threading
 
@@ -24,6 +25,11 @@ from geometry_msgs.msg import Twist
 from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
 from nav_msgs.msg import Odometry
 from tf.transformations import quaternion_from_euler, euler_from_quaternion
+
+# goal_marker.py lives at the repo root; when run by path, sys.path[0] is this
+# script's dir (operator/), so add the repo root so the import resolves.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from goal_marker import place_goal_marker
 
 ODOM_TOPIC = "/odometry/filtered"
 PLANNER_CMD_TOPIC = "/cmd_vel"                              # move_base output
@@ -115,6 +121,9 @@ class Operator(object):
 
         rospy.loginfo("Sending goal (frame=odom): x=%.3f y=%.3f",
                       self.args.goal_x, self.args.goal_y)
+        # Visual: GREEN disc on the ground at the real goal (best-effort).
+        place_goal_marker("goal_marker_real", self.args.goal_x,
+                          self.args.goal_y, "0 1 0")
         start_t = rospy.Time.now()
         client.send_goal(goal)
 

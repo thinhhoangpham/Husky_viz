@@ -5,7 +5,7 @@ FROM ros:noetic-ros-core
 # telemetry types. NO gazebo. NO attack code.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        ros-noetic-move-base-msgs ros-noetic-actionlib ros-noetic-tf iproute2 \
+        ros-noetic-move-base-msgs ros-noetic-actionlib ros-noetic-tf iproute2 ros-noetic-gazebo-msgs \
     && rm -rf /var/lib/apt/lists/*
 
 # operate.py is bind-mounted with the repo at /repo at runtime.
