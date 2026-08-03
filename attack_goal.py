@@ -153,10 +153,16 @@ class GoalHijackAttack(object):
         if rospy.is_shutdown():
             return 0
 
-        fake = (real[0] + self.args.offset_x, real[1] + self.args.offset_y)
-        rospy.loginfo("INJECTING fake goal: real=(%.2f,%.2f) + offset=(%.2f,%.2f) "
-                      "-> fake=(%.2f,%.2f)", real[0], real[1],
-                      self.args.offset_x, self.args.offset_y, fake[0], fake[1])
+        if self.args.mode == "offset":
+            fake = (real[0] + self.args.offset_x, real[1] + self.args.offset_y)
+            rospy.loginfo("INJECTING fake goal: real=(%.2f,%.2f) + offset=(%.2f,%.2f) "
+                          "-> fake=(%.2f,%.2f)", real[0], real[1],
+                          self.args.offset_x, self.args.offset_y, fake[0], fake[1])
+        else:
+            fake = (self.args.abs_x, self.args.abs_y)
+            rospy.loginfo("INJECTING absolute fake goal: (%.2f,%.2f) "
+                          "(real was (%.2f,%.2f))", fake[0], fake[1],
+                          real[0], real[1])
 
         self._start_wall = time.time()
         rate = rospy.Rate(self.args.rate)
@@ -191,11 +197,21 @@ def parse_args():
     p = argparse.ArgumentParser(
         description="Simulation-only mission-hijack: overhear the operator's "
                     "move_base goal, then inject a fake one (real + offset).")
+    p.add_argument("--mode", choices=["offset", "abs"], default="offset",
+                   help="fake-goal targeting mode: 'offset' = real goal + "
+                        "--offset-x/--offset-y (default); 'abs' = exactly "
+                        "--abs-x/--abs-y, ignoring the real goal's position")
     p.add_argument("--offset-x", type=float, default=0.0, dest="offset_x",
-                   help="x offset added to the overheard real goal (default 0)")
+                   help="x offset added to the overheard real goal "
+                        "(--mode offset only; default 0)")
     p.add_argument("--offset-y", type=float, default=12.0, dest="offset_y",
-                   help="y offset added to the overheard real goal (default 12 "
-                        "= visible sabotage; use a small value for subtle drift)")
+                   help="y offset added to the overheard real goal "
+                        "(--mode offset only; default 12 = visible sabotage; "
+                        "use a small value for subtle drift)")
+    p.add_argument("--abs-x", type=float, default=0.0, dest="abs_x",
+                   help="absolute fake goal x (--mode abs only; default 0)")
+    p.add_argument("--abs-y", type=float, default=0.0, dest="abs_y",
+                   help="absolute fake goal y (--mode abs only; default 0)")
     p.add_argument("--rate", type=float, default=2.0,
                    help="publish rate in Hz for the injected goal (default 2)")
     p.add_argument("--duration", type=float, default=0.0,
