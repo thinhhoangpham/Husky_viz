@@ -71,11 +71,25 @@ docker compose run --rm attacker ./attacker/attack.sh goal --offset-y 12
 Wait for:
 `Subscription connected (...). READY — now waiting for the operator's goal.`
 
-- `--offset-y 12` = obvious hijack (robot veers well off course).
-- `--offset-y 3` = subtle sabotage (looks like drift).
-- Other flags: `--offset-x`, `--rate` (default 2 Hz), `--duration` (0 = until
-  Ctrl-C), `--timeout` (default 60 s to wait for the operator's goal),
-  `--csv <path>` (default `attack_goal_report.csv`).
+**Two target modes (`--mode`, default `offset`):**
+
+- **Offset** (`--mode offset`, the default) — fake goal = operator's real goal + offset:
+  ```bash
+  docker compose run --rm attacker ./attacker/attack.sh goal --mode offset --offset-y 12
+  docker compose run --rm attacker ./attacker/attack.sh goal --offset-y 3   # subtle (mode defaults to offset)
+  ```
+  `--offset-y 12` = obvious hijack; `--offset-y 3` = subtle drift. Flags: `--offset-x`, `--offset-y` (default 0, 12).
+
+- **Absolute** (`--mode abs`) — fake goal = a fixed target you choose, ignoring the real goal:
+  ```bash
+  docker compose run --rm attacker ./attacker/attack.sh goal --mode abs --abs-x 10 --abs-y 12
+  ```
+  Flags: `--abs-x`, `--abs-y`. (The attacker still overhears the real goal first — the
+  `OVERHEARD` recon line still shows — it just sends your absolute target instead.)
+
+Either mode: other flags `--rate` (default 2 Hz), `--duration` (0 = until Ctrl-C),
+`--timeout` (default 60 s to wait for the operator's goal), `--csv <path>`
+(default `attack_goal_report.csv`).
 
 ---
 
