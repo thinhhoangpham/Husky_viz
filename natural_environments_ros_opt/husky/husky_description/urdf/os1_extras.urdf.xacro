@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<!--
+  os1_extras.urdf.xacro - minimal HUSKY_URDF_EXTRAS payload.
+
+  Mounts ONLY the Ouster OS1-64 3D lidar onto the stock Husky at spawn time,
+  so /os0_cloud_node/points is published. Injected into the stock
+  robot_description via the HUSKY_URDF_EXTRAS env var, which the stock
+  husky.urdf.xacro includes as $(arg urdf_extras) (last line of the robot).
+
+  Deliberately does NOT mount the stereo camera (disabled in
+  sensor_description.urdf) nor the GPS block (the stock control.launch is the
+  "no GPS/compass" topology; mounting gps here would add /navsat/fix and a
+  gps_link that the stock EKF does not expect).
+
+  Mount pose matches the dataset authoring in sensor_description.urdf:
+  parent base_link, xyz 0.09 0 0.79, 512 samples, 10 Hz.
+
+  Include path is absolute so the OS1-64 macro resolves regardless of whether
+  the repo husky_description package is on ROS_PACKAGE_PATH.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="os1_extras">
+
+  <xacro:include filename="/home/thinh/Documents/Husky_viz/natural_environments_ros_opt/husky/husky_description/urdf/OS1-64.urdf.xacro"/>
+
+  <xacro:OS1-64 parent="base_link" name="os0_sensor" hz="10" samples="512">
+    <origin xyz="0.09 0 0.79" rpy="0 0 0" />
+  </xacro:OS1-64>
+
+</robot>
