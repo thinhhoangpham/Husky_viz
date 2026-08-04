@@ -1,0 +1,22 @@
+# Global costmap for the GPS-anchored move_base.
+#
+# global_frame is `map` (GPS-anchored, drift-free -- see costmap_local_gps.yaml).
+# No static map: static_map false + rolling_window true means the global costmap
+# is a large rolling window centred on the robot, built LIVE from the lidar
+# rather than from a pre-built occupancy grid. track_unknown_space lets the
+# global planner treat never-seen cells as unknown (NavfnROS allow_unknown: true
+# in planner_gps.yaml then still plans through them).
+global_frame: map
+robot_base_frame: base_link
+
+static_map: false
+rolling_window: true
+track_unknown_space: true
+
+width: 120.0
+height: 120.0
+resolution: 0.15
+
+plugins:
+  - {name: obstacles,  type: "costmap_2d::ObstacleLayer"}
+  - {name: inflation,  type: "costmap_2d::InflationLayer"}

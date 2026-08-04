@@ -1,0 +1,66 @@
+# Compass-heading override for the park Husky EKF (/ekf_localization).
+#
+# WHY: the stock localization.yaml fuses /imu/data for absolute orientation, but
+# on this park Husky /imu/data is mounted ~90 deg rotated AND under-scales turns
+# (a measured 80 deg physical turn registered as 40 deg). move_base navigates in
+# the EKF odom frame, so after any sharp turn the robot drives off course.
+# /compass/data is an absolute world-yaw source (sensor_msgs/Imu, base_link) that
+# tracks truth exactly. This file makes the EKF take absolute YAW from
+# /compass/data and stop trusting /imu/data orientation.
+#
+# HOW IT IS LOADED: control.launch loads this via its config_extras hook
+# (HUSKY_CONFIG_EXTRAS env var -> rosparam load at global scope, AFTER the ekf
+# node's own localization.yaml). Every key here is nested under `ekf_localization`
+# so it lands in the running node's private param namespace (/ekf_localization/*)
+# and overrides the stock values. The stock /opt/ros localization.yaml is left
+# untouched.
+#
+# config array order: [x,y,z, roll,pitch,yaw, vx,vy,vz, vroll,vpitch,vyaw, ax,ay,az]
+
+ekf_localization:
+  # imu0 = /imu/data: rotated (~90 deg) AND turn-under-scaling. EVERY channel of
+  # this sensor is contaminated by the mount error, INCLUDING linear acceleration
+  # (ax,ay): a 90 deg-rotated frame swaps ax<->ay, so fusing them injects
+  # sideways acceleration that the EKF integrates into a growing POSITION error.
+  # That is one of the two drift sources this change removes. So imu0 now fuses
+  # NOTHING (all-false). It is kept declared only for clarity; heading comes from
+  # imu1 (/compass/data) and position from GPS (odom1, below).
+  imu0: imu/data
+  imu0_config: [false, false, false,
+                false, false, false,
+                false, false, false,
+                false, false, false,
+                false, false, false]
+  imu0_differential: false
+  imu0_queue_size: 10
+  imu0_remove_gravitational_acceleration: true
+
+  # imu1 = /compass/data: absolute world yaw. Fuse ONLY absolute yaw (index 5).
+  # differential:false because it is an absolute heading, not a rate to integrate.
+  imu1: compass/data
+  imu1_config: [false, false, false,
+                false, false, true,
+                false, false, false,
+                false, false, false,
+                false, false, false]
+  imu1_differential: false
+  imu1_queue_size: 10
+  imu1_remove_gravitational_acceleration: false
+
+  # odom1 = /odometry/gps: ABSOLUTE world position from navsat_transform_node
+  # (GPS /navsat/fix -> odom-frame odometry, see launch/navsat_ekf.launch). This
+  # is the drift-free position source that replaces the removed imu0 accel and
+  # corrects the skid-steer wheel-odom scrub. Fuse ONLY absolute x,y (indices 0,1)
+  # -- navsat_transform emits no orientation or velocity we should trust here.
+  # differential:false: it is an absolute position fix, not a delta to integrate.
+  # The stock localization.yaml already defines odom0 = husky_velocity_controller/odom
+  # (wheel velocities vx,vy,vyaw) for smooth local velocity; odom1 adds absolute
+  # position on top so /odometry/filtered tracks true world position without drift.
+  odom1: /odometry/gps
+  odom1_config: [true,  true,  false,
+                 false, false, false,
+                 false, false, false,
+                 false, false, false,
+                 false, false, false]
+  odom1_differential: false
+  odom1_queue_size: 10

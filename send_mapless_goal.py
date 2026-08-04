@@ -159,7 +159,8 @@ def start_robot():
     control.launch needs none for /cmd_vel to actuate the wheels, and a single
     clean publisher (move_base) is the point."""
     rospy.loginfo("Robot bring-up: roslaunch husky_control control.launch "
-                  "(STOCK - odom EKF, no GPS/compass)")
+                  "(DATASET dual-EKF + GPS/navsat; husky_control resolves to the "
+                  "overlay dataset package)")
     return subprocess.Popen(
         ["roslaunch", "husky_control", "control.launch"],
         start_new_session=True,  # own process group (setsid) -> group signalling

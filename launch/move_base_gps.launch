@@ -1,0 +1,60 @@
+<?xml version="1.0"?>
+<!--
+  GPS-anchored, obstacle-aware move_base for the DATASET Husky in the park.
+
+  Unlike move_base_park.launch (which plans in the drifting `odom` frame off
+  /odometry/filtered), this launch plans entirely in the GPS-anchored `map`
+  frame off /odometry/filtered_map. That map-frame pose is produced by the
+  running dataset stack (dual-EKF: /ekf_localization_map publishes map->odom,
+  /ekf_localization publishes odom->base_link, + /navsat_transform). The whole
+  TF chain map->odom->base_link is already live, so both costmaps declare
+  global_frame: map and every goal is sent in `map`, so the plan is
+  drift-free / GPS-anchored.
+
+  This launch ONLY starts move_base. The robot, controllers, EKFs and
+  navsat_transform are ASSUMED ALREADY RUNNING (unlike send_mapless_goal.py,
+  which brought the robot up itself). Do not add an EKF/navsat include here.
+
+  Planners:
+    global = navfn/NavfnROS                 (allow_unknown -> plans through
+                                             unseen cells the rolling global
+                                             costmap marks as unknown)
+    local  = dwa_local_planner/DWAPlannerROS
+             (both tuned in config/planner_gps.yaml)
+
+  Costmaps consume the live 3D Ouster OS1-64 pointcloud on /os0_cloud_node/points
+  (frame os0_lidar, TF from base_link) through an ObstacleLayer with a height
+  gate (see config/costmap_common_gps.yaml). Real obstacles get marked in both
+  costmaps, so NavfnROS routes around them globally and DWA dodges them locally.
+
+  cmd_vel wiring: move_base publishes geometry_msgs/Twist on /cmd_vel, the
+  twist_mux `external` slot (priority 1). `odom` is remapped to the map-frame EKF
+  output /odometry/filtered_map so move_base's own odom feedback is in the same
+  frame as the costmaps and goals.
+
+  Absolute config paths so this works regardless of the caller's cwd.
+-->
+<launch>
+
+  <node pkg="move_base" type="move_base" respawn="false" name="move_base" output="screen">
+
+    <param name="base_global_planner" value="navfn/NavfnROS"/>
+    <param name="base_local_planner"  value="dwa_local_planner/DWAPlannerROS"/>
+
+    <!-- planner tuning (NavfnROS + DWAPlannerROS) -->
+    <rosparam file="/home/thinh/Documents/Husky_viz/config/planner_gps.yaml" command="load"/>
+
+    <!-- shared, sensor-equipped (ObstacleLayer + inflation) costmap params into both costmaps -->
+    <rosparam file="/home/thinh/Documents/Husky_viz/config/costmap_common_gps.yaml" command="load" ns="global_costmap"/>
+    <rosparam file="/home/thinh/Documents/Husky_viz/config/costmap_common_gps.yaml" command="load" ns="local_costmap"/>
+
+    <!-- per-costmap frames/sizes (map frame, rolling window, no static map) -->
+    <rosparam file="/home/thinh/Documents/Husky_viz/config/costmap_local_gps.yaml"  command="load" ns="local_costmap"/>
+    <rosparam file="/home/thinh/Documents/Husky_viz/config/costmap_global_gps.yaml" command="load" ns="global_costmap"/>
+
+    <!-- twist_mux external slot; map-frame EKF odom -->
+    <remap from="cmd_vel" to="/cmd_vel"/>
+    <remap from="odom"    to="/odometry/filtered_map"/>
+  </node>
+
+</launch>

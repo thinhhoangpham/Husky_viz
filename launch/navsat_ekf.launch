@@ -1,0 +1,77 @@
+<?xml version="1.0"?>
+<!--
+  navsat_ekf.launch - GPS position fusion for the park Husky.
+
+  PURPOSE: make /odometry/filtered (the pose move_base navigates in) track TRUE
+  world position WITHOUT drift, by feeding an ABSOLUTE GPS position source into
+  the existing odom-frame EKF. This is the single-EKF variant of the standard
+  robot_localization GPS setup: navsat_transform_node converts /navsat/fix into an
+  odom-frame odometry (/odometry/gps), and the stock ekf_localization node (started
+  by husky_control/control.launch) fuses that back in as odom1 (see
+  config/localization_compass.yaml). No second EKF, no map frame, no map->odom TF:
+  everything stays in the odom frame, so the costmaps (global_frame: odom) and the
+  operator/attacker goals (frame_id: odom, computed relative to /odometry/filtered)
+  are all UNCHANGED and still land at the right world spot.
+
+  WHY SINGLE-EKF AND NOT DUAL-EKF: a dual-EKF (odom + map) would require moving
+  move_base's costmaps and the goals into the map frame and adding a map->odom TF.
+  Because the sim GPS is zero-noise / zero-drift and heading comes from the
+  absolute /compass/data, the GPS corrections fed into the odom EKF are small and
+  continuous, so the odom frame does not visibly jump. The single-EKF setup is the
+  least-invasive way to make odom drift-free while keeping the odom-frame demo
+  topology intact.
+
+  navsat_transform inputs:
+    * /navsat/fix     (sensor_msgs/NavSatFix)  - from the hector GPS plugin
+    * imu   remapped to /compass/data (sensor_msgs/Imu) - ABSOLUTE world yaw,
+            used to orient the GPS->odom transform (use_odometry_yaw=false)
+    * odometry remapped to /odometry/filtered - the EKF's current pose, so the
+            GPS odometry is emitted in the same odom frame the EKF publishes
+  navsat_transform output:
+    * /odometry/gps   (nav_msgs/Odometry, odom frame) -> fused by the EKF as odom1
+
+  DATUM is set explicitly to the GPS plugin's reference (49.9, 8.9, heading 0,
+  from gps.urdf.xacro) so the node does not block waiting for a datum and the
+  odom origin coincides with the GPS reference the plugin uses.
+
+  BROUGHT UP BY: launch/move_base_park.launch and move_base_mapless_park.launch
+  include this file, so a normal ./spawn-robot-idle.sh (which starts the planner
+  via spawn_robot_idle.py -> start_planner) brings navsat_transform up alongside
+  move_base, after the EKF/control.launch is already running.
+-->
+<launch>
+
+  <node pkg="robot_localization" type="navsat_transform_node"
+        name="navsat_transform" output="screen">
+
+    <!-- datum = GPS plugin reference (lat, lon, heading). Explicit so the node
+         does not wait_for_datum. -->
+    <rosparam param="datum">[49.9, 8.9, 0.0]</rosparam>
+
+    <param name="frequency" value="30"/>
+    <param name="delay" value="3.0"/>
+
+    <!-- sim GPS has zero declination/offset; heading is true world yaw already -->
+    <param name="magnetic_declination_radians" value="0.0"/>
+    <param name="yaw_offset" value="0.0"/>
+
+    <!-- flat sim world; ignore altitude so z stays 0 -->
+    <param name="zero_altitude" value="true"/>
+
+    <!-- Use the IMU (compass) heading, NOT the odometry yaw, to orient the
+         GPS->world transform. /compass/data is absolute world yaw; the EKF's own
+         yaw is derived from the same compass, so either works, but taking it
+         straight from the sensor avoids a startup ordering dependency. -->
+    <param name="use_odometry_yaw" value="false"/>
+
+    <!-- no UTM TF needed for this odom-frame demo; keep the graph clean -->
+    <param name="broadcast_utm_transform" value="false"/>
+    <param name="publish_filtered_gps" value="false"/>
+
+    <remap from="imu/data"          to="/compass/data"/>
+    <remap from="odometry/filtered" to="/odometry/filtered"/>
+    <remap from="gps/fix"           to="/navsat/fix"/>
+    <!-- output (default topic is odometry/gps) -->
+  </node>
+
+</launch>

@@ -1,6 +1,14 @@
 #!/usr/bin/env python3
-"""Remote ROS operator: send ONE move_base goal to a target (x, y) in the odom
-frame, watch telemetry, and write a normal-baseline CSV.
+"""Remote ROS operator: send ONE legitimate GPS goal (lat/lon) to the running
+GPS-anchored move_base, watch telemetry, and write a normal-baseline CSV.
+
+The operator now sends a GPS goal (a lat/lon waypoint like the dataset's
+/navigation/objetive_gps points). The lat/lon is converted to a map-frame point
+via the running navsat_transform /fromLL service (falling back to local WGS84
+geodesy if /fromLL is unavailable), and sent as a move_base goal in the "map"
+frame -- matching launch/move_base_gps.launch, whose costmaps live in "map".
+This is NOT the attacker and there is NO hijack: just one legitimate goal,
+monitored to completion in the map frame.
 
 Runs in the operator container (own IP, docker0). Assumes the robot is ALREADY
 spawned and move_base is up (host-side spawn-robot-idle.sh). Does NO robot
@@ -31,9 +39,28 @@ from tf.transformations import quaternion_from_euler, euler_from_quaternion
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from goal_marker import place_goal_marker
 
-ODOM_TOPIC = "/odometry/filtered"
+# Map-frame pose so the yaw and distance-to-goal math are in the SAME frame as
+# the map-frame goal we send. (The old /odometry/filtered is the odom frame.)
+ODOM_TOPIC = "/odometry/filtered_map"
+GOAL_FRAME = "map"
 PLANNER_CMD_TOPIC = "/cmd_vel"                              # move_base output
 CTRL_CMD_TOPIC = "/husky_velocity_controller/cmd_vel"      # controller input
+
+# GPS -> map fallback datum + WGS84 geodesy (mirrors send_gps_goal.py /
+# drive_to_point_gps.py). Datum from gps.urdf.xacro (referenceLatitude 49.9,
+# referenceLongitude 8.9, referenceHeading 0). Only used if /fromLL is absent.
+REF_LAT = 49.9
+REF_LON = 8.9
+EQUATORIAL_RADIUS = 6378137.0
+FLATTENING = 1.0 / 298.257223563
+E2 = 2.0 * FLATTENING - FLATTENING ** 2
+_SIN2_REF_LAT = math.sin(math.radians(REF_LAT)) ** 2
+RADIUS_NORTH = EQUATORIAL_RADIUS * (1.0 - E2) / (1.0 - E2 * _SIN2_REF_LAT) ** 1.5
+RADIUS_EAST = (EQUATORIAL_RADIUS / math.sqrt(1.0 - E2 * _SIN2_REF_LAT)
+               * math.cos(math.radians(REF_LAT)))
+DEG_LAT_PER_METRE = math.degrees(1.0 / RADIUS_NORTH)
+DEG_LON_PER_METRE = math.degrees(1.0 / RADIUS_EAST)
+FROMLL_WAIT_S = 3.0   # short wait for /fromLL before falling back to geodesy
 STATUS_TEXT = {
     GoalStatus.PENDING: "PENDING", GoalStatus.ACTIVE: "ACTIVE",
     GoalStatus.SUCCEEDED: "SUCCEEDED", GoalStatus.ABORTED: "ABORTED",
@@ -50,9 +77,60 @@ def yaw_of(odom):
     return euler_from_quaternion([q.x, q.y, q.z, q.w])[2]
 
 
+def fix_to_world_fallback(latitude, longitude):
+    """Local WGS84 conversion of a fix to (map_x, map_y). world +x NORTH,
+    +y WEST (hence the minus on y). Mirrors send_gps_goal.py."""
+    map_x = (latitude - REF_LAT) / DEG_LAT_PER_METRE
+    map_y = -(longitude - REF_LON) / DEG_LON_PER_METRE
+    return map_x, map_y
+
+
+def latlon_to_map(latitude, longitude, altitude=0.0):
+    """Convert (lat, lon, alt) -> (map_x, map_y) via the running navsat_transform
+    /fromLL service (authoritative -- uses the live datum). Fall back to local
+    WGS84 geodesy if /fromLL is not available. Returns (map_x, map_y, path)."""
+    try:
+        from robot_localization.srv import FromLL, FromLLRequest
+        from geographic_msgs.msg import GeoPoint
+    except ImportError:
+        rospy.logwarn("robot_localization/geographic_msgs not available; using "
+                      "local WGS84 geodesy fallback (datum %.4f/%.4f).",
+                      REF_LAT, REF_LON)
+        x, y = fix_to_world_fallback(latitude, longitude)
+        return x, y, "geodesy-fallback"
+
+    try:
+        rospy.wait_for_service("/fromLL", timeout=FROMLL_WAIT_S)
+    except rospy.ROSException:
+        rospy.logwarn("/fromLL not available within %.1fs; using local WGS84 "
+                      "geodesy fallback (datum %.4f/%.4f).",
+                      FROMLL_WAIT_S, REF_LAT, REF_LON)
+        x, y = fix_to_world_fallback(latitude, longitude)
+        return x, y, "geodesy-fallback"
+
+    try:
+        from_ll = rospy.ServiceProxy("/fromLL", FromLL)
+        req = FromLLRequest()
+        req.ll_point = GeoPoint(latitude=latitude, longitude=longitude,
+                                altitude=altitude)
+        resp = from_ll(req)
+        rospy.loginfo("/fromLL: (lat=%.7f, lon=%.7f, alt=%.2f) -> map=(%.3f, %.3f)",
+                      latitude, longitude, altitude,
+                      resp.map_point.x, resp.map_point.y)
+        return resp.map_point.x, resp.map_point.y, "fromLL"
+    except rospy.ServiceException as exc:
+        rospy.logwarn("/fromLL call failed (%s); using local WGS84 geodesy "
+                      "fallback.", exc)
+        x, y = fix_to_world_fallback(latitude, longitude)
+        return x, y, "geodesy-fallback"
+
+
 class Operator(object):
     def __init__(self, args):
         self.args = args
+        # Resolved map-frame goal, filled in run() once (lat,lon) is converted.
+        self._goal_x = 0.0
+        self._goal_y = 0.0
         self._lock = threading.Lock()
         self._odom = None          # latest Odometry
         self._planner_cmd = (0.0, 0.0)  # (linear.x, angular.z) from /cmd_vel
@@ -91,7 +169,7 @@ class Operator(object):
             ["%.3f" % elapsed, "%.4f" % px, "%.4f" % py,
              "%.4f" % yaw, "%.4f" % math.degrees(yaw),
              "%.4f" % plx, "%.4f" % paz, "%.4f" % clx, "%.4f" % caz,
-             "%.4f" % self.args.goal_x, "%.4f" % self.args.goal_y])
+             "%.4f" % self._goal_x, "%.4f" % self._goal_y])
         self._csv_file.flush()
         return (px, py, yaw)
 
@@ -102,28 +180,34 @@ class Operator(object):
             rospy.logerr("move_base action server not available.")
             return 1
 
-        # Heading toward the goal from the current pose, so the robot faces its
-        # target on arrival (same convention as send_mapless_goal's goal yaw).
+        # Convert the operator's GPS waypoint (lat, lon) to a map-frame point.
+        gx, gy, path = latlon_to_map(self.args.lat, self.args.lon, self.args.alt)
+        self._goal_x, self._goal_y = gx, gy
+        rospy.loginfo("Operator GPS goal (lat=%.7f, lon=%.7f) -> map=(%.3f, %.3f) "
+                      "via %s", self.args.lat, self.args.lon, gx, gy, path)
+
+        # Heading toward the goal from the current map-frame pose, so the robot
+        # faces its target on arrival. Pose is read in the SAME frame as the goal.
         start = rospy.wait_for_message(ODOM_TOPIC, Odometry, timeout=30.0)
         sp = start.pose.pose.position
-        gyaw = math.atan2(self.args.goal_y - sp.y, self.args.goal_x - sp.x)
+        gyaw = math.atan2(gy - sp.y, gx - sp.x)
         gq = quaternion_from_euler(0.0, 0.0, gyaw)
 
         goal = MoveBaseGoal()
-        goal.target_pose.header.frame_id = "odom"
+        goal.target_pose.header.frame_id = GOAL_FRAME
         goal.target_pose.header.stamp = rospy.Time.now()
-        goal.target_pose.pose.position.x = self.args.goal_x
-        goal.target_pose.pose.position.y = self.args.goal_y
+        goal.target_pose.pose.position.x = gx
+        goal.target_pose.pose.position.y = gy
         goal.target_pose.pose.orientation.x = gq[0]
         goal.target_pose.pose.orientation.y = gq[1]
         goal.target_pose.pose.orientation.z = gq[2]
         goal.target_pose.pose.orientation.w = gq[3]
 
-        rospy.loginfo("Sending goal (frame=odom): x=%.3f y=%.3f",
-                      self.args.goal_x, self.args.goal_y)
-        # Visual: GREEN disc on the ground at the real goal (best-effort).
-        place_goal_marker("goal_marker_real", self.args.goal_x,
-                          self.args.goal_y, "0 1 0")
+        rospy.loginfo("Sending goal (frame=%s): x=%.3f y=%.3f", GOAL_FRAME, gx, gy)
+        # Visual: GREEN disc FLOATING above the real goal (best-effort). frame="map"
+        # so (gx, gy) are used as world coords directly (no odom rotation), and the
+        # fixed marker floats above the lidar height gate so it is not scanned.
+        place_goal_marker("goal_marker_real", gx, gy, "0 1 0", frame="map")
         start_t = rospy.Time.now()
         client.send_goal(goal)
 
@@ -134,8 +218,8 @@ class Operator(object):
             pose = self._write_row(elapsed)
             state = client.get_state()
             if pose is not None:
-                dist = math.hypot(self.args.goal_x - pose[0],
-                                  self.args.goal_y - pose[1])
+                dist = math.hypot(self._goal_x - pose[0],
+                                  self._goal_y - pose[1])
                 rospy.loginfo("state=%s pos=(%.2f, %.2f) dist_to_goal=%.2f m",
                               STATUS_TEXT.get(state, state), pose[0], pose[1], dist)
             else:
@@ -159,11 +243,14 @@ class Operator(object):
 
 
 def main():
-    p = argparse.ArgumentParser(description="Remote operator: send one move_base goal.")
-    p.add_argument("--goal-x", type=float, default=10.0, dest="goal_x",
-                   help="target x in the odom frame (m), default 10.0")
-    p.add_argument("--goal-y", type=float, default=0.0, dest="goal_y",
-                   help="target y in the odom frame (m), default 0.0")
+    p = argparse.ArgumentParser(
+        description="Remote operator: send one GPS (lat/lon) move_base goal.")
+    p.add_argument("--lat", type=float, required=True,
+                   help="operator GPS goal latitude (decimal degrees)")
+    p.add_argument("--lon", type=float, required=True,
+                   help="operator GPS goal longitude (decimal degrees)")
+    p.add_argument("--alt", type=float, default=0.0,
+                   help="goal altitude (m) for /fromLL; default 0.0")
     p.add_argument("--csv", default="operator_run.csv",
                    help="baseline CSV output path (default operator_run.csv)")
     p.add_argument("--timeout", type=float, default=180.0,

@@ -1,0 +1,16 @@
+# Local (rolling-window) costmap for the GPS-anchored move_base.
+#
+# global_frame is `map` -- the GPS-anchored, drift-free frame published by
+# /ekf_localization_map (+ navsat_transform). Both costmaps and every goal live
+# in this frame, so the plan never drifts with the odom estimate.
+global_frame: map
+robot_base_frame: base_link
+
+rolling_window: true
+width: 10.0
+height: 10.0
+resolution: 0.05
+
+plugins:
+  - {name: obstacles,  type: "costmap_2d::ObstacleLayer"}
+  - {name: inflation,  type: "costmap_2d::InflationLayer"}

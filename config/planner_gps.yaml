@@ -1,0 +1,80 @@
+# Planner tuning for the GPS-anchored move_base (launch/move_base_gps.launch).
+#
+# Copied from the dataset's husky_navigation/config/planner.yaml so this repo can
+# load it by ABSOLUTE path (repo convention) rather than via $(find husky_navigation).
+# Global planner = navfn/NavfnROS; local planner = dwa_local_planner/DWAPlannerROS
+# (the TrajectoryPlannerROS block below is inert unless base_local_planner is
+# switched to it in the launch).
+controller_frequency: 5.0
+recovery_behaviour_enabled: true
+
+NavfnROS:
+  allow_unknown: true # allow navfn to plan through unknown space (global costmap tracks unknown)
+  default_tolerance: 0.1 # tolerance on the goal point for the planner
+
+TrajectoryPlannerROS:
+  # Robot Configuration Parameters
+  acc_lim_x: 2.5
+  acc_lim_theta:  3.2
+
+  max_vel_x: 1.0
+  min_vel_x: 0.0
+
+  max_vel_theta: 1.0
+  min_vel_theta: -1.0
+  min_in_place_vel_theta: 0.2
+
+  holonomic_robot: false
+  escape_vel: -0.1
+
+  # Goal Tolerance Parameters
+  yaw_goal_tolerance: 0.1
+  xy_goal_tolerance: 0.2
+  latch_xy_goal_tolerance: false
+
+  # Forward Simulation Parameters
+  sim_time: 2.0
+  sim_granularity: 0.02
+  angular_sim_granularity: 0.02
+  vx_samples: 6
+  vtheta_samples: 20
+  controller_frequency: 20.0
+
+  # Trajectory scoring parameters
+  meter_scoring: true
+  occdist_scale:  0.1
+  pdist_scale: 0.75
+  gdist_scale: 1.0
+
+  heading_lookahead: 0.325
+  heading_scoring: false
+  heading_scoring_timestep: 0.8
+  dwa: true
+  simple_attractor: false
+  publish_cost_grid_pc: true
+
+  # Oscillation Prevention Parameters
+  oscillation_reset_dist: 0.25
+  escape_reset_dist: 0.1
+  escape_reset_theta: 0.1
+
+DWAPlannerROS:
+  # Robot configuration parameters
+  acc_lim_x: 2.5
+  acc_lim_y: 0
+  acc_lim_th: 3.2
+
+  max_vel_x: 0.5
+  min_vel_x: 0.0
+  max_vel_y: 0
+  min_vel_y: 0
+
+  max_trans_vel: 0.5
+  min_trans_vel: 0.1
+  max_rot_vel: 1.0
+  min_rot_vel: 0.2
+
+  # Goal Tolerance Parameters
+  yaw_goal_tolerance: 0.1
+  xy_goal_tolerance: 0.2
+  latch_xy_goal_tolerance: false

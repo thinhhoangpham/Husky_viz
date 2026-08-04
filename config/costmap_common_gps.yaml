@@ -1,0 +1,45 @@
+# Shared costmap params for the GPS-anchored (map-frame) move_base, loaded into
+# BOTH global_costmap and local_costmap namespaces by launch/move_base_gps.launch.
+#
+# NOTE on structure: because the costmaps declare `plugins:`, every layer reads
+# its parameters from ITS OWN namespace, named after the plugin instance. Putting
+# observation_sources at the costmap root (the pre-Hydro layout) is silently
+# ignored -- the costmap then subscribes to nothing and stays empty, which is
+# exactly the bug that let the robot drive into a tree with move_base running.
+# So the sensor config lives under `obstacles:` and the inflation under `inflation:`.
+
+# Husky is 0.99 x 0.67 m. Footprint taken from the dataset costmap_common.yaml
+# (a skid-steer that scrubs sideways while turning; the box is conservative).
+footprint: [[-0.5, -0.33], [-0.5, 0.33], [0.5, 0.33], [0.5, -0.33]]
+footprint_padding: 0.01
+
+robot_base_frame: base_link
+update_frequency: 4.0
+publish_frequency: 3.0
+transform_tolerance: 0.5
+
+obstacles:
+  # The OS0 is a 3D PointCloud2, which costmap_2d reads natively -- no
+  # pointcloud_to_laserscan bridge needed. This observation block MIRRORS the
+  # one in repo-root config/costmap_common.yaml exactly, only the ranges are
+  # opened up (5.0 / 6.0) because the map-frame costmap is drift-free and can
+  # safely see obstacles a little further out.
+  observation_sources: os0
+  os0:
+    sensor_frame: os0_lidar
+    data_type: PointCloud2
+    topic: /os0_cloud_node/points
+    marking: true             # add obstacles where rays hit
+    clearing: true            # clear free space along the ray
+    # Height gate in the costmap frame. Ground sits near z=0 and canopy well
+    # above the robot, so 0.15-1.2 m keeps trunks/benches and drops both. This
+    # is the most failure-prone setting: too low and the ground itself becomes
+    # an obstacle.
+    min_obstacle_height: 0.15
+    max_obstacle_height: 1.2
+    obstacle_range: 5.0
+    raytrace_range: 6.0
+
+inflation:
+  inflation_radius: 0.5
+  cost_scaling_factor: 6.0

@@ -22,13 +22,32 @@ source "$HOME/husky_overlay_ws/devel/setup.bash"
 export GAZEBO_PLUGIN_PATH="$HOME/husky_overlay_ws/devel/lib${GAZEBO_PLUGIN_PATH:+:$GAZEBO_PLUGIN_PATH}"
 cd "$(dirname "$0")"
 
-# Mount the Ouster OS1-64 3D lidar onto the STOCK Husky at spawn time so it
-# publishes /os0_cloud_node/points. The stock husky.urdf.xacro includes
-# $(optenv HUSKY_URDF_EXTRAS empty.urdf) as the last element of the robot;
-# pointing it at os1_extras.urdf.xacro injects ONLY the lidar (no camera, no
-# GPS). Exported here so the control.launch subprocess started by
-# spawn_robot_idle.py inherits it.
-export HUSKY_URDF_EXTRAS="$(pwd)/natural_environments_ros_opt/husky/husky_description/urdf/os1_extras.urdf.xacro"
+# Bring up the FULL DATASET ROBOT exactly as the dataset itself does. The dataset's
+# own env (park-env.sh / load-park-world.sh) sets exactly these two vars, and the
+# dataset husky.urdf.xacro (resolved from the overlay) consumes them:
+#   * HUSKY_SENSOR_ARCH=true   -> builds the sensor arch / mounting frame on top of
+#                                 the robot (the frame the sensors mount to).
+#   * HUSKY_URDF_EXTRAS=...sensor_description.urdf -> the dataset's own sensor
+#                                 suite: OS1-64 GPU lidar (-> /os0_cloud_node/points)
+#                                 + GPS (-> /navsat/fix, datum 49.9/8.9/0); stereo
+#                                 camera left disabled in that file for perf.
+# Together with the dataset dual-EKF control.launch (husky_control also resolves to
+# the overlay dataset package), this is the whole dataset robot: dataset model +
+# dataset sensor arch + dataset sensors + dataset dual-EKF/GPS localization.
+export HUSKY_SENSOR_ARCH=true
+export HUSKY_URDF_EXTRAS="$HOME/husky_overlay_ws/src/husky_description/urdf/sensor_description.urdf"
+
+# NOTE: HUSKY_CONFIG_EXTRAS is intentionally NOT exported here. husky_control now
+# resolves to the DATASET package (~/husky_overlay_ws/src/husky_control, symlinked
+# from natural_environments_ros_opt), whose control.launch is the standard
+# robot_localization DUAL-EKF + navsat_transform stack:
+#   * ekf_localization      (localization.yaml)      -> odom->base_link
+#   * ekf_localization_map  (localization_map.yaml)  -> map->odom, fuses GPS (odom1)
+#   * navsat_transform_node (navsat_transform.yaml)  -> /navsat/fix -> /odometry/gps
+# The GPS-anchored map-frame pose is /odometry/filtered_map; that is the drift-free
+# pose to navigate on. We run the dataset dual-EKF AS SHIPPED first and test; the
+# earlier single-EKF compass override (config/localization_compass.yaml) is left in
+# the repo but no longer loaded.
 
 # --- SPAWN-OR-RESET decision ------------------------------------------------
 # NO node is ever killed here. We ask Gazebo whether a robot named 'husky' is

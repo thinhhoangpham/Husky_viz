@@ -1,0 +1,39 @@
+<?xml version="1.0"?>
+<!--
+  husky_extras_gps_lidar.urdf.xacro - HUSKY_URDF_EXTRAS payload that mounts BOTH
+  the Ouster OS1-64 3D lidar AND the GPS onto the stock Husky at spawn time.
+
+  WHY THIS FILE EXISTS: HUSKY_URDF_EXTRAS points at exactly ONE file (the stock
+  husky.urdf.xacro includes it as the last element of the robot). os1_extras.urdf.xacro
+  mounts ONLY the lidar; to add a GPS WITHOUT losing the lidar, a single extras file
+  must inject BOTH sensors. This is that file. The lidar block is copied verbatim
+  from os1_extras.urdf.xacro (same include, same mount pose), so the lidar and the
+  obstacle-avoidance costmaps are entirely unchanged. The GPS block invokes the
+  gps_sensor macro from the dataset's gps.urdf.xacro, adding a gps_link + the
+  libhector_gazebo_ros_gps.so plugin that publishes /navsat/fix at 2 Hz.
+
+  os1_extras.urdf.xacro is intentionally LEFT IN PLACE for the no-GPS case.
+
+  NO MACRO COLLISION: OS1-64.urdf.xacro defines only the macro `OS1-64`, and
+  gps.urdf.xacro defines only the macro `gps_sensor` (a link `gps_link` + joint
+  `gps_joint`). The lidar names its link `os0_sensor*`; the two share no link,
+  joint, or macro name.
+
+  Include paths are absolute so the macros resolve regardless of the caller's cwd
+  or ROS_PACKAGE_PATH, exactly as os1_extras.urdf.xacro does.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="husky_extras_gps_lidar">
+
+  <!-- === Ouster OS1-64 3D lidar (identical to os1_extras.urdf.xacro) === -->
+  <xacro:include filename="/home/thinh/Documents/Husky_viz/natural_environments_ros_opt/husky/husky_description/urdf/OS1-64.urdf.xacro"/>
+
+  <xacro:OS1-64 parent="base_link" name="os0_sensor" hz="10" samples="512">
+    <origin xyz="0.09 0 0.79" rpy="0 0 0" />
+  </xacro:OS1-64>
+
+  <!-- === GPS (hector gazebo GPS plugin -> /navsat/fix, datum 49.9/8.9/0) === -->
+  <xacro:include filename="/home/thinh/Documents/Husky_viz/natural_environments_ros_opt/husky/husky_description/urdf/gps.urdf.xacro"/>
+
+  <xacro:gps_sensor/>
+
+</robot>

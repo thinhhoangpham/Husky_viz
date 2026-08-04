@@ -1,5 +1,7 @@
 # Run the Goal-Hijack Demo — Step by Step
 
+> For the plain GPS-navigation demo (no attacker/hijack), see RUN-GPS-NAV.md.
+
 Open a separate terminal for each step. Do them in order.
 
 > **Reset between runs (read first):** the world (Step 2) and the robot (Step 3)
@@ -32,7 +34,13 @@ yes | rosnode cleanup 2>/dev/null || true
 ### Step 1 — create the network
 
 ```bash
-docker network rm husky_lan 2>/dev/null
+# Force-disconnect any attached containers, then remove husky_lan (no-op if absent)
+if docker network inspect husky_lan >/dev/null 2>&1; then
+  for c in $(docker network inspect husky_lan --format '{{range .Containers}}{{.Name}} {{end}}'); do
+    docker network disconnect -f husky_lan "$c" 2>/dev/null || true
+  done
+  docker network rm husky_lan 2>/dev/null || true
+fi
 docker network create --subnet 172.20.0.0/16 husky_lan
 ```
 
@@ -159,5 +167,11 @@ pkill -9 -f rosmaster; pkill -9 -f roscore
 pkill -9 -f move_base; pkill -9 -f spawn_robot_idle
 pkill -9 -f ekf_localization; pkill -9 -f robot_state_publisher
 pkill -9 -f twist_mux; pkill -9 -f create_park; pkill -9 -f load-park
-docker network rm husky_lan 2>/dev/null
+# Force-disconnect any attached containers, then remove husky_lan (no-op if absent)
+if docker network inspect husky_lan >/dev/null 2>&1; then
+  for c in $(docker network inspect husky_lan --format '{{range .Containers}}{{.Name}} {{end}}'); do
+    docker network disconnect -f husky_lan "$c" 2>/dev/null || true
+  done
+  docker network rm husky_lan 2>/dev/null || true
+fi
 ```
