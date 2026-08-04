@@ -49,9 +49,28 @@ from gazebo_msgs.srv import DeleteModel, GetWorldProperties
 from tf.transformations import euler_from_quaternion, quaternion_from_euler
 from actionlib_msgs.msg import GoalStatus
 
+# Optional --mapless flag. Parsed and STRIPPED from sys.argv here, BEFORE the
+# positional DISTANCE read below, so it never gets mistaken for the distance
+# argument. Default (flag absent) is the obstacle-aware planner.
+USE_MAPLESS = "--mapless" in sys.argv
+if USE_MAPLESS:
+    sys.argv.remove("--mapless")
+
 DISTANCE = float(sys.argv[1]) if len(sys.argv) > 1 else 15.0
 ODOM_TOPIC = "/odometry/filtered"
-PLANNER_LAUNCH = "/home/thinh/Documents/Husky_viz/launch/move_base_mapless_park.launch"
+
+# Which move_base launch to bring up. Two variants:
+#   default            -> launch/move_base_park.launch: obstacle-AWARE. Loads the
+#                         ObstacleLayer costmaps that consume the live
+#                         /os0_cloud_node/points lidar, so it plans around and
+#                         dodges real obstacles.
+#   --mapless          -> launch/move_base_mapless_park.launch: the sensorless
+#                         VICTIM planner for the odom-attack demo (inflation-only
+#                         costmaps, no obstacle observation source).
+if USE_MAPLESS:
+    PLANNER_LAUNCH = "/home/thinh/Documents/Husky_viz/launch/move_base_mapless_park.launch"
+else:
+    PLANNER_LAUNCH = "/home/thinh/Documents/Husky_viz/launch/move_base_park.launch"
 
 # On-path spawn: x,y = first bag waypoint (38.26, 1.25); yaw = atan2 of the
 # WP1->WP2 direction ((27.11,1.10)-(38.26,1.25)) = -3.1281 rad, i.e. straight

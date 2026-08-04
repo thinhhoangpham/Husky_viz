@@ -1,0 +1,60 @@
+<?xml version="1.0"?>
+<!--
+  Obstacle-AWARE move_base for the Husky in the park.
+
+  This is the obstacle-aware TWIN of move_base_mapless_park.launch. It is
+  IDENTICAL in every respect (same move_base node, same navfn/NavfnROS global +
+  base_local_planner/TrajectoryPlannerROS local planners, same planner.yaml,
+  same /cmd_vel and /odometry/filtered wiring, same odom frames) EXCEPT it loads
+  the SENSOR-EQUIPPED costmaps instead of the sensorless/mapless ones:
+    * config/costmap_common.yaml  (ObstacleLayer + inflation)
+    * config/costmap_local.yaml
+    * config/costmap_global.yaml
+  Those costmaps run an ObstacleLayer that consumes the live GPU Ouster OS1-64
+  pointcloud on /os0_cloud_node/points (frame os0_lidar, TF from base_link).
+  Real obstacles therefore get marked in both costmaps, so NavfnROS routes a
+  curved global path AROUND them and TrajectoryPlannerROS dodges them locally.
+
+  Contrast the sibling move_base_mapless_park.launch: that one deliberately
+  loads the inflation-only costmap_*_mapless.yaml (NO obstacle observation
+  source, NO static map) - the sensorless VICTIM planner for the odom-attack
+  demo, which sees no obstacles at all.
+
+  Both costmaps stay in the ODOM frame (global_frame: odom), which is the frame
+  the EKF publishes on /odometry/filtered.
+
+  Planners:
+    global = navfn/NavfnROS
+    local  = base_local_planner/TrajectoryPlannerROS
+             (both tuned in config/planner.yaml)
+
+  cmd_vel wiring: move_base publishes geometry_msgs/Twist on /cmd_vel, the
+  twist_mux `external` slot (priority 1). odom is remapped to the EKF output
+  /odometry/filtered.
+
+  Absolute config paths so this works regardless of the caller's cwd.
+-->
+<launch>
+
+  <node pkg="move_base" type="move_base" respawn="false" name="move_base" output="screen">
+
+    <param name="base_global_planner" value="navfn/NavfnROS"/>
+    <param name="base_local_planner"  value="base_local_planner/TrajectoryPlannerROS"/>
+
+    <!-- planner tuning (NavfnROS + TrajectoryPlannerROS) -->
+    <rosparam file="/home/thinh/Documents/Husky_viz/config/planner.yaml" command="load"/>
+
+    <!-- shared, sensor-equipped (ObstacleLayer + inflation) costmap params into both costmaps -->
+    <rosparam file="/home/thinh/Documents/Husky_viz/config/costmap_common.yaml" command="load" ns="global_costmap"/>
+    <rosparam file="/home/thinh/Documents/Husky_viz/config/costmap_common.yaml" command="load" ns="local_costmap"/>
+
+    <!-- per-costmap frames/sizes (odom frame, rolling window, no static map) -->
+    <rosparam file="/home/thinh/Documents/Husky_viz/config/costmap_local.yaml"  command="load"/>
+    <rosparam file="/home/thinh/Documents/Husky_viz/config/costmap_global.yaml" command="load"/>
+
+    <!-- twist_mux external slot; EKF odom -->
+    <remap from="cmd_vel" to="/cmd_vel"/>
+    <remap from="odom"    to="/odometry/filtered"/>
+  </node>
+
+</launch>
