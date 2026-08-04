@@ -67,10 +67,12 @@ ODOM_TOPIC = "/odometry/filtered"
 #   --mapless          -> launch/move_base_mapless_park.launch: the sensorless
 #                         VICTIM planner for the odom-attack demo (inflation-only
 #                         costmaps, no obstacle observation source).
+PLANNER_LAUNCH_OA = "/home/thinh/Documents/Husky_viz/launch/move_base_park.launch"
+PLANNER_LAUNCH_MAPLESS = "/home/thinh/Documents/Husky_viz/launch/move_base_mapless_park.launch"
 if USE_MAPLESS:
-    PLANNER_LAUNCH = "/home/thinh/Documents/Husky_viz/launch/move_base_mapless_park.launch"
+    PLANNER_LAUNCH = PLANNER_LAUNCH_MAPLESS
 else:
-    PLANNER_LAUNCH = "/home/thinh/Documents/Husky_viz/launch/move_base_park.launch"
+    PLANNER_LAUNCH = PLANNER_LAUNCH_OA
 
 # On-path spawn: x,y = first bag waypoint (38.26, 1.25); yaw = atan2 of the
 # WP1->WP2 direction ((27.11,1.10)-(38.26,1.25)) = -3.1281 rad, i.e. straight
@@ -425,12 +427,15 @@ def bring_up_robot():
     return proc
 
 
-def start_planner():
-    """Launch the mapless move_base planner in its own process group so it can
-    be torn down cleanly on exit. Returns the Popen handle."""
-    rospy.loginfo("Launching planner: roslaunch %s", PLANNER_LAUNCH)
+def start_planner(launch_path=None):
+    """Launch the move_base planner in its own process group so it can be torn
+    down cleanly on exit. Returns the Popen handle. launch_path overrides which
+    launch file to bring up; when None, falls back to the module-level
+    PLANNER_LAUNCH (selected by the --mapless flag)."""
+    launch = launch_path if launch_path is not None else PLANNER_LAUNCH
+    rospy.loginfo("Launching planner: roslaunch %s", launch)
     return subprocess.Popen(
-        ["roslaunch", PLANNER_LAUNCH],
+        ["roslaunch", launch],
         start_new_session=True,  # own process group (setsid) -> group signalling
     )
 

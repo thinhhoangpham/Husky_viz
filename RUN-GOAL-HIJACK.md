@@ -75,6 +75,15 @@ Wait for: `IDLE — waiting for a remote operator goal.`
 > the CPU ray sensor's ~17,800 raycasts/scan starved Gazebo's physics loop and
 > made motion jerky, so `gpu_ray` is required for smooth motion. Already wired via
 > `HUSKY_URDF_EXTRAS` in `spawn-robot-idle.sh`.
+>
+> **Obstacle-aware planner (default):** `spawn-robot-idle.sh` now brings up an
+> obstacle-aware move_base (`launch/move_base_park.launch`) that consumes the
+> `/os0_cloud_node/points` lidar, so the robot plans curved paths **around**
+> obstacles instead of driving straight through them. To run the odom-attack
+> demo instead — which needs the old sensorless victim planner — set
+> `HUSKY_MAPLESS=1` before spawning: `HUSKY_MAPLESS=1 ./spawn-robot-idle.sh`
+> (loads `launch/move_base_mapless_park.launch`, inflation-only costmaps, no
+> obstacle observation).
 
 ---
 
