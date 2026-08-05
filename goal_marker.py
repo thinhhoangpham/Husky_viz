@@ -27,17 +27,19 @@ SPAWN_YAW = -3.1281
 # The park ground surface sits at z~3.0 (measured), NOT z=0.
 GROUND_Z = 3.0
 
-# Height at which to FLOAT the marker disc above the ground.
+# Half-height of the disc (disc length 0.05 / 2). The marker lies FLAT ON THE
+# GROUND (bottom at GROUND_Z, top at GROUND_Z + 2*DISC_HALF_HEIGHT = +0.05 m).
 #
-# WHY float it: the robot's Ouster lidar obstacle layer has a height gate of
+# WHY so thin: the robot's Ouster lidar obstacle layer has a height gate of
 # min_obstacle_height 0.15 .. max_obstacle_height 1.2 m above base_link (robot
-# base ~z 3.12). A flat disc sitting on the ground (z~3.1) falls INSIDE that
-# gate, so the lidar scans the MARKER ITSELF as a lethal obstacle sitting on the
-# goal -- this walled off the goal and stopped the robot ~4.8 m short (verified
-# live). Raising the disc so its bottom is well above ~1.2 m over the ground puts
-# it above max_obstacle_height, so the height-gated obstacle layer ignores it,
-# while it stays visible floating above the goal. Tune here if the gate changes.
-MARKER_Z_ABOVE_GROUND = 2.0
+# base ~z 3.12, so the gate floor sits at roughly ground+0.15 or higher). A
+# disc whose top stays BELOW that gate floor (top <= ground + 0.05, well under
+# ground + 0.15) is filtered out by the height gate entirely, so the lidar does
+# NOT scan the marker itself as a lethal obstacle sitting on the goal (an
+# earlier floating-marker approach avoided this by floating the disc high in
+# the air instead; this keeps it flat and simply keeps it thin). Tune here if
+# the gate changes.
+DISC_HALF_HEIGHT = 0.025
 
 
 def _disc_sdf(rgb):
@@ -50,7 +52,7 @@ def _disc_sdf(rgb):
     <static>true</static>
     <link name="link">
       <visual name="v">
-        <geometry><cylinder><radius>1.5</radius><length>0.1</length></cylinder></geometry>
+        <geometry><cylinder><radius>1.5</radius><length>0.05</length></cylinder></geometry>
         <material>
           <ambient>{r} {g} {b} 1</ambient>
           <diffuse>{r} {g} {b} 1</diffuse>
@@ -64,8 +66,10 @@ def _disc_sdf(rgb):
 
 def place_goal_marker(name, x, y, rgb, timeout=5.0, frame="map"):
     """Delete any prior marker of this name, then spawn a flat disc of colour
-    `rgb` at (x, y), FLOATING at z = GROUND_Z + MARKER_Z_ABOVE_GROUND so the
-    lidar's height-gated obstacle layer does not scan it (see MARKER_Z_ABOVE_GROUND).
+    `rgb` at (x, y), LYING FLAT ON THE GROUND at z = GROUND_Z + DISC_HALF_HEIGHT
+    (bottom at GROUND_Z, top at GROUND_Z + 0.05). The disc is kept thin enough
+    that its top stays below the lidar's height-gated obstacle layer floor, so
+    it is not scanned as an obstacle (see DISC_HALF_HEIGHT).
     Best-effort: logs and returns on failure, never raises -- a missing marker
     must not break driving or the attack.
 
@@ -107,9 +111,10 @@ def place_goal_marker(name, x, y, rgb, timeout=5.0, frame="map"):
         pose = Pose()
         pose.position.x = wx
         pose.position.y = wy
-        # FLOAT the disc above the lidar height gate so it is not scanned as an
-        # obstacle (see MARKER_Z_ABOVE_GROUND). No <collision> is defined either.
-        pose.position.z = GROUND_Z + MARKER_Z_ABOVE_GROUND
+        # Lie the disc FLAT ON THE GROUND. It stays thin enough (see
+        # DISC_HALF_HEIGHT) that its top is below the lidar height gate, so it
+        # is not scanned as an obstacle. No <collision> is defined either.
+        pose.position.z = GROUND_Z + DISC_HALF_HEIGHT
         pose.orientation.w = 1.0
         spawn = rospy.ServiceProxy("/gazebo/spawn_sdf_model", SpawnModel)
         spawn(model_name=name, model_xml=_disc_sdf(rgb),
