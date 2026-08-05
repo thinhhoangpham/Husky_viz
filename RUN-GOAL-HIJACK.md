@@ -134,6 +134,20 @@ rosparam get /move_base/global_costmap/plugins            # includes the obstacl
 
 ---
 
+### (Optional) Visualize the planning — RViz
+
+This opens RViz preloaded to show the global route, both costmaps, the live lidar, and the goal, so you can watch the plan reshape as the robot drives.
+
+```bash
+cd ~/Documents/Husky_viz
+export ROS_IP=172.20.0.1 ROS_MASTER_URI=http://172.20.0.1:11311
+rviz -d config/husky_planning.rviz
+```
+
+**Fixed Frame is `map`**; the bright green **Global plan** path is the route — watch it bend around obstacles as new lidar comes in.
+
+---
+
 ### Step 4 — start the attacker in watch mode (Terminal 3)
 
 ```bash
