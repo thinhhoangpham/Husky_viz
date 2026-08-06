@@ -10,4 +10,15 @@ export ROS_IP="${CONTAINER_IP}"
 echo "[operator] ROS_IP=${ROS_IP}"
 echo "[operator] ROS_MASTER_URI=${ROS_MASTER_URI:-<unset>}"
 
+if [ "${OPERATOR_RVIZ:-1}" = "1" ]; then
+  export DISPLAY=:1
+  Xvfb :1 -screen 0 1280x720x24 &
+  sleep 1
+  fluxbox &
+  x11vnc -display :1 -forever -nopw -quiet -bg
+  websockify --web=/usr/share/novnc 6080 localhost:5900 &
+  rosrun rviz rviz -d /repo/operator/operator.rviz &
+  echo "[operator] RViz at http://localhost:6080/vnc.html"
+fi
+
 exec "$@"

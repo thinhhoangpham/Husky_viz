@@ -6,6 +6,7 @@ FROM ros:noetic-ros-core
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ros-noetic-move-base-msgs ros-noetic-actionlib ros-noetic-tf iproute2 ros-noetic-gazebo-msgs \
+        ros-noetic-rviz ros-noetic-std-msgs xvfb x11vnc novnc websockify fluxbox \
     && rm -rf /var/lib/apt/lists/*
 
 # operate.py is bind-mounted with the repo at /repo at runtime.
