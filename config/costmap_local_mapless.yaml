@@ -1,0 +1,15 @@
+# Local costmap for the sensorless stock Husky: a small rolling window in the
+# odom frame carrying ONLY inflation (no obstacle layer -- there is no sensor).
+# The local planner uses it purely for the footprint; with nothing marked, every
+# candidate trajectory is collision-free, so it drives straight to the goal.
+local_costmap:
+  global_frame: odom
+  robot_base_frame: base_link
+  update_frequency: 5.0
+  publish_frequency: 2.0
+  rolling_window: true
+  width: 8.0
+  height: 8.0
+  resolution: 0.1
+  plugins:
+    - {name: inflation,  type: "costmap_2d::InflationLayer"}

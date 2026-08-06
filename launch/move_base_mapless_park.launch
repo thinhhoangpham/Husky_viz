@@ -1,0 +1,63 @@
+<?xml version="1.0"?>
+<!--
+  Mapless, SENSORLESS move_base for the STOCK Husky in the park.
+
+  This is the report's odom-attack VICTIM planner. The stock Husky spawned by
+  load-park-stock-husky.sh has:
+    * NO lidar / NO laser scan / NO pointcloud, and
+    * NO /map (no prior map of the park).
+  So this launch runs move_base with costmaps that have NEITHER an obstacle
+  observation source NOR a static layer - see config/costmap_*_mapless.yaml.
+  Both costmaps live in the ODOM frame (global_frame: odom), which is the frame
+  the stock dead-reckoning EKF publishes. move_base therefore trusts the
+  (corruptible) odom-frame pose completely: the intended victim topology.
+
+  Not husky_navigation/launch/move_base.launch: that one subscribes to a
+  LaserScan on front/scan and, unless no_static_map, a /map - neither exists
+  here, so it would hang waiting on sensor data.
+
+  Planners:
+    global = navfn/NavfnROS                       (allow_unknown: true -> plans
+                                                    through the empty costmap)
+    local  = base_local_planner/TrajectoryPlannerROS
+                                                  (stock planner, tuned in
+                                                   config/planner.yaml)
+
+  cmd_vel wiring: move_base publishes geometry_msgs/Twist on /cmd_vel, which is
+  the twist_mux `external` slot (priority 1). Nothing else publishes here
+  (no teleop/joy/marker started by load-park-stock-husky.sh), so move_base's
+  commands always win the mux and actuate the wheels via
+  husky_velocity_controller/cmd_vel. odom is remapped to the EKF output
+  /odometry/filtered.
+
+  Absolute config paths so this works regardless of the caller's cwd.
+-->
+<launch>
+
+  <!-- GPS position fusion: navsat_transform_node -> /odometry/gps, fused by the
+       EKF as odom1 (config/localization_compass.yaml) so /odometry/filtered is
+       drift-free. Brought up here so it starts with the planner on spawn. -->
+  <include file="/home/thinh/Documents/Husky_viz/launch/navsat_ekf.launch"/>
+
+  <node pkg="move_base" type="move_base" respawn="false" name="move_base" output="screen">
+
+    <param name="base_global_planner" value="navfn/NavfnROS"/>
+    <param name="base_local_planner"  value="base_local_planner/TrajectoryPlannerROS"/>
+
+    <!-- planner tuning (NavfnROS + TrajectoryPlannerROS) -->
+    <rosparam file="/home/thinh/Documents/Husky_viz/config/planner.yaml" command="load"/>
+
+    <!-- shared, sensorless (inflation-only) costmap params into both costmaps -->
+    <rosparam file="/home/thinh/Documents/Husky_viz/config/costmap_common_mapless.yaml" command="load" ns="global_costmap"/>
+    <rosparam file="/home/thinh/Documents/Husky_viz/config/costmap_common_mapless.yaml" command="load" ns="local_costmap"/>
+
+    <!-- per-costmap frames/sizes (odom frame, rolling window, no static map) -->
+    <rosparam file="/home/thinh/Documents/Husky_viz/config/costmap_local_mapless.yaml"  command="load"/>
+    <rosparam file="/home/thinh/Documents/Husky_viz/config/costmap_global_mapless.yaml" command="load"/>
+
+    <!-- twist_mux external slot; EKF odom -->
+    <remap from="cmd_vel" to="/cmd_vel"/>
+    <remap from="odom"    to="/odometry/filtered"/>
+  </node>
+
+</launch>

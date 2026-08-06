@@ -36,6 +36,11 @@
 -->
 <launch>
 
+  <!-- GPS position fusion: navsat_transform_node -> /odometry/gps, fused by the
+       EKF as odom1 (config/localization_compass.yaml) so /odometry/filtered is
+       drift-free. Brought up here so it starts with the planner on spawn. -->
+  <include file="/home/thinh/Documents/Husky_viz/launch/navsat_ekf.launch"/>
+
   <node pkg="move_base" type="move_base" respawn="false" name="move_base" output="screen">
 
     <param name="base_global_planner" value="navfn/NavfnROS"/>

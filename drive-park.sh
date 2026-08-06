@@ -165,6 +165,16 @@ robot halts.
 
 The driving speed is fixed in the driver (MAX_LIN in drive_to_point_gps.py) and
 cannot be set from this script.
+
+POSITION SOURCE - USE_EKF environment variable (passed through to the driver):
+  USE_EKF unset / true (DEFAULT): navigate on the fused map-frame EKF
+      (/odometry/filtered_map), which fuses GPS + wheel odom + IMU. Spoofing
+      husky_velocity_controller/odom drags this fused pose and steers the robot
+      off target. Requires the sim to be launched with the EKF stack enabled
+      (control.launch enable_ekf:=true, the default).
+  USE_EKF=false: raw-GPS fallback - navigate on /navsat/fix directly, odom
+      ignored (the original pre-EKF behaviour). e.g.:
+          USE_EKF=false ./drive-park.sh
 EOF
 }
 
@@ -319,11 +329,14 @@ else
 fi
 
 # ---- 4. sanity-check the driver's sensor inputs (warn only) -----------------
-# NOT /odometry/filtered any more: drive_to_point_gps.py does not use odometry,
-# the EKF, or TF at all. It steers from exactly two topics - /navsat/fix for
-# position and /compass/data for absolute heading - so those are what is worth
-# checking here. This only confirms each one PUBLISHES; it does not judge the
-# values.
+# The position topic the driver reads DEPENDS ON THE MODE (USE_EKF, see below):
+#   * fused/default (USE_EKF unset or true): /odometry/filtered_map, the
+#     map-frame robot_localization EKF that fuses GPS + wheel odom + IMU. This
+#     is the topic whose position an odom spoof corrupts.
+#   * raw fallback (USE_EKF=false): /navsat/fix directly, odom ignored.
+# Heading is /compass/data in both modes. We check whichever position topic the
+# current mode uses, plus the compass. This only confirms each one PUBLISHES; it
+# does not judge the values.
 #
 # DELIBERATELY NON-FATAL, matching the rest of this script's style: the driver
 # has its own 30 s startup gate that blocks until both topics have delivered a
@@ -331,13 +344,19 @@ fi
 # as a hard failure here would only make the same problem surface twice, with
 # less detail. A warning is enough - it just gets the diagnosis in front of you
 # ~30 s earlier.
-say "Checking the driver's sensor inputs (/navsat/fix, /compass/data)..."
-for topic in /navsat/fix /compass/data; do
+#
+# USE_EKF mirrors the driver's own default: anything but false/0/no/off is fused.
+case "$(printf '%s' "${USE_EKF:-true}" | tr '[:upper:]' '[:lower:]')" in
+  false|0|no|off) POS_TOPIC="/navsat/fix" ;;
+  *)              POS_TOPIC="/odometry/filtered_map" ;;
+esac
+say "Checking the driver's sensor inputs ($POS_TOPIC, /compass/data)..."
+for topic in "$POS_TOPIC" /compass/data; do
   if timeout 15 rostopic echo -n1 "$topic" >/dev/null 2>&1; then
     info "$topic is publishing."
   else
     warn "No message on $topic within 15s."
-    warn "The driver needs BOTH /navsat/fix and /compass/data; its own 30s"
+    warn "The driver needs BOTH $POS_TOPIC and /compass/data; its own 30s"
     warn "startup gate will fail loudly if this one really is missing."
     warn "Continuing so you get that fuller diagnosis."
   fi

@@ -1,33 +1,66 @@
 #!/usr/bin/env python3
 """Drive a Clearpath Husky through a sequence of (x, y) points in the WORLD
-frame using ONLY real robot sensors: GPS for position, compass for heading.
+frame. Two selectable position sources; heading always comes from /compass/data.
+
+POSITION SOURCE - selected by the USE_EKF environment variable
+--------------------------------------------------------------
+USE_EKF=true (DEFAULT) - FUSED path:
+    Position is read from the map-frame robot_localization EKF on
+    /odometry/filtered_map (nav_msgs/Odometry). That estimate fuses GPS
+    (absolute anchor, via navsat_transform) with wheel odometry and IMU. The
+    x, y in odom.pose.pose.position are ALREADY in map/world metres - there is
+    NO lat/lon conversion on this path. Because wheel odometry
+    (husky_velocity_controller/odom) is fused in, SPOOFING that odom topic drags
+    the fused pose and steers the robot off target between the 2 Hz GPS
+    corrections. This is the intended, demonstrable behaviour.
+
+USE_EKF=false - RAW-GPS fallback (the original, pre-EKF behaviour, PRESERVED):
+    Position is read DIRECTLY from /navsat/fix (sensor_msgs/NavSatFix) and
+    converted to world metres by fix_to_world(). Odometry is ignored entirely,
+    so spoofing the odom topic has NO effect. This path has no Gazebo/EKF/TF
+    dependency and is what runs on bare GPS hardware.
+
+Heading (BOTH paths): /compass/data, an ABSOLUTE, drift-free world heading. We
+deliberately keep the compass as the heading source even on the fused path,
+rather than reading yaw from the fused odometry, so that steering stays honest:
+an odom spoof should be able to corrupt POSITION (and thus where the robot
+thinks it is), but the heading it uses to correct toward a target still comes
+from the true compass. That keeps the failure mode a clean "driven off course
+by a bad position", not a tangle of position-and-heading both lying.
 
 The driver walks the hardcoded WAYPOINTS list in order. It heads for one
 waypoint at a time and, the moment it is within TOLERANCE of it, ADVANCES to
 the next one without stopping the run; it exits only after the LAST waypoint is
 reached. It makes a single pass - it does not loop back to the first waypoint.
 
-No Gazebo ground truth, no odometry, no EKF, no TF, no move_base, no latched
-transforms, no cached pose. Both sensors are ABSOLUTE and neither drifts, so
-every tick re-reads them and recomputes everything from scratch; error can
-therefore never accumulate. That invariant is per-tick, not per-leg: advancing
-to the next waypoint changes only WHICH target is being subtracted from the
-live fix, never where the fix itself comes from.
+Every tick re-reads the live sensors and recomputes everything from scratch;
+no pose is cached, so on the raw path error can never accumulate. (On the fused
+path the EKF itself carries state - that is the whole point of fusing.)
 
 Usage:
-    python3 drive_to_point_gps.py
+    python3 drive_to_point_gps.py               # fused EKF path (default)
+    USE_EKF=false python3 drive_to_point_gps.py # raw /navsat/fix fallback
 
 The route is hardcoded as WAYPOINTS below.
 """
 
 import math
+import os
 import sys
 import threading
 
 import rospy
 import tf.transformations
 from geometry_msgs.msg import Twist
+from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Imu, NavSatFix
+
+
+def _use_ekf():
+    """Read the USE_EKF flag. Default TRUE (fused path). Only an explicit
+    'false'/'0'/'no'/'off' (case-insensitive) selects the raw-GPS fallback."""
+    return os.environ.get("USE_EKF", "true").strip().lower() not in (
+        "false", "0", "no", "off")
 
 # ---------------------------------------------------------------------------
 # GPS -> WORLD metres conversion.
@@ -138,12 +171,32 @@ class DriveToPointGPS(object):
         self._yaw_stamp = None
         self._last_no_fix_warn = 0.0
 
+        self.use_ekf = _use_ekf()
+        # Name of the active position topic, for honest diagnostics below.
+        self.pos_topic = "/odometry/filtered_map" if self.use_ekf else "/navsat/fix"
+
         # /cmd_vel is the lowest-priority twist_mux input and is the correct channel.
         self.cmd_pub = rospy.Publisher("/cmd_vel", Twist, queue_size=1)
-        self.fix_sub = rospy.Subscriber("/navsat/fix", NavSatFix,
-                                        self._fix_cb, queue_size=1)
+
+        # POSITION SOURCE - exactly one of these, per the USE_EKF flag.
+        if self.use_ekf:
+            # FUSED path (default): the map-frame EKF output. pose.pose.position
+            # is already in map/world metres, so _odom_cb stores it verbatim - no
+            # fix_to_world() on this path. This is the topic an odom spoof
+            # ultimately corrupts, because husky_velocity_controller/odom is fused
+            # into this estimate upstream.
+            self.pos_sub = rospy.Subscriber("/odometry/filtered_map", Odometry,
+                                            self._odom_cb, queue_size=1)
+        else:
+            # RAW-GPS fallback: original behaviour, unchanged. Read /navsat/fix
+            # and convert with fix_to_world(). Odometry is not read at all here.
+            self.pos_sub = rospy.Subscriber("/navsat/fix", NavSatFix,
+                                            self._fix_cb, queue_size=1)
+
         # /compass/data is an ABSOLUTE world heading (accurate to ~0.01 deg) and does
         # not drift. Do NOT use /imu/data: it is mounted rotated 90 deg and is wrong here.
+        # Used for HEADING on BOTH paths - see the module docstring for why the fused
+        # path still steers by the compass rather than by fused-odometry yaw.
         self.imu_sub = rospy.Subscriber("/compass/data", Imu,
                                         self._compass_cb, queue_size=1)
 
@@ -167,6 +220,21 @@ class DriveToPointGPS(object):
         xy = fix_to_world(msg.latitude, msg.longitude)
         with self._lock:
             self._fix_xy = xy
+            self._fix_stamp = rospy.get_time()
+
+    def _odom_cb(self, msg):
+        # FUSED path only. The map-frame EKF gives ABSOLUTE x, y in the map frame,
+        # which is aligned with the driver's world frame (see navsat_transform.yaml:
+        # datum 49.9/8.9, so map origin == fix_to_world origin). Store verbatim;
+        # NO lat/lon conversion. NaN can appear before the filter has converged.
+        x = msg.pose.pose.position.x
+        y = msg.pose.pose.position.y
+        if math.isnan(x) or math.isnan(y):
+            rospy.logwarn_throttle(NO_FIX_WARN_PERIOD_S,
+                                   "/odometry/filtered_map contained NaN position; ignoring")
+            return
+        with self._lock:
+            self._fix_xy = (x, y)
             self._fix_stamp = rospy.get_time()
 
     def _compass_cb(self, msg):
@@ -204,16 +272,16 @@ class DriveToPointGPS(object):
             cur_x, cur_y, cur_yaw, _, _ = self._snapshot()
             if cur_x is not None and cur_yaw is not None:
                 rospy.loginfo(
-                    "sensors ready | starting world position from GPS = (%.2f, %.2f) "
+                    "sensors ready | starting world position from %s = (%.2f, %.2f) "
                     "yaw = %.1f deg  <-- sanity-check this before the robot moves",
-                    cur_x, cur_y, math.degrees(cur_yaw))
+                    self.pos_topic, cur_x, cur_y, math.degrees(cur_yaw))
                 return True
             rate.sleep()
 
         cur_x, _, cur_yaw, _, _ = self._snapshot()
         missing = []
         if cur_x is None:
-            missing.append("/navsat/fix (no valid NavSatFix with status >= 0)")
+            missing.append("%s (no valid position message yet)" % self.pos_topic)
         if cur_yaw is None:
             missing.append("/compass/data (no sensor_msgs/Imu message)")
         rospy.logerr("startup gate failed after %.0f s; missing: %s",
@@ -222,6 +290,10 @@ class DriveToPointGPS(object):
 
     def run(self):
         """Return a process exit code."""
+        rospy.loginfo("position source: %s (%s). heading source: /compass/data",
+                      self.pos_topic,
+                      "FUSED EKF - odom-spoofable" if self.use_ekf
+                      else "RAW GPS - odom ignored")
         if not self.wait_for_sensors():
             self.stop()
             return 1
@@ -267,9 +339,9 @@ class DriveToPointGPS(object):
             yaw_age = now - yaw_stamp
             if fix_age > SENSOR_STALE_S or yaw_age > SENSOR_STALE_S:
                 self.stop()
-                rospy.logerr("STALE SENSOR: /navsat/fix age=%.1f s, /compass/data age=%.1f s "
+                rospy.logerr("STALE SENSOR: %s age=%.1f s, /compass/data age=%.1f s "
                              "(limit %.1f s) - stopping rather than driving on stale data",
-                             fix_age, yaw_age, SENSOR_STALE_S)
+                             self.pos_topic, fix_age, yaw_age, SENSOR_STALE_S)
                 return 3
 
             dx = target_x - cur_x

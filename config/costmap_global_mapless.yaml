@@ -1,0 +1,18 @@
+# Global costmap for the sensorless stock Husky. No prior map, no sensor: a
+# large rolling window in the ODOM frame that is entirely unknown-but-free.
+# NavfnROS (allow_unknown: true) plans a straight line through it to the goal.
+global_costmap:
+  global_frame: odom
+  robot_base_frame: base_link
+  update_frequency: 2.0
+  publish_frequency: 1.0
+  static_map: false
+  rolling_window: true
+  # Must be large enough to CONTAIN the goal or NavfnROS cannot plan and
+  # move_base falls back to rotate-recovery. The baseline goal is ~15 m ahead,
+  # so 80x80 (40 m radius) covers it with wide margin.
+  width: 80.0
+  height: 80.0
+  resolution: 0.15
+  plugins:
+    - {name: inflation,  type: "costmap_2d::InflationLayer"}

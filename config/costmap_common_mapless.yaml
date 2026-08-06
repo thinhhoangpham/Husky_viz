@@ -1,0 +1,25 @@
+# Shared costmap settings for the STOCK Husky in the park -- NO sensor version.
+#
+# WHY THIS FILE (vs config/costmap_common.yaml):
+# The other costmap_common.yaml was ported from a lidar-equipped Husky (OS0
+# PointCloud2 on /os0_cloud_node/points). The STOCK Husky spawned by
+# load-park-stock-husky.sh has NO lidar and NO laser scan at all. An obstacle
+# layer with an observation_source that never receives data makes move_base
+# block waiting for the sensor transform/data and never produce a plan.
+#
+# So this file declares NO observation_sources and NO obstacle layer at all.
+# The costmaps that load it (costmap_*_mapless.yaml) carry only inflation, i.e.
+# they are permanently empty except for the robot footprint's inflation. This is
+# the intended "mapless, sensorless" victim: move_base trusts the odom-frame
+# EKF pose completely and plans straight through unknown-but-assumed-free space.
+
+# Husky is 0.99 x 0.67 m; a circumscribed radius is safe for a skid-steer that
+# scrubs sideways while turning.
+robot_radius: 0.55
+transform_tolerance: 0.5
+
+# Only inflation -- there is no obstacle source to inflate around, so this is
+# effectively inert, but keeping the layer avoids an empty-plugins edge case.
+inflation:
+  inflation_radius: 0.35
+  cost_scaling_factor: 8.0

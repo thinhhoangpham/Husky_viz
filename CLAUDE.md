@@ -132,3 +132,44 @@ divergence above. `drive_to_point.py` was deleted for using ground truth.
 
 Also note: `/os0_cloud_node/points` does **not** publish on this machine (only
 `/os0_cloud_node/imu` does), so the move_base costmaps stay empty and obstacle avoidance is inert.
+
+---
+
+## Security demo — Tier 2 network attacker (built 2026-07-30)
+
+An "outside attacker" against the ROS graph, implemented as a **separate Docker
+container** with its own IP (Tier 2: rogue peer that discovers + reaches the
+master, then injects). Design and rationale (tiers, why no Gazebo attacker model):
+`docs/attacker-network-simulation.md`; spec + plan under `docs/superpowers/`.
+
+- **Lives in `attacker/`** — self-contained. `Dockerfile` (base
+  `ros:noetic-ros-core` + `nmap` + `iproute2`; **no Gazebo**), `entrypoint.sh`
+  (derives the container's own IP → exports `ROS_IP`), `docker-compose.yml`
+  (default docker0 bridge, `ROS_MASTER_URI` built from `ROBOT_HOST_IP`, repo
+  bind-mounted **rw** at `/repo`), and three phase scripts.
+- **The four `attack_*.py` run UNCHANGED** — bind-mounted from the repo root, not
+  copied. `attack.sh` only validates a name (`cmd_vel|compass|odom|param`) and
+  execs the existing script.
+- **Runbook: `attacker/README.md`** — four phases: **0** host prep, **1**
+  `scan.sh` (nmap reachability), **2** `enum.sh` (read-only graph read), **3**
+  `attack.sh` (inject).
+- **Sim runs NATIVELY on this Linux box** (`roslaunch`, not a container here —
+  unlike the macOS `~/husky-docker` setup in the Docker section above). The
+  attacker container reaches the native master via the **docker0 gateway IP**.
+- **The `ROS_IP` gotcha (bites once):** before `roslaunch`, the host must
+  `export ROS_IP=<docker0 gw IP>` and `ROS_MASTER_URI=http://$ROS_IP:11311`.
+  Without `ROS_IP` the master advertises `127.0.0.1`, so **nmap succeeds but the
+  container's `rostopic` calls hang** — `enum.sh` prints this exact diagnosis.
+- **Invocation quirk:** scripts are called as `docker compose run --rm attacker
+  ./attacker/scan.sh` — the `attacker/` prefix is required because `working_dir`
+  is `/repo` and the scripts are mounted one level down at `/repo/attacker/`.
+- **Deferred:** Tier 3 (on-the-wire MITM) and the geofence/trigger layer — both
+  intentionally out of scope, noted in the spec.
+
+### Docker on this Linux box (installed 2026-07-30)
+
+- Docker CE **28.1.1** + compose plugin **v2.35.1**, from Docker's official apt
+  repo via `install-docker.sh` (repo root). Daemon enabled and running.
+- `thinh` is in the `docker` group, **but** the group only activates in a **new
+  login session** — after install, `docker` needs `sudo` until you log out/in or
+  run `newgrp docker`.
