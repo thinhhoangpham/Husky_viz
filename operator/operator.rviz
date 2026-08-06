@@ -1,0 +1,153 @@
+Panels:
+  - Class: rviz/Displays
+    Help Height: 78
+    Name: Displays
+  - Class: rviz/Views
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Alpha: 0.5
+      Class: rviz/Grid
+      Color: 160; 160; 164
+      Enabled: true
+      Line Style:
+        Line Width: 0.03
+        Value: Lines
+      Name: Grid
+      Normal Cell Count: 0
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Plane: XY
+      Plane Cell Count: 10
+      Reference Frame: map
+      Value: true
+    - Class: rviz/TF
+      Enabled: true
+      Name: TF
+      Show Arrows: true
+      Show Axes: true
+      Show Names: true
+      Value: true
+    - Alpha: 1
+      Class: rviz/RobotModel
+      Enabled: true
+      Name: RobotModel
+      Value: true
+    - Alpha: 1
+      Autocompute Intensity Bounds: true
+      Axis: Z
+      Channel Name: intensity
+      Class: rviz/LaserScan
+      Color: 255; 255; 127
+      Color Transformer: Intensity
+      Decay Time: 0
+      Enabled: true
+      Invert Rainbow: false
+      Max Color: 255; 255; 255
+      Max Intensity: 4096
+      Min Color: 0; 0; 0
+      Min Intensity: 0
+      Name: LaserScan
+      Position Transformer: XYZ
+      Queue Size: 10
+      Selectable: true
+      Size (Pixels): 3
+      Size (m): 0.03
+      Style: Flat Squares
+      Topic: /scan
+      Use Fixed Frame: true
+      Use rainbow: true
+      Value: true
+    - Alpha: 1
+      Autocompute Intensity Bounds: true
+      Class: rviz/PointCloud2
+      Color: 255; 255; 255
+      Enabled: true
+      Name: PointCloud2 (lidar)
+      Size (Pixels): 3
+      Size (m): 0.03
+      Style: Points
+      Topic: /os0_cloud_node/points
+      Value: true
+    - Alpha: 0.5
+      Class: rviz/Map
+      Color Scheme: costmap
+      Enabled: true
+      Name: Costmap (global)
+      Topic: /move_base/global_costmap/costmap
+      Value: true
+    - Alpha: 0.7
+      Class: rviz/Map
+      Color Scheme: costmap
+      Enabled: true
+      Name: Costmap (local)
+      Topic: /move_base/local_costmap/costmap
+      Value: true
+    - Class: rviz/Path
+      Color: 25; 255; 0
+      Enabled: true
+      Name: Global plan (route)
+      Topic: /move_base/NavfnROS/plan
+      Value: true
+    - Class: rviz/Path
+      Color: 0; 255; 255
+      Enabled: true
+      Name: Local plan
+      Topic: /move_base/DWAPlannerROS/local_plan
+      Value: true
+    - Class: rviz/Pose
+      Color: 255; 25; 0
+      Enabled: true
+      Name: Active goal
+      Shape: Arrow
+      Topic: /move_base/current_goal
+      Value: true
+    - Class: rviz/Marker
+      Enabled: true
+      Marker Topic: /goal_marker_real
+      Name: Goal marker (real)
+      Namespaces:
+        {}
+      Queue Size: 100
+      Value: true
+    - Class: rviz/Marker
+      Enabled: true
+      Marker Topic: /goal_marker_fake
+      Name: Goal marker (fake / hijack)
+      Namespaces:
+        {}
+      Queue Size: 100
+      Value: true
+  Enabled: true
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: map
+  Name: root
+  Tools:
+    - Class: rviz/Interact
+    - Class: rviz/MoveCamera
+    - Class: rviz/Select
+  Value: true
+  Views:
+    Current:
+      Class: rviz/Orbit
+      Distance: 25
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0
+      Name: Current View
+      Near Clip Distance: 0.01
+      Pitch: 0.785398
+      Target Frame: map
+      Yaw: 0.785398
+Window Geometry:
+  Displays:
+    collapsed: false
+  Height: 900
+  Width: 1200
+  Views:
+    collapsed: false
