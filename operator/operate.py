@@ -188,6 +188,8 @@ class Operator(object):
         return time.time() - self._last_odom_wall
 
     def _write_row(self, elapsed):
+        if self._stop.is_set():
+            return None
         with self._lock:
             odom = self._odom
             plx, paz = self._planner_cmd
@@ -228,7 +230,10 @@ class Operator(object):
             cmd, args = parse_command(line)
             if cmd == "quit":
                 break
-            self._dispatch(cmd, args)
+            try:
+                self._dispatch(cmd, args)
+            except Exception as e:
+                rospy.logwarn("command failed: %s", e)
         return 0
 
     def _telemetry_loop(self):
@@ -251,8 +256,9 @@ class Operator(object):
         elif cmd == "teleop":
             self.state.set_mode("MANUAL"); self._teleop_repl()
         elif cmd == "stop":
-            self._intervene.stop(); self.state.set_mode("STOPPED")
-            rospy.loginfo("STOP (zero velocity)")
+            self._intervene.stop(); self.client.cancel_all_goals()
+            self.state.set_mode("STOPPED")
+            rospy.loginfo("STOP (zero velocity + cancel active goal)")
         elif cmd == "estop":
             self._intervene.engage_estop(); self.state.engage_estop()
             rospy.logwarn("E-STOP ENGAGED")
@@ -270,9 +276,21 @@ class Operator(object):
         gx, gy, path = latlon_to_map(lat, lon)
         self._goal_x, self._goal_y = gx, gy
         self.state.sent_goal = (gx, gy)
-        start = rospy.wait_for_message(ODOM_TOPIC, Odometry, timeout=30.0)
-        sp = start.pose.pose.position
-        gyaw = math.atan2(gy - sp.y, gx - sp.x)
+        with self._lock:
+            cached_odom = self._odom
+        if cached_odom is not None:
+            sp = cached_odom.pose.pose.position
+        else:
+            # No odom cached yet (e.g. right at startup) -- short bounded wait
+            # instead of the REPL-freezing 30s blocking wait_for_message.
+            try:
+                start = rospy.wait_for_message(ODOM_TOPIC, Odometry, timeout=2.0)
+                sp = start.pose.pose.position
+            except rospy.ROSException:
+                rospy.logwarn("_do_goal: no odom available yet; sending goal "
+                              "with heading 0.0 (unable to face the target).")
+                sp = None
+        gyaw = math.atan2(gy - sp.y, gx - sp.x) if sp is not None else 0.0
         gq = quaternion_from_euler(0.0, 0.0, gyaw)
         goal = MoveBaseGoal()
         goal.target_pose.header.frame_id = GOAL_FRAME
@@ -304,6 +322,29 @@ class Operator(object):
             rospy.logwarn("teleop: stdin is not a TTY; skipping.")
             return
         rospy.loginfo("TELEOP mode: i/,=fwd/back j/l=turn k=stop x/Esc=exit")
+        # twist_mux's joy_teleop slot has a 0.5s input timeout, so a single
+        # publish per keystroke only moves the robot in short 0.5s pulses.
+        # Keep republishing the last-commanded twist at ~10Hz from a small
+        # daemon thread until the next key changes it (or stop/exit zeroes
+        # it), so holding a direction drives smoothly and continuously.
+        teleop_stop = threading.Event()
+        desired = [0.0, 0.0]  # [linear.x, angular.z], mutated under teleop_lock
+        teleop_lock = threading.Lock()
+
+        def _repeat_publish():
+            rate = rospy.Rate(10.0)
+            while not teleop_stop.is_set() and not rospy.is_shutdown():
+                with teleop_lock:
+                    linx, angz = desired
+                self._intervene.drive(linx, angz)
+                try:
+                    rate.sleep()
+                except rospy.exceptions.ROSInterruptException:
+                    break
+
+        repeater = threading.Thread(target=_repeat_publish)
+        repeater.daemon = True
+        repeater.start()
         try:
             tty.setraw(fd)
             while not rospy.is_shutdown():
@@ -311,16 +352,23 @@ class Operator(object):
                 if ch in ("x", "\x1b"):
                     break
                 elif ch == "i":
-                    self._intervene.drive(0.4, 0.0)
+                    with teleop_lock:
+                        desired[0], desired[1] = 0.4, 0.0
                 elif ch == ",":
-                    self._intervene.drive(-0.4, 0.0)
+                    with teleop_lock:
+                        desired[0], desired[1] = -0.4, 0.0
                 elif ch == "j":
-                    self._intervene.drive(0.0, 0.8)
+                    with teleop_lock:
+                        desired[0], desired[1] = 0.0, 0.8
                 elif ch == "l":
-                    self._intervene.drive(0.0, -0.8)
+                    with teleop_lock:
+                        desired[0], desired[1] = 0.0, -0.8
                 elif ch == "k":
-                    self._intervene.stop()
+                    with teleop_lock:
+                        desired[0], desired[1] = 0.0, 0.0
         finally:
+            teleop_stop.set()
+            repeater.join(timeout=1.0)
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
             self._intervene.stop()
             self.state.set_mode("AUTO")
@@ -336,9 +384,11 @@ class Operator(object):
             py = odom.pose.pose.position.y
             dist = "%.2f" % math.hypot(self.state.sent_goal[0] - px,
                                        self.state.sent_goal[1] - py)
-        print("state=%s | sent=%s | active=%s | dist=%s | mode=%s | estop=%s | link_age=%.1fs" % (
+        age = self._heartbeat_age()
+        age_str = "n/a" if math.isnan(age) else "%.1fs" % age
+        print("state=%s | sent=%s | active=%s | dist=%s | mode=%s | estop=%s | link_age=%s" % (
             self.state.nav_status, sx_sy, ax_ay, dist, self.state.mode,
-            self.state.estop_engaged, self._heartbeat_age()))
+            self.state.estop_engaged, age_str))
 
     def _print_help(self):
         print(
@@ -357,6 +407,9 @@ class Operator(object):
 
     def shutdown(self):
         self._stop.set()
+        writer = getattr(self, "_writer", None)
+        if writer is not None and writer.is_alive():
+            writer.join(timeout=2.0)
         if self._csv_file and not self._csv_file.closed:
             self._csv_file.flush()
             self._csv_file.close()
