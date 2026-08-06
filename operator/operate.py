@@ -235,7 +235,10 @@ class Operator(object):
         rate = rospy.Rate(2.0)
         while not rospy.is_shutdown() and not self._stop.is_set():
             self._write_row((time.time() - self._start_wall))
-            rate.sleep()
+            try:
+                rate.sleep()
+            except rospy.exceptions.ROSInterruptException:
+                break
 
     def _dispatch(self, cmd, args):
         if cmd == "noop":
