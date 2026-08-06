@@ -105,22 +105,6 @@ Visualization Manager:
       Shape: Arrow
       Topic: /move_base/current_goal
       Value: true
-    - Class: rviz/Marker
-      Enabled: true
-      Marker Topic: /goal_marker_real
-      Name: Goal marker (real)
-      Namespaces:
-        {}
-      Queue Size: 100
-      Value: true
-    - Class: rviz/Marker
-      Enabled: true
-      Marker Topic: /goal_marker_fake
-      Name: Goal marker (fake / hijack)
-      Namespaces:
-        {}
-      Queue Size: 100
-      Value: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
