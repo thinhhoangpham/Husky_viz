@@ -50,8 +50,18 @@ view of the robot and its plan. Disable the visual stack with
 ## Phase 2 — Run the operator REPL (host terminal 3)
 
 ```bash
-docker compose exec operator ./operator/operate.py --lat <LAT> --lon <LON>
+docker compose exec operator bash -c "./operator/operate.py --lat <LAT> --lon <LON>"
 ```
+Must be wrapped in `bash -c "..."` — a bare `docker compose exec operator
+./operator/operate.py ...` runs the script directly with no shell in between,
+so it never sources ROS and dies with `ModuleNotFoundError: No module named
+'actionlib'`. `bash -c` shells are non-interactive/non-login, so they don't
+read `.bashrc`; instead `entrypoint.sh` writes ROS sourcing + this
+container's `ROS_IP` to `/etc/ros_env.sh` and `docker-compose.yml` sets
+`BASH_ENV=/etc/ros_env.sh`, which bash sources automatically for exactly this
+kind of shell — no manual `source /opt/ros/noetic/setup.bash` needed in the
+command.
+
 The script is `operator/operate.py`, not `operator.py` — it was named to avoid
 shadowing Python's stdlib `operator` module. Every invocation must use the
 full path `./operator/operate.py`. `--lat`/`--lon` send an initial GPS goal;
