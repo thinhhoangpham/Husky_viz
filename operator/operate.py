@@ -238,6 +238,8 @@ class Operator(object):
             rate.sleep()
 
     def _dispatch(self, cmd, args):
+        if cmd == "noop":
+            return
         if cmd == "goal":
             self._do_goal(args[0], args[1])
         elif cmd == "cancel":
