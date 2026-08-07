@@ -144,7 +144,15 @@ docker compose up -d
 docker compose exec operator bash -lc "source /opt/ros/noetic/setup.bash && ./operator/operate.py"
 ```
 
-Starts the operator (RViz view at http://localhost:6080/vnc.html) and waits at the `operator>` prompt — it sends nothing until you decide. When ready, type `goal 49.9000094 8.9000327` to drive to the goal (other commands: `cancel`, `teleop`, `stop`, `estop`/`release`, `auto`, `status`, `quit`).
+This starts the operator and waits at the `operator>` prompt — it sends **nothing** yet (RViz view at http://localhost:6080/vnc.html).
+
+**Then, when you decide, send the goal** — at the `operator>` prompt type:
+
+```
+goal 49.9000094 8.9000327
+```
+
+Other prompt commands: `cancel`, `teleop`, `stop`, `estop`/`release`, `auto`, `status`, `quit`.
 
 > `49.9000094 / 8.9000327` is **dataset waypoint 3** — world ≈ `(1.16, -2.40)`,
 > ~44 m down the trail from spawn. Substitute other lat/lon for other goals; keep
