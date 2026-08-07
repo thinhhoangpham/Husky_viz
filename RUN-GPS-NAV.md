@@ -141,10 +141,10 @@ operator container).
 cd ~/Documents/Husky_viz/operator
 export ROS_IP=172.20.0.1 ROS_MASTER_URI=http://172.20.0.1:11311 ROBOT_HOST_IP=172.20.0.1
 docker compose up -d
-docker compose exec operator bash -lc "source /opt/ros/noetic/setup.bash && ./operator/operate.py --lat 49.9000094 --lon 8.9000327"
+docker compose exec operator bash -lc "source /opt/ros/noetic/setup.bash && ./operator/operate.py"
 ```
 
-Starts the operator (RViz view at http://localhost:6080/vnc.html) and opens the `operator>` REPL — commands: `goal`, `cancel`, `teleop`, `stop`, `estop`/`release`, `auto`, `status`, `quit`.
+Starts the operator (RViz view at http://localhost:6080/vnc.html) and waits at the `operator>` prompt — it sends nothing until you decide. When ready, type `goal 49.9000094 8.9000327` to drive to the goal (other commands: `cancel`, `teleop`, `stop`, `estop`/`release`, `auto`, `status`, `quit`).
 
 > `49.9000094 / 8.9000327` is **dataset waypoint 3** — world ≈ `(1.16, -2.40)`,
 > ~44 m down the trail from spawn. Substitute other lat/lon for other goals; keep
