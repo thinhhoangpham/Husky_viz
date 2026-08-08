@@ -6,9 +6,9 @@ source /opt/ros/noetic/setup.bash
 
 NAME="${1:-}"; shift || true
 case "${NAME}" in
-  cmd_vel|compass|odom|param|goal) ;;
+  cmd_vel|compass|odom|param|goal|navsat) ;;
   *)
-    echo "usage: ./attack.sh <cmd_vel|compass|odom|param|goal> [args...]" >&2
+    echo "usage: ./attack.sh <cmd_vel|compass|odom|param|goal|navsat> [args...]" >&2
     exit 2 ;;
 esac
 
