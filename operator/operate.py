@@ -32,7 +32,7 @@ import rospy
 from actionlib_msgs.msg import GoalStatus, GoalStatusArray
 from geometry_msgs.msg import Twist
 from move_base_msgs.msg import MoveBaseAction, MoveBaseActionGoal, MoveBaseGoal
-from nav_msgs.msg import Odometry
+from nav_msgs.msg import Odometry, OccupancyGrid
 from std_msgs.msg import Bool
 from tf.transformations import quaternion_from_euler, euler_from_quaternion
 
@@ -76,6 +76,37 @@ STATUS_TEXT = {
     GoalStatus.REJECTED: "REJECTED", GoalStatus.PREEMPTED: "PREEMPTED",
     GoalStatus.LOST: "LOST",
 }
+
+def snap_to_free(data, info, wx, wy, max_radius_m=5.0, cost_thresh=50):
+    """Pure grid math: return (x,y) of the nearest costmap cell with
+    cost < cost_thresh to world point (wx,wy), searching outward in square
+    rings up to max_radius_m. `data` is the flat costmap.data sequence,
+    `info` is the costmap.info (needs .resolution, .width, .height,
+    .origin.position.x/y). Returns (wx,wy) unchanged if none found.
+    """
+    res = info.resolution
+    ox, oy = info.origin.position.x, info.origin.position.y
+
+    def cost(cx, cy):
+        if 0 <= cx < info.width and 0 <= cy < info.height:
+            return data[cy * info.width + cx]
+        return 100
+
+    c0 = int((wx - ox) / res)
+    r0 = int((wy - oy) / res)
+    max_r = int(max_radius_m / res)
+    for rad in range(0, max_r + 1):
+        for dc in range(-rad, rad + 1):
+            for dr in range(-rad, rad + 1):
+                if max(abs(dc), abs(dr)) != rad:  # only the ring edge
+                    continue
+                c = cost(c0 + dc, r0 + dr)
+                if c is not None and 0 <= c < cost_thresh:
+                    sx = ox + (c0 + dc + 0.5) * res
+                    sy = oy + (r0 + dr + 0.5) * res
+                    return sx, sy
+    return wx, wy
+
 
 def yaw_of(odom):
     q = odom.pose.pose.orientation
@@ -138,11 +169,14 @@ class Operator(object):
         self._goal_y = 0.0
         self._lock = threading.Lock()
         self._odom = None          # latest Odometry
+        self._costmap = None       # latest global costmap (OccupancyGrid)
         self._planner_cmd = (0.0, 0.0)  # (linear.x, angular.z) from /cmd_vel
         self._ctrl_cmd = (0.0, 0.0)     # from controller cmd_vel
         rospy.Subscriber(ODOM_TOPIC, Odometry, self._on_odom, queue_size=1)
         rospy.Subscriber(PLANNER_CMD_TOPIC, Twist, self._on_planner, queue_size=1)
         rospy.Subscriber(CTRL_CMD_TOPIC, Twist, self._on_ctrl, queue_size=1)
+        rospy.Subscriber("/move_base/global_costmap/costmap", OccupancyGrid,
+                          self._on_costmap, queue_size=1)
 
         self.state = GcsState()
         self._active_goal = None      # (x,y) from /move_base/goal
@@ -163,6 +197,23 @@ class Operator(object):
         with self._lock:
             self._odom = msg
             self._last_odom_wall = time.time()
+
+    def _on_costmap(self, msg):
+        with self._lock:
+            self._costmap = msg
+
+    def _snap_to_free(self, wx, wy, max_radius_m=5.0, cost_thresh=50):
+        """Snap (wx,wy) to the nearest free cell in the latest global costmap.
+        Returns the input unchanged if no costmap yet or nothing free found
+        within max_radius_m; caller still sends the goal in that case."""
+        with self._lock:
+            cm = self._costmap
+        if cm is None:
+            rospy.logwarn("_snap_to_free: no costmap received yet; sending "
+                          "goal unsnapped (%.2f, %.2f)", wx, wy)
+            return wx, wy
+        return snap_to_free(cm.data, cm.info, wx, wy,
+                             max_radius_m=max_radius_m, cost_thresh=cost_thresh)
 
     def _on_planner(self, msg):
         with self._lock:
@@ -262,7 +313,11 @@ class Operator(object):
                 rospy.logwarn("named goal failed: %s", exc)
                 return
             rospy.loginfo("named goal '%s' -> map (%.2f, %.2f)", args[0], gx, gy)
-            self._do_goal_xy(gx, gy)
+            sx, sy = self._snap_to_free(gx, gy)
+            if (sx, sy) != (gx, gy):
+                rospy.loginfo("named goal '%s': snapped (%.2f,%.2f)->(%.2f,%.2f) "
+                              "to nearest free cell", args[0], gx, gy, sx, sy)
+            self._do_goal_xy(sx, sy)
         elif cmd == "cancel":
             self.client.cancel_all_goals(); self.state.set_mode("AUTO")
             rospy.loginfo("CANCELLED goal")
