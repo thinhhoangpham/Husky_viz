@@ -1,0 +1,38 @@
+<?xml version="1.0"?>
+<!--
+  GPS-anchored, obstacle-aware move_base WITH a preloaded static park map.
+  Identical to move_base_gps.launch except:
+    (1) a map_server node publishes /map from maps/park_map.yaml, and
+    (2) the global costmap is costmap_global_gps_map.yaml (StaticLayer +
+        ObstacleLayer + Inflation, static_map true, not rolling).
+  The robot, dual-EKF, navsat_transform and TF chain (map->odom->base_link) are
+  ASSUMED ALREADY RUNNING (started by load-park-world.sh), same as
+  move_base_gps.launch. Absolute config paths per repo convention.
+
+  NavfnROS.allow_unknown is set to true in planner_gps.yaml; with
+  track_unknown_space: false the static costmap marks everything known, so
+  allow_unknown is harmless (nothing is unknown).
+-->
+<launch>
+
+  <node name="map_server" pkg="map_server" type="map_server"
+        args="/home/thinh/Documents/Husky_viz/maps/park_map.yaml" output="screen"/>
+
+  <node pkg="move_base" type="move_base" respawn="false" name="move_base" output="screen">
+
+    <param name="base_global_planner" value="navfn/NavfnROS"/>
+    <param name="base_local_planner"  value="dwa_local_planner/DWAPlannerROS"/>
+
+    <rosparam file="/home/thinh/Documents/Husky_viz/config/planner_gps.yaml" command="load"/>
+
+    <rosparam file="/home/thinh/Documents/Husky_viz/config/costmap_common_gps.yaml" command="load" ns="global_costmap"/>
+    <rosparam file="/home/thinh/Documents/Husky_viz/config/costmap_common_gps.yaml" command="load" ns="local_costmap"/>
+
+    <rosparam file="/home/thinh/Documents/Husky_viz/config/costmap_local_gps.yaml"      command="load" ns="local_costmap"/>
+    <rosparam file="/home/thinh/Documents/Husky_viz/config/costmap_global_gps_map.yaml" command="load" ns="global_costmap"/>
+
+    <remap from="cmd_vel" to="/cmd_vel"/>
+    <remap from="odom"    to="/odometry/filtered_map"/>
+  </node>
+
+</launch>

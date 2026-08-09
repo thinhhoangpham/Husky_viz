@@ -1,0 +1,25 @@
+# Global costmap for the GPS-anchored, MAP-BACKED move_base
+# (launch/move_base_gps_map.launch). Unlike costmap_global_gps.yaml (mapless,
+# rolling window), this loads the preloaded park map as a StaticLayer and plans
+# over the WHOLE park at once. Layer order is the additive-lidar rule:
+#   static (preloaded trees) -> obstacles (live lidar, ADDS) -> inflation.
+# Lidar can only ADD obstacles on top of the static map, never clear it.
+global_frame: map
+robot_base_frame: base_link
+
+static_map: true
+rolling_window: false
+# track_unknown_space off: with a full static map the world is known free/occupied,
+# not "unknown". (Contrast the mapless config, which tracks unknown space.)
+track_unknown_space: false
+
+resolution: 0.15
+
+plugins:
+  - {name: static,     type: "costmap_2d::StaticLayer"}
+  - {name: obstacles,  type: "costmap_2d::ObstacleLayer"}
+  - {name: inflation,  type: "costmap_2d::InflationLayer"}
+
+static:
+  map_topic: /map
+  subscribe_to_updates: false
