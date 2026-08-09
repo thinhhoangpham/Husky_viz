@@ -1,20 +1,19 @@
 # Operator container (remote ROS operator)
 
 A Docker container with its own IP that acts as a REMOTE operator against the
-natively-run stock Husky: it sends ONE move_base goal (reach an odom-frame
-point, then stop), watches telemetry to console, and writes a normal-baseline
-CSV (`operator_run.csv`) whose columns are the union of every baseline signal
-the repo's attack CSVs log — so each attack's plot can overlay a normal series.
+natively-run GPS-enabled park Husky: an interactive REPL that sends GPS-goal
+move_base actions, supports teleop/stop/e-stop intervention, watches telemetry
+to console, and writes a normal-baseline CSV (`operator_run.csv`) whose columns
+are the union of every baseline signal the repo's attack CSVs log — so each
+attack's plot can overlay a normal series. The container also runs its own
+RViz instance (served over noVNC) so the operator can watch the robot/plan
+without touching the Gazebo GUI.
 
 This container contains NO attack code and does NO robot bring-up. It is the
 benign counterpart of `attacker/`, and the operator↔robot wire it establishes
 is the future Tier 3 target. Design:
 `docs/superpowers/specs/2026-08-02-operator-container-design.md`; parent doc:
 `docs/attacker-network-simulation.md` §10.
-
-Verified end-to-end on 2026-08-02: robot drove straight, console streamed
-`state=ACTIVE ... dist_to_goal` decreasing, ended `Final move_base state:
-SUCCEEDED`, and `operator_run.csv` was written to the repo root.
 
 ## Phase 0 — Host prep + world (host terminal 1)
 
@@ -26,61 +25,73 @@ docker network create husky_lan 2>/dev/null || true
 GW="$(docker network inspect husky_lan --format '{{(index .IPAM.Config 0).Gateway}}')"
 echo "husky_lan gateway = ${GW}"
 
-# Launch the native sim advertising on that gateway (NOT docker0).
+# Launch the native GPS park sim advertising on that gateway (NOT docker0).
 export ROS_IP="${GW}"
 export ROS_MASTER_URI="http://${ROS_IP}:11311"
-./load-park-stock-husky.sh          # world only (no robot), master off localhost
+./load-park-stock-husky.sh          # bring up the GPS park world + robot
 ```
 Without `ROS_IP` the master advertises a hostname/127.0.0.1: the container
 connects (nmap-level reachability succeeds) but topic handshakes hang. Export
 both `ROS_IP` and `ROS_MASTER_URI` BEFORE launching the sim.
 
-## Phase 1 — Spawn the robot, idle (host terminal 2)
-
-```bash
-GW="$(docker network inspect husky_lan --format '{{(index .IPAM.Config 0).Gateway}}')"
-export ROS_IP="${GW}"
-export ROS_MASTER_URI="http://${ROS_IP}:11311"
-./spawn-robot-idle.sh               # spawn stock husky + mapless move_base, then idle
-```
-Waits at "IDLE — waiting for a remote operator goal." Robot visible in Gazebo.
-
-## Phase 2 — Build + operate (host terminal 3)
+## Phase 1 — Bring up the operator container (host terminal 2)
 
 ```bash
 cd operator
 export ROBOT_HOST_IP="$(docker network inspect husky_lan --format '{{(index .IPAM.Config 0).Gateway}}')"
-docker compose build
-docker compose run --rm operator ./operator/operate.py --goal-x 10 --goal-y 0
+docker compose up -d
 ```
-Watch the robot drive to the point in Gazebo; the console streams telemetry;
-`operator_run.csv` lands in the repo root. Override output with `--csv path`.
+The container starts its own Xvfb + fluxbox + x11vnc + noVNC + RViz stack
+(entrypoint, guarded by `OPERATOR_RVIZ=1` — default on). Open
+**http://localhost:6080/vnc.html** in a browser to watch the operator's RViz
+view of the robot and its plan. Disable the visual stack with
+`OPERATOR_RVIZ=0 docker compose up -d` if only the REPL is needed.
+
+## Phase 2 — Run the operator REPL (host terminal 3)
+
+```bash
+docker compose exec operator bash -c "./operator/operate.py --lat <LAT> --lon <LON>"
+```
+Must be wrapped in `bash -c "..."` — a bare `docker compose exec operator
+./operator/operate.py ...` runs the script directly with no shell in between,
+so it never sources ROS and dies with `ModuleNotFoundError: No module named
+'actionlib'`. `bash -c` shells are non-interactive/non-login, so they don't
+read `.bashrc`; instead `entrypoint.sh` writes ROS sourcing + this
+container's `ROS_IP` to `/etc/ros_env.sh` and `docker-compose.yml` sets
+`BASH_ENV=/etc/ros_env.sh`, which bash sources automatically for exactly this
+kind of shell — no manual `source /opt/ros/noetic/setup.bash` needed in the
+command.
 
 The script is `operator/operate.py`, not `operator.py` — it was named to avoid
 shadowing Python's stdlib `operator` module. Every invocation must use the
-full path `./operator/operate.py`.
+full path `./operator/operate.py`. `--lat`/`--lon` send an initial GPS goal;
+omit them to start idle at the `operator>` prompt. Telemetry streams to
+console and `operator_run.csv` lands in the repo root (override with
+`--csv path`).
 
-**`--help` gotcha:** `docker compose run --rm operator ./operator/operate.py
---help` does NOT work — `docker compose run` intercepts a bare `--help` as its
-own flag rather than passing it through. To get help output, put it after a
-`--` separator:
-```bash
-docker compose run --rm operator ./operator/operate.py -- --help
-```
-Normal arguments like `--goal-x`/`--goal-y` do not need the `--` separator.
+### REPL commands
 
-## Verified CSV
+| Command | Effect |
+|---|---|
+| `goal <lat> <lon>` | Send a new GPS goal as a move_base action. |
+| `cancel` | Cancel the active goal, return to AUTO mode. |
+| `teleop` | Enter manual teleop sub-mode (drive with keyboard-style input). |
+| `stop` | Zero velocity immediately, mode -> STOPPED. |
+| `estop` | Engage the e-stop (latched). |
+| `release` | Release the e-stop. |
+| `auto` | Return to AUTO mode. |
+| `status` | Print current goal, nav status, mode, heartbeat age. |
+| `quit` | Exit the REPL. |
+
+## CSV output
 
 ```bash
 head -1 ../operator_run.csv
 wc -l ../operator_run.csv
 ```
-Header is exactly:
-```
-elapsed_time,fused_x,fused_y,fused_yaw,fused_yaw_deg,planner_linear_x,planner_angular_z,ctrl_linear_x,ctrl_angular_z,ref_x,ref_y
-```
-11 columns, multiple data rows; `fused_x` climbs toward the goal over the run;
-`ref_x`/`ref_y` stay constant at the requested goal.
+Columns are the union of every baseline signal the repo's attack CSVs log
+(e.g. `elapsed_time,fused_x,fused_y,fused_yaw,fused_yaw_deg,planner_linear_x,
+planner_angular_z,ctrl_linear_x,ctrl_angular_z,ref_x,ref_y`).
 
 ## Normal-vs-attack comparison
 

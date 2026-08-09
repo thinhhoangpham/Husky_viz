@@ -43,13 +43,32 @@ You only need this the very first time, or if the sim is in a broken state — a
 normal reset does the same thing (see the note at the top).
 
 ```bash
-pkill -9 -f gzserver; pkill -9 -f gzclient; pkill -9 -f gazebo
-pkill -9 -f rosmaster; pkill -9 -f roscore
-pkill -9 -f move_base; pkill -9 -f ekf_localization; pkill -9 -f navsat
-pkill -9 -f robot_state_publisher; pkill -9 -f twist_mux; pkill -9 -f create_park; pkill -9 -f load-park
-sleep 2
+# Kill the roslaunch parents FIRST so nothing respawns, then give them a moment.
+pkill -9 -f 'bin/roslaunch' || true
+sleep 1
+
+# Every sim process pattern. On this box the ROS nodes are children of
+# `systemd --user`, not of roslaunch, so we pattern-kill each one directly.
+SIM_PATTERNS='gzserver gzclient gazebo rosmaster roscore move_base ekf_localization navsat robot_state_publisher twist_mux create_park add_husky load-park controller_manager spawn_model robot_localization'
+for p in $SIM_PATTERNS; do pkill -9 -f "$p" || true; done
+
+# Verify-and-retry loop: pattern-kills can miss systemd-user children (they get
+# reparented / race the kill), so re-check with pgrep and kill any survivor by
+# PID directly, which always works. Repeat up to 3 times, then report status.
+for attempt in 1 2 3; do
+  pat="$(echo "$SIM_PATTERNS" | tr ' ' '|')"
+  alive="$(pgrep -f "$pat" | grep -v "^$$\$" || true)"
+  [ -z "$alive" ] && break
+  echo "sim procs still alive (attempt $attempt): $alive — killing by PID"
+  for pid in $alive; do kill -9 "$pid" 2>/dev/null || true; done
+  sleep 1
+done
+pat="$(echo "$SIM_PATTERNS" | tr ' ' '|')"
+alive="$(pgrep -f "$pat" | grep -v "^$$\$" || true)"
+if [ -z "$alive" ]; then echo "CLEAN: all sim procs down"; else echo "WARNING: still alive: $alive"; fi
+
 # Remove leftover attacker/operator containers from previous runs
-docker rm -f $(docker ps -aq --filter name=attacker --filter name=operator) 2>/dev/null
+docker rm -f $(docker ps -aq --filter name=attacker --filter name=operator) 2>/dev/null || true
 # Purge any leftover/ghost ROS nodes from killed attacker/operator runs
 # (a ghost publisher on /move_base/goal preempts goals and makes markers vanish).
 yes | rosnode cleanup 2>/dev/null || true
@@ -76,15 +95,18 @@ docker network create --subnet 172.20.0.0/16 husky_lan
 
 ### Step 2 — start the WORLD + dataset ROBOT (Terminal 1)
 
-**CRITICAL:** export `GAZEBO_PLUGIN_PATH` so the lidar plugin loads (see the gotcha
-above).
+**Note:** `load-park-world.sh` now auto-discovers the lidar plugin (it searches
+`GAZEBO_PLUGIN_PATH` first, then `~/husky_overlay_ws/devel/lib`), so you no longer
+need to export `GAZEBO_PLUGIN_PATH` yourself — the commented line below is kept only
+as an optional fallback.
 
 ```bash
 cd ~/Documents/Husky_viz
 export ROS_IP=172.20.0.1
 export ROS_MASTER_URI=http://172.20.0.1:11311
 export ROBOT_HOST_IP=172.20.0.1
-export GAZEBO_PLUGIN_PATH="$HOME/husky_overlay_ws/devel/lib${GAZEBO_PLUGIN_PATH:+:$GAZEBO_PLUGIN_PATH}"
+# Optional fallback — no longer required; the script finds the plugin itself:
+# export GAZEBO_PLUGIN_PATH="$HOME/husky_overlay_ws/devel/lib${GAZEBO_PLUGIN_PATH:+:$GAZEBO_PLUGIN_PATH}"
 ./load-park-world.sh
 ```
 
@@ -96,8 +118,8 @@ the park and the robot.
 **Verify (Terminal 2, same `ROS_IP` / `ROS_MASTER_URI` env):**
 
 ```bash
-# Lidar points — should show ~10 Hz (~15k pts). If NOTHING, GAZEBO_PLUGIN_PATH
-# was not set — see the gotcha at the top.
+# Lidar points — should show ~10 Hz (~15k pts). If NOTHING, the plugin was not
+# found — confirm it exists at ~/husky_overlay_ws/devel/lib.
 rostopic hz /os0_cloud_node/points
 
 # Localization — shows /ekf_localization, /ekf_localization_map, /navsat_transform
@@ -178,8 +200,19 @@ cd ~/Documents/Husky_viz/operator
 export ROS_IP=172.20.0.1
 export ROS_MASTER_URI=http://172.20.0.1:11311
 export ROBOT_HOST_IP=172.20.0.1
-docker compose run --rm operator ./operator/operate.py --lat 49.9000094 --lon 8.9000327
+docker compose up -d
+docker compose exec operator bash -lc "source /opt/ros/noetic/setup.bash && ./operator/operate.py"
 ```
+
+This starts the operator and waits at the `operator>` prompt — it sends **nothing** yet (RViz view at http://localhost:6080/vnc.html).
+
+**Then, when you decide, send the goal** — at the `operator>` prompt type:
+
+```
+goal 49.9000094 8.9000327
+```
+
+Other prompt commands: `cancel`, `teleop`, `stop`, `estop`/`release`, `auto`, `status`, `quit`.
 
 - `49.9000094 / 8.9000327` is **dataset waypoint 3** — world ≈ `(1.16, -2.40)`,
   down the trail from spawn.
@@ -219,6 +252,50 @@ docker compose run --rm attacker ./attacker/attack.sh goal --abs-lat 49.9001798 
 > - `--offset-x <dx> --offset-y <dy>` — inject a goal **offset** from the
 >   overheard real goal (relative to what the attacker heard in Step 5).
 
+**Option B — GPS slow-drift spoof (corrupts the position ESTIMATE — navigation denial, not a physical hijack)**
+
+Instead of injecting a false *goal*, this attack fakes the robot's *GPS position*: it publishes `/navsat/fix` at the genuine ~2 Hz rate with a **slowly growing offset**, so `navsat_transform` accepts each fix as a plausible correction and the map-EKF's **fused position estimate** is dragged off-route. Critically, this corrupts only the *estimate* — the robot does **not** physically travel to the phantom location. Because move_base steers off a lie that keeps moving as the offset grows, the robot **thrashes in place** (spins and lurches) chasing a target it can never reach, and fails its mission. This is a **navigation-denial / disorientation** attack, not a "drive the robot to an attacker-chosen spot" hijack.
+
+The operator's goal is never touched (`sent_goal == active_goal` stays consistent), and the operator does not subscribe to `/navsat/fix`. Worse for the operator: their `status`/`dist` readouts are computed from the **corrupted** fused pose (`/odometry/filtered_map`), so the display looks nominal — the robot appears to be making smooth progress while it is actually spinning in place. The spoof is stealthy on every channel the operator watches.
+
+Like the goal-inject, the **attack runs in the attacker container** as a Tier-2 blind injector (`attack_navsat.py`): it takes one seed `/navsat/fix` sample and publishes a drifting `/navsat/fix` open-loop, reading **no** internal `robot_localization` topics. The fused-vs-anchor proof CSV is produced by a **separate host-side defender monitor** (`monitor_navsat_drift.py`), run alongside — that is the analyst observing effects, not part of the attacker.
+
+Attacker (container-side):
+
+```bash
+cd ~/Documents/Husky_viz/attacker
+export ROS_IP=172.20.0.1 ROS_MASTER_URI=http://172.20.0.1:11311 ROBOT_HOST_IP=172.20.0.1
+docker compose run --rm attacker ./attacker/attack.sh navsat --drift-rate 0.5 --max-offset 15 --duration 40
+```
+
+Defender monitor (host-side, in a second terminal — legitimate, reads the robot's own estimator):
+
+```bash
+cd ~/Documents/Husky_viz
+export ROS_IP=172.20.0.1 ROS_MASTER_URI=http://172.20.0.1:11311
+python3 monitor_navsat_drift.py --duration 40 --csv monitor_navsat_drift_run.csv
+```
+
+- Defaults: 2 Hz publish rate, 0.5 m/s westward drift, capped at 15 m (this cap is the **estimate** offset, not physical travel).
+- Verified: the fused position **estimate** drifted ~15 m sideways as the offset ramped to the cap; `/odometry/gps` tracked the lie (it did **not** collapse to `(0,0)`), confirming `navsat_transform` accepted the drifted fixes. The robot itself did **not** travel there — it spun and lurched in place chasing the moving phantom target.
+- **Why a slow drift and not a flood:** publishing fake fixes at 10–100 Hz overruns `navsat_transform`, which then emits `(0,0)` and the EKF rejects it — nothing happens. Matching the real ~2 Hz with a gradual offset keeps each fix plausible, so the lie propagates.
+- Options: `--drift-rate <m/s>` (offset growth), `--max-offset <m>` (cap), `--drift-bearing <deg>` (default 90 = sideways/west), or `--drift-x <m/s> --drift-y <m/s>` (map-frame NORTH+/WEST+) to override bearing.
+
+**Intense variant (larger, faster estimate drift):**
+
+```bash
+cd ~/Documents/Husky_viz/attacker
+export ROS_IP=172.20.0.1 ROS_MASTER_URI=http://172.20.0.1:11311 ROBOT_HOST_IP=172.20.0.1
+docker compose run --rm attacker ./attacker/attack.sh navsat --drift-rate 1.5 --max-offset 40 --duration 40
+```
+
+Run the host-side `monitor_navsat_drift.py` alongside (as above) to capture the fused-vs-anchor CSV.
+
+- 1.5 m/s drift (3× the default), capped at 40 m of **estimate** offset.
+- Verified on a clean sim recording ALL sensors: the fused position **estimate** climbed ~40 m sideways (e.g. `map_y` to ~+25 m in one run), tracking the injected offset ~1:1, with `/odometry/gps` following the whole way (no `(0,0)` collapse). Even at 1.5 m/s the fixes stayed plausible enough that `navsat_transform` accepted them. The robot's real down-range position (`map_x`) held roughly constant (~28 m) — **it did not translate to the phantom location.** Physically the robot spun and lurched in place: wheel odometry showed `wheel_step` near 0 with forward speed stuttering 0↔0.5, odom yaw rate spiking to ~1 rad/s repeatedly, and the compass heading swinging through all angles (−175° → −95° → +25° → +153° …). The robot **never arrives anywhere** — it thrashes in place until the mission fails. The 40 m figure is the ESTIMATE moving, not the robot.
+- **Not permanent:** the corruption holds only while the attack runs. Once it stops, genuine 2 Hz GPS reels the fused estimate back to true within a few fixes — this is a live disorientation/denial, not a permanent relocation.
+- **Detection:** the robot's **honest** sensors — wheel odometry and `/compass/data` — report the real physical motion (spinning and lurching in place), while the corrupted GPS-fused pose (`/odometry/filtered_map`) claims smooth sideways travel. The two **disagree**, and that contradiction is the tell. A monitor that compares wheel-odom/compass displacement + heading against the GPS-fused pose flags the spoof. Note: do **not** rely on `/imu/data` as a witness — its `angular_velocity` reads dead/~0 on this robot (confirmed even during a hard 1.2 rad/s turn), so IMU yaw-rate cannot witness the turns. Use wheel odometry + compass.
+
 ---
 
 ### Reset the robot between runs
@@ -241,12 +318,32 @@ then Step 2 again, then re-run Steps 3–6.
 ### Stop everything
 
 ```bash
-pkill -9 -f gzserver; pkill -9 -f gzclient; pkill -9 -f gazebo
-pkill -9 -f rosmaster; pkill -9 -f roscore
-pkill -9 -f move_base; pkill -9 -f ekf_localization; pkill -9 -f navsat
-pkill -9 -f robot_state_publisher; pkill -9 -f twist_mux; pkill -9 -f create_park; pkill -9 -f load-park
+# Kill the roslaunch parents FIRST so nothing respawns, then give them a moment.
+pkill -9 -f 'bin/roslaunch' || true
+sleep 1
+
+# Every sim process pattern. On this box the ROS nodes are children of
+# `systemd --user`, not of roslaunch, so we pattern-kill each one directly.
+SIM_PATTERNS='gzserver gzclient gazebo rosmaster roscore move_base ekf_localization navsat robot_state_publisher twist_mux create_park add_husky load-park controller_manager spawn_model robot_localization'
+for p in $SIM_PATTERNS; do pkill -9 -f "$p" || true; done
+
+# Verify-and-retry loop: pattern-kills can miss systemd-user children (they get
+# reparented / race the kill), so re-check with pgrep and kill any survivor by
+# PID directly, which always works. Repeat up to 3 times, then report status.
+for attempt in 1 2 3; do
+  pat="$(echo "$SIM_PATTERNS" | tr ' ' '|')"
+  alive="$(pgrep -f "$pat" | grep -v "^$$\$" || true)"
+  [ -z "$alive" ] && break
+  echo "sim procs still alive (attempt $attempt): $alive — killing by PID"
+  for pid in $alive; do kill -9 "$pid" 2>/dev/null || true; done
+  sleep 1
+done
+pat="$(echo "$SIM_PATTERNS" | tr ' ' '|')"
+alive="$(pgrep -f "$pat" | grep -v "^$$\$" || true)"
+if [ -z "$alive" ]; then echo "CLEAN: all sim procs down"; else echo "WARNING: still alive: $alive"; fi
+
 # Remove attacker/operator containers
-docker rm -f $(docker ps -aq --filter name=attacker --filter name=operator) 2>/dev/null
+docker rm -f $(docker ps -aq --filter name=attacker --filter name=operator) 2>/dev/null || true
 # Force-disconnect any attached containers, then remove husky_lan (no-op if absent)
 if docker network inspect husky_lan >/dev/null 2>&1; then
   for c in $(docker network inspect husky_lan --format '{{range .Containers}}{{.Name}} {{end}}'); do

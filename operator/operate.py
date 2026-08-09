@@ -25,14 +25,21 @@ import math
 import os
 import sys
 import threading
+import time
 
 import actionlib
 import rospy
-from actionlib_msgs.msg import GoalStatus
+from actionlib_msgs.msg import GoalStatus, GoalStatusArray
 from geometry_msgs.msg import Twist
-from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
+from move_base_msgs.msg import MoveBaseAction, MoveBaseActionGoal, MoveBaseGoal
 from nav_msgs.msg import Odometry
+from std_msgs.msg import Bool
 from tf.transformations import quaternion_from_euler, euler_from_quaternion
+
+from gcs_state import GcsState
+from gcs_csv import CSV_HEADER as GCS_CSV_HEADER, build_row
+from gcs_intervene import Intervene
+from gcs_commands import parse_command
 
 # goal_marker.py lives at the repo root; when run by path, sys.path[0] is this
 # script's dir (operator/), so add the repo root so the import resolves.
@@ -67,10 +74,6 @@ STATUS_TEXT = {
     GoalStatus.REJECTED: "REJECTED", GoalStatus.PREEMPTED: "PREEMPTED",
     GoalStatus.LOST: "LOST",
 }
-CSV_HEADER = ["elapsed_time", "fused_x", "fused_y", "fused_yaw", "fused_yaw_deg",
-              "planner_linear_x", "planner_angular_z",
-              "ctrl_linear_x", "ctrl_angular_z", "ref_x", "ref_y"]
-
 
 def yaw_of(odom):
     q = odom.pose.pose.orientation
@@ -138,14 +141,26 @@ class Operator(object):
         rospy.Subscriber(ODOM_TOPIC, Odometry, self._on_odom, queue_size=1)
         rospy.Subscriber(PLANNER_CMD_TOPIC, Twist, self._on_planner, queue_size=1)
         rospy.Subscriber(CTRL_CMD_TOPIC, Twist, self._on_ctrl, queue_size=1)
+
+        self.state = GcsState()
+        self._active_goal = None      # (x,y) from /move_base/goal
+        self._last_odom_wall = None   # for heartbeat
+        self._stop = threading.Event()
+        rospy.Subscriber("/move_base/goal", MoveBaseActionGoal, self._on_active_goal, queue_size=1)
+        rospy.Subscriber("/move_base/status", GoalStatusArray, self._on_status, queue_size=1)
+        self._teleop_pub = rospy.Publisher("joy_teleop/cmd_vel", Twist, queue_size=1)
+        self._estop_pub = rospy.Publisher("e_stop", Bool, queue_size=1, latch=True)
+        self._intervene = Intervene(self._teleop_pub, self._estop_pub, Twist, Bool)
+
         self._csv_file = open(args.csv, "w", newline="")
         self._csv = csv.writer(self._csv_file)
-        self._csv.writerow(CSV_HEADER)
+        self._csv.writerow(GCS_CSV_HEADER)
         self._csv_file.flush()
 
     def _on_odom(self, msg):
         with self._lock:
             self._odom = msg
+            self._last_odom_wall = time.time()
 
     def _on_planner(self, msg):
         with self._lock:
@@ -155,44 +170,128 @@ class Operator(object):
         with self._lock:
             self._ctrl_cmd = (msg.linear.x, msg.angular.z)
 
+    def _on_active_goal(self, msg):
+        p = msg.goal.target_pose.pose.position
+        with self._lock:
+            self._active_goal = (p.x, p.y)
+            self.state.active_goal = (p.x, p.y)
+
+    def _on_status(self, msg):
+        # last status in the array is the current goal's
+        if msg.status_list:
+            self.state.nav_status = STATUS_TEXT.get(
+                msg.status_list[-1].status, str(msg.status_list[-1].status))
+
+    def _heartbeat_age(self):
+        if self._last_odom_wall is None:
+            return float("nan")
+        return time.time() - self._last_odom_wall
+
     def _write_row(self, elapsed):
+        if self._stop.is_set():
+            return None
         with self._lock:
             odom = self._odom
             plx, paz = self._planner_cmd
             clx, caz = self._ctrl_cmd
+            active_goal = self._active_goal
         if odom is None:
-            return None
-        px = odom.pose.pose.position.x
-        py = odom.pose.pose.position.y
-        yaw = yaw_of(odom)
-        self._csv.writerow(
-            ["%.3f" % elapsed, "%.4f" % px, "%.4f" % py,
-             "%.4f" % yaw, "%.4f" % math.degrees(yaw),
-             "%.4f" % plx, "%.4f" % paz, "%.4f" % clx, "%.4f" % caz,
-             "%.4f" % self._goal_x, "%.4f" % self._goal_y])
+            pose = (None, None, None)
+        else:
+            px = odom.pose.pose.position.x
+            py = odom.pose.pose.position.y
+            yaw = yaw_of(odom)
+            pose = (px, py, yaw)
+        row = build_row(
+            elapsed, pose, (plx, paz), (clx, caz),
+            self.state.sent_goal, active_goal,
+            self.state.nav_status, self._heartbeat_age(), self.state.mode)
+        self._csv.writerow(row)
         self._csv_file.flush()
-        return (px, py, yaw)
+        return pose if pose[0] is not None else None
 
-    def run(self):
-        client = actionlib.SimpleActionClient("move_base", MoveBaseAction)
+    def run(self, initial_goal=None):
+        self.client = actionlib.SimpleActionClient("move_base", MoveBaseAction)
         rospy.loginfo("Waiting for move_base action server ...")
-        if not client.wait_for_server(rospy.Duration(60.0)):
-            rospy.logerr("move_base action server not available.")
-            return 1
+        self.client.wait_for_server(rospy.Duration(60.0))
+        self._start_wall = time.time()
+        # background telemetry/CSV writer (~2 Hz)
+        self._writer = threading.Thread(target=self._telemetry_loop)
+        self._writer.daemon = True
+        self._writer.start()
+        if initial_goal is not None:
+            self._do_goal(initial_goal[0], initial_goal[1])
+        self._print_help()
+        while not rospy.is_shutdown():
+            try:
+                line = input("operator> ")
+            except (EOFError, KeyboardInterrupt):
+                break
+            cmd, args = parse_command(line)
+            if cmd == "quit":
+                break
+            try:
+                self._dispatch(cmd, args)
+            except Exception as e:
+                rospy.logwarn("command failed: %s", e)
+        return 0
 
-        # Convert the operator's GPS waypoint (lat, lon) to a map-frame point.
-        gx, gy, path = latlon_to_map(self.args.lat, self.args.lon, self.args.alt)
+    def _telemetry_loop(self):
+        rate = rospy.Rate(2.0)
+        while not rospy.is_shutdown() and not self._stop.is_set():
+            self._write_row((time.time() - self._start_wall))
+            try:
+                rate.sleep()
+            except rospy.exceptions.ROSInterruptException:
+                break
+
+    def _dispatch(self, cmd, args):
+        if cmd == "noop":
+            return
+        if cmd == "goal":
+            self._do_goal(args[0], args[1])
+        elif cmd == "cancel":
+            self.client.cancel_all_goals(); self.state.set_mode("AUTO")
+            rospy.loginfo("CANCELLED goal")
+        elif cmd == "teleop":
+            self.state.set_mode("MANUAL"); self._teleop_repl()
+        elif cmd == "stop":
+            self._intervene.stop(); self.client.cancel_all_goals()
+            self.state.set_mode("STOPPED")
+            rospy.loginfo("STOP (zero velocity + cancel active goal)")
+        elif cmd == "estop":
+            self._intervene.engage_estop(); self.state.engage_estop()
+            rospy.logwarn("E-STOP ENGAGED")
+        elif cmd == "release":
+            self._intervene.release_estop(); self.state.release_estop()
+            rospy.loginfo("E-STOP RELEASED")
+        elif cmd == "auto":
+            self.state.set_mode("AUTO"); rospy.loginfo("AUTO mode")
+        elif cmd == "status":
+            self._print_status()
+        elif cmd in ("help", "unknown", "error"):
+            self._print_help() if cmd == "help" else rospy.logwarn(" ".join(args) or "?")
+
+    def _do_goal(self, lat, lon):
+        gx, gy, path = latlon_to_map(lat, lon)
         self._goal_x, self._goal_y = gx, gy
-        rospy.loginfo("Operator GPS goal (lat=%.7f, lon=%.7f) -> map=(%.3f, %.3f) "
-                      "via %s", self.args.lat, self.args.lon, gx, gy, path)
-
-        # Heading toward the goal from the current map-frame pose, so the robot
-        # faces its target on arrival. Pose is read in the SAME frame as the goal.
-        start = rospy.wait_for_message(ODOM_TOPIC, Odometry, timeout=30.0)
-        sp = start.pose.pose.position
-        gyaw = math.atan2(gy - sp.y, gx - sp.x)
+        self.state.sent_goal = (gx, gy)
+        with self._lock:
+            cached_odom = self._odom
+        if cached_odom is not None:
+            sp = cached_odom.pose.pose.position
+        else:
+            # No odom cached yet (e.g. right at startup) -- short bounded wait
+            # instead of the REPL-freezing 30s blocking wait_for_message.
+            try:
+                start = rospy.wait_for_message(ODOM_TOPIC, Odometry, timeout=2.0)
+                sp = start.pose.pose.position
+            except rospy.ROSException:
+                rospy.logwarn("_do_goal: no odom available yet; sending goal "
+                              "with heading 0.0 (unable to face the target).")
+                sp = None
+        gyaw = math.atan2(gy - sp.y, gx - sp.x) if sp is not None else 0.0
         gq = quaternion_from_euler(0.0, 0.0, gyaw)
-
         goal = MoveBaseGoal()
         goal.target_pose.header.frame_id = GOAL_FRAME
         goal.target_pose.header.stamp = rospy.Time.now()
@@ -202,40 +301,115 @@ class Operator(object):
         goal.target_pose.pose.orientation.y = gq[1]
         goal.target_pose.pose.orientation.z = gq[2]
         goal.target_pose.pose.orientation.w = gq[3]
-
-        rospy.loginfo("Sending goal (frame=%s): x=%.3f y=%.3f", GOAL_FRAME, gx, gy)
-        # Visual: GREEN disc FLOATING above the real goal (best-effort). frame="map"
-        # so (gx, gy) are used as world coords directly (no odom rotation), and the
-        # fixed marker floats above the lidar height gate so it is not scanned.
         place_goal_marker("goal_marker_real", gx, gy, "0 1 0", frame="map")
-        start_t = rospy.Time.now()
-        client.send_goal(goal)
+        self.client.send_goal(goal)
+        self.state.set_mode("AUTO")
+        rospy.loginfo("SENT goal map=(%.2f, %.2f) via %s", gx, gy, path)
 
-        rate = rospy.Rate(1.0)
-        deadline = start_t + rospy.Duration(self.args.timeout)
-        while not rospy.is_shutdown():
-            elapsed = (rospy.Time.now() - start_t).to_sec()
-            pose = self._write_row(elapsed)
-            state = client.get_state()
-            if pose is not None:
-                dist = math.hypot(self._goal_x - pose[0],
-                                  self._goal_y - pose[1])
-                rospy.loginfo("state=%s pos=(%.2f, %.2f) dist_to_goal=%.2f m",
-                              STATUS_TEXT.get(state, state), pose[0], pose[1], dist)
-            else:
-                rospy.loginfo("state=%s (no odom yet)", STATUS_TEXT.get(state, state))
-            if state in (GoalStatus.SUCCEEDED, GoalStatus.ABORTED,
-                         GoalStatus.REJECTED, GoalStatus.PREEMPTED, GoalStatus.LOST):
-                rospy.loginfo("Final move_base state: %s", STATUS_TEXT.get(state, state))
-                return 0 if state == GoalStatus.SUCCEEDED else 2
-            if rospy.Time.now() > deadline:
-                rospy.logwarn("Timed out after %ss; last state=%s",
-                              self.args.timeout, STATUS_TEXT.get(state, state))
-                return 3
-            rate.sleep()
-        return 0
+    def _teleop_repl(self):
+        """Raw-key teleop: i/,=fwd/back, j/l=turn, k=stop, x/Esc=exit.
+        Falls back to a no-op if stdin is not a real TTY (e.g. piped input)."""
+        try:
+            import termios
+            import tty
+        except ImportError:
+            rospy.logwarn("teleop: termios/tty unavailable on this platform; skipping.")
+            return
+        fd = sys.stdin.fileno()
+        try:
+            old_settings = termios.tcgetattr(fd)
+        except termios.error:
+            rospy.logwarn("teleop: stdin is not a TTY; skipping.")
+            return
+        rospy.loginfo("TELEOP mode: i/,=fwd/back j/l=turn k=stop x/Esc=exit")
+        # twist_mux's joy_teleop slot has a 0.5s input timeout, so a single
+        # publish per keystroke only moves the robot in short 0.5s pulses.
+        # Keep republishing the last-commanded twist at ~10Hz from a small
+        # daemon thread until the next key changes it (or stop/exit zeroes
+        # it), so holding a direction drives smoothly and continuously.
+        teleop_stop = threading.Event()
+        desired = [0.0, 0.0]  # [linear.x, angular.z], mutated under teleop_lock
+        teleop_lock = threading.Lock()
+
+        def _repeat_publish():
+            rate = rospy.Rate(10.0)
+            while not teleop_stop.is_set() and not rospy.is_shutdown():
+                with teleop_lock:
+                    linx, angz = desired
+                self._intervene.drive(linx, angz)
+                try:
+                    rate.sleep()
+                except rospy.exceptions.ROSInterruptException:
+                    break
+
+        repeater = threading.Thread(target=_repeat_publish)
+        repeater.daemon = True
+        repeater.start()
+        try:
+            tty.setraw(fd)
+            while not rospy.is_shutdown():
+                ch = sys.stdin.read(1)
+                if ch in ("x", "\x1b"):
+                    break
+                elif ch == "i":
+                    with teleop_lock:
+                        desired[0], desired[1] = 0.4, 0.0
+                elif ch == ",":
+                    with teleop_lock:
+                        desired[0], desired[1] = -0.4, 0.0
+                elif ch == "j":
+                    with teleop_lock:
+                        desired[0], desired[1] = 0.0, 0.8
+                elif ch == "l":
+                    with teleop_lock:
+                        desired[0], desired[1] = 0.0, -0.8
+                elif ch == "k":
+                    with teleop_lock:
+                        desired[0], desired[1] = 0.0, 0.0
+        finally:
+            teleop_stop.set()
+            repeater.join(timeout=1.0)
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+            self._intervene.stop()
+            self.state.set_mode("AUTO")
+
+    def _print_status(self):
+        sx_sy = self.state.sent_goal
+        ax_ay = self.state.active_goal
+        with self._lock:
+            odom = self._odom
+        dist = "nan"
+        if odom is not None and self.state.sent_goal is not None:
+            px = odom.pose.pose.position.x
+            py = odom.pose.pose.position.y
+            dist = "%.2f" % math.hypot(self.state.sent_goal[0] - px,
+                                       self.state.sent_goal[1] - py)
+        age = self._heartbeat_age()
+        age_str = "n/a" if math.isnan(age) else "%.1fs" % age
+        print("state=%s | sent=%s | active=%s | dist=%s | mode=%s | estop=%s | link_age=%s" % (
+            self.state.nav_status, sx_sy, ax_ay, dist, self.state.mode,
+            self.state.estop_engaged, age_str))
+
+    def _print_help(self):
+        print(
+            "Commands:\n"
+            "  goal <lat> <lon>  send a GPS goal (map-frame, via /fromLL)\n"
+            "  cancel            cancel the active move_base goal\n"
+            "  teleop            enter raw-key teleop (i/,/j/l/k, x or Esc to exit)\n"
+            "  stop              zero velocity, mode=STOPPED\n"
+            "  estop             engage e-stop (latched)\n"
+            "  release           release e-stop, mode=AUTO\n"
+            "  auto              return to AUTO mode\n"
+            "  status            print one-line state snapshot\n"
+            "  help              show this message\n"
+            "  quit              exit the operator"
+        )
 
     def shutdown(self):
+        self._stop.set()
+        writer = getattr(self, "_writer", None)
+        if writer is not None and writer.is_alive():
+            writer.join(timeout=2.0)
         if self._csv_file and not self._csv_file.closed:
             self._csv_file.flush()
             self._csv_file.close()
@@ -243,24 +417,18 @@ class Operator(object):
 
 
 def main():
-    p = argparse.ArgumentParser(
-        description="Remote operator: send one GPS (lat/lon) move_base goal.")
-    p.add_argument("--lat", type=float, required=True,
-                   help="operator GPS goal latitude (decimal degrees)")
-    p.add_argument("--lon", type=float, required=True,
-                   help="operator GPS goal longitude (decimal degrees)")
-    p.add_argument("--alt", type=float, default=0.0,
-                   help="goal altitude (m) for /fromLL; default 0.0")
-    p.add_argument("--csv", default="operator_run.csv",
-                   help="baseline CSV output path (default operator_run.csv)")
-    p.add_argument("--timeout", type=float, default=180.0,
-                   help="give up after this many seconds (default 180)")
+    p = argparse.ArgumentParser(description="Interactive GCS operator.")
+    p.add_argument("--lat", type=float, default=None)
+    p.add_argument("--lon", type=float, default=None)
+    p.add_argument("--csv", default="operator_run.csv")
+    p.add_argument("--timeout", type=float, default=180.0)
     args = p.parse_args()
-
     rospy.init_node("operator", anonymous=True)
     op = Operator(args)
+    rospy.on_shutdown(op.shutdown)
+    initial = (args.lat, args.lon) if (args.lat is not None and args.lon is not None) else None
     try:
-        return op.run()
+        return op.run(initial_goal=initial)
     finally:
         op.shutdown()
 

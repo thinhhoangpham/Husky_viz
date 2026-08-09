@@ -252,6 +252,7 @@ if [ "$SPAWN_ROBOT" -eq 1 ]; then
     OUSTER_SEARCH_DIRS="${GAZEBO_PLUGIN_PATH//:/$'\n'}"
   fi
   OUSTER_SEARCH_DIRS="$OUSTER_SEARCH_DIRS
+$HOME/husky_overlay_ws/devel/lib
 /opt/ros/noetic/lib
 $HOME/catkin_ws/devel/lib
 $SCRIPT_DIR/catkin_ws/devel/lib
