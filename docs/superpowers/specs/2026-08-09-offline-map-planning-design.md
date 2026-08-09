@@ -82,28 +82,48 @@ grid and never resample. The park is roughly 80–120 m across, giving a grid on
 the order of 800x800 cells — trivial for NavfnROS. (The Husky is ~0.99 x 0.67 m,
 so 0.15 m cells resolve sub-robot-width gaps.)
 
-**Which obstacles.** Iterate the world's model *definitions*. Classify by name:
-- **Obstacles (marked):** trees (`arbolpartes*`), plus furniture/structures
-  (`bench`, `garden_table`, `lamp`, `trash_bin_1`, `tree_8`, etc.).
-- **Drivable (skipped):** the ground plane `parque`, the trail `camino_parque`.
+**Which obstacles (verified against `park.world`, 2026-08-09).** The world has
+**two distinct tree models** plus furniture — the extractor must handle both tree
+families, they are structured differently:
 
-**Footprints.** Trees rasterize as a disc (radius from the trunk collision
-geometry); box-shaped objects as their bounding box. **No pre-inflation** — the
-extractor emits raw footprints and lets the costmap's tuned `InflationLayer`
+- **`arbolpartes4*` — 15 trees ("small").** Two links: `link_0` mesh
+  `arbol4//tronco4.dae` (**trunk** — confirmed visually in-sim by recoloring),
+  `link_1` mesh `arbol4/copa4.dae` (**canopy/leaves**). The trunk `link_0` pose
+  is offset ~1 m from the model `<pose>` — this is the trap below.
+- **`tree_8*` — 23 trees ("big").** **Single link** `link_0`, visual
+  `bark8_lowpoly.obj` + collision `bark8_collision.obj`. Model `<pose>` and
+  `link_0` pose share the same x/y (no offset), so either places it correctly.
+- **Furniture (obstacles):** `bench*` (16), `garden_table*` (22), `lamp*` (30),
+  `trash_bin_1*` (22). Box/disc footprints from their meshes.
+- **Drivable (skipped):** ground `terreno_parque`/`parque`, trail `camino_parque`,
+  and the container model `Untitled2` (verify it holds no real geometry).
+
+Model counts come from the **model *definitions*** (SDF after line ~4765), which
+carry the real collision geometry — NOT from the earlier `<state>` snapshot,
+which lists many entries without geometry and inflated an earlier "~180 trees"
+miscount. Actual trees: **15 + 23 = 38**.
+
+**Footprints.** Trees rasterize as a disc (radius from the trunk collision mesh:
+`tronco4.dae` for `arbolpartes4`, `bark8_collision.obj` for `tree_8`);
+box-shaped objects as their bounding box. **No pre-inflation** — the extractor
+emits raw footprints and lets the costmap's tuned `InflationLayer`
 (`robot_radius: 0.55`, `inflation_radius: 0.35` in `costmap_common_gps.yaml`)
 grow them. Pre-inflating here would double-inflate.
 
-**The trunk-link / two-representation trap (must be handled — see §7).**
-`park.world` contains each tree twice: a `<state world_name='default'>` snapshot
+**The trunk-link / two-representation trap (RESOLVED for both families).**
+`park.world` contains each model twice: a `<state world_name='default'>` snapshot
 (line ~146+, poses only, no collision) and the real model *definitions*
-(line ~4765+, with collision geometry). A tree is a **multi-link** model
-(`link_0`, `link_1`, ...) whose link poses differ from the model `<pose>` by
-~1 m. Reading the **model pose** instead of the correct **trunk link pose** gave
-1–5 m placement errors and a jittery localizer in prior work (recorded in
-project memory). The extractor MUST:
+(line ~4765+, with collision geometry). For `arbolpartes4` the model is
+**multi-link** and its trunk `link_0` sits ~1 m from the model `<pose>`; reading
+the **model pose** instead of the **trunk link pose** gave 1–5 m placement errors
+and a jittery localizer in prior work (project memory). For `tree_8` (single
+link) the offset is zero. The extractor MUST therefore:
   1. read collision geometry from the world model **definitions** (they have it),
-  2. place each obstacle at its **trunk link** world pose, not the model `<pose>`,
-  3. have a regression test asserting a known tree lands at its trunk position.
+  2. place each tree at its **`link_0`** world pose (trunk for both families) —
+     confirmed `link_0` = trunk for `arbolpartes4` by in-sim recolor, and the
+     only link for `tree_8`,
+  3. have a regression test asserting a known `arbolpartes4` tree lands at its
+     `link_0` (trunk) position, offset from the model pose.
 
 **Outputs:**
 - `park_map.pgm` + `park_map.yaml` — standard ROS `map_server` occupancy grid
@@ -200,12 +220,14 @@ own sensors and the operator's Gazebo/RViz view, never against
 
 ## 7. Open details to resolve during implementation planning
 
-These are known unknowns, deliberately not guessed:
+These are known unknowns, deliberately not guessed. (The trunk-link question —
+formerly the top item — is now RESOLVED: `link_0` = trunk for both tree families,
+confirmed by in-sim recolor; see §4.1.)
 
-1. **Which link is the trunk.** A tree has `link_0`, `link_1`, ... with poses ~1 m
-   apart. Determine which link is the ground trunk (likely the lowest-z /
-   near-vertical one) and how to read its **collision radius**, from the world
-   *definitions* block (line ~4765+), not the `<state>` snapshot (line ~146+).
+1. **Trunk collision radius per family.** How to read the footprint radius from
+   each trunk mesh — `tronco4.dae` (`arbolpartes4`) and `bark8_collision.obj`
+   (`tree_8`). The meshes are `.dae`/`.obj` files, so the extractor either parses
+   mesh bounds or uses a per-family constant radius. Decide which.
 2. **Map origin / extent.** Compute the `park_map.yaml` `origin` and grid bounds
    from the spread of obstacle positions so the whole park fits with margin, in
    the `map` frame (origin 49.9/8.9 datum, consistent with `fix_to_world`).
