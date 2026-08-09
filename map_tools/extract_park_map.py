@@ -29,14 +29,16 @@ RADII = {
 }
 
 # Families stamped as yaw-oriented boxes, with their collision .dae (relative to
-# the models_opt/ root). Everything else (trees) stays a disc via RADII.
+# the models_opt/ root). Everything else (trees, lamp, trash_bin_1) stays a disc
+# via RADII. lamp (0.095 m wide) and trash_bin_1 (~0.10x0.06 m) are EXCLUDED here
+# on purpose: at 0.15 m grid resolution their box footprint is sub-cell, so
+# stamp_box can find zero (or ~1) cell centers inside it and the object nearly
+# or entirely vanishes from the map. Discs still mark them correctly.
 import os as _os
 _MODELS_ROOT = _os.path.join(_os.path.dirname(__file__), "..", "models_opt")
 BOX_MESHES = {
     "bench":        _os.path.join(_MODELS_ROOT, "bench", "Bench_1.dae"),
     "garden_table": _os.path.join(_MODELS_ROOT, "garden_table", "garden_table.dae"),
-    "lamp":         _os.path.join(_MODELS_ROOT, "lamp", "street_lamp.dae"),
-    "trash_bin_1":  _os.path.join(_MODELS_ROOT, "trash_bin_1", "trash_bin.dae"),
 }
 # Cache footprints so each .dae is parsed once.
 _footprint_cache = {}

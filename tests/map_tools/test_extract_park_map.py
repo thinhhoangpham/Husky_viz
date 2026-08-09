@@ -43,6 +43,18 @@ def test_bench_footprint_covers_full_length():
     py = bench.world_y + L * math.sin(bench.yaw + math.pi / 2)
     assert g.is_occupied(px, py) is True
 
+def test_lamp_and_bin_still_marked():
+    # Regression guard: lamp (0.095 m wide) and trash_bin_1 (~0.10x0.06 m) are
+    # sub-cell at 0.15 m resolution -- boxing them finds zero/near-zero cell
+    # centers inside the footprint and the object nearly vanishes from the map.
+    # They must stay discs (as before Task 8), not boxes.
+    models = parse_models(WORLD)
+    g = build_grid(models, resolution=0.15)
+    lamp = next(m for m in models if m.name == "lamp")
+    binm = next(m for m in models if m.name == "trash_bin_1")
+    assert g.is_occupied(lamp.world_x, lamp.world_y) is True
+    assert g.is_occupied(binm.world_x, binm.world_y) is True
+
 def test_main_writes_three_files(tmp_path):
     from map_tools.extract_park_map import main
     out = tmp_path / "maps"
