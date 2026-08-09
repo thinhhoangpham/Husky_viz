@@ -51,6 +51,26 @@ class Grid:
                 if math.hypot(cx - x, cy - y) <= radius:
                     self._set_occ(c0 + dc, r0 + dr)
 
+    def stamp_box(self, cx, cy, yaw, half_dx, half_dy):
+        """Mark occupied every cell whose center is inside an oriented rectangle
+        centered at (cx, cy), half-extents (half_dx, half_dy) along the box's
+        local axes, rotated by yaw (radians). Iterates the cell window covering
+        the box's bounding circle, transforms each cell center into box-local
+        coords, and tests the axis-aligned half-extents there."""
+        reach = math.hypot(half_dx, half_dy)
+        r_cells = int(math.ceil(reach / self.resolution))
+        c0, r0 = self.world_to_cell(cx, cy)
+        cos_y, sin_y = math.cos(yaw), math.sin(yaw)
+        for dr in range(-r_cells, r_cells + 1):
+            for dc in range(-r_cells, r_cells + 1):
+                wx = self.origin_x + (c0 + dc + 0.5) * self.resolution
+                wy = self.origin_y + (r0 + dr + 0.5) * self.resolution
+                # World -> box-local: rotate by -yaw about (cx, cy).
+                lx = (wx - cx) * cos_y + (wy - cy) * sin_y
+                ly = -(wx - cx) * sin_y + (wy - cy) * cos_y
+                if abs(lx) <= half_dx and abs(ly) <= half_dy:
+                    self._set_occ(c0 + dc, r0 + dr)
+
     def write_pgm(self, path):
         # Flip vertically: PGM row 0 = top = highest y.
         with open(path, "wb") as fh:

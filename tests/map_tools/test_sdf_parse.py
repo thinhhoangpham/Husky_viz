@@ -35,3 +35,14 @@ def test_arbolpartes4_trunk_is_offset_from_model_pose():
     assert abs(tree.world_y - (-19.6925)) < 0.5  # check magnitude: |y| ≈ 19.6925
     # Guard the bug: it must NOT be the model pose y = -20.8082
     assert abs(tree.world_y - (-20.8082)) > 0.5
+
+def test_bench_has_yaw():
+    models = parse_models(WORLD)
+    bench = next(m for m in models if m.name == "bench")
+    # bench link_0 pose yaw is -1.56296 rad
+    assert abs(bench.yaw - (-1.56296)) < 0.01
+
+def test_tree_has_yaw_field():
+    models = parse_models(WORLD)
+    tree = next(m for m in models if m.name == "arbolpartes4")
+    assert hasattr(tree, "yaw")  # yaw present for all models (unused for discs)

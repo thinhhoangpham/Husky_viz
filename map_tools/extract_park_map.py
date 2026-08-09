@@ -12,8 +12,13 @@ import argparse
 
 from map_tools.sdf_parse import parse_models
 from map_tools.occupancy_grid import Grid
+from map_tools.mesh_bounds import footprint_dxdy
 
 # Footprint radii in metres, BEFORE costmap inflation. See the plan for rationale.
+# NOTE: the furniture entries here (bench/garden_table/lamp/trash_bin_1) are
+# superseded by BOX_MESHES below -- build_grid boxes those families using the
+# real mesh footprint instead. Left in place because test_radii still checks
+# every family has a positive radius, and RADII has no other users to break.
 RADII = {
     "arbolpartes4": 0.30,
     "tree_8": 0.45,
@@ -22,6 +27,24 @@ RADII = {
     "lamp": 0.20,
     "trash_bin_1": 0.25,
 }
+
+# Families stamped as yaw-oriented boxes, with their collision .dae (relative to
+# the models_opt/ root). Everything else (trees) stays a disc via RADII.
+import os as _os
+_MODELS_ROOT = _os.path.join(_os.path.dirname(__file__), "..", "models_opt")
+BOX_MESHES = {
+    "bench":        _os.path.join(_MODELS_ROOT, "bench", "Bench_1.dae"),
+    "garden_table": _os.path.join(_MODELS_ROOT, "garden_table", "garden_table.dae"),
+    "lamp":         _os.path.join(_MODELS_ROOT, "lamp", "street_lamp.dae"),
+    "trash_bin_1":  _os.path.join(_MODELS_ROOT, "trash_bin_1", "trash_bin.dae"),
+}
+# Cache footprints so each .dae is parsed once.
+_footprint_cache = {}
+def _box_half_extents(family):
+    if family not in _footprint_cache:
+        dx, dy = footprint_dxdy(BOX_MESHES[family])
+        _footprint_cache[family] = (dx / 2.0, dy / 2.0)
+    return _footprint_cache[family]
 
 # Families that become named goal destinations (not trees).
 PLACE_FAMILIES = ("bench", "garden_table", "lamp", "trash_bin_1")
@@ -33,7 +56,11 @@ def build_grid(models, resolution=0.15, margin=5.0):
     g = Grid(min(xs) - margin, min(ys) - margin,
              max(xs) + margin, max(ys) + margin, resolution)
     for m in models:
-        g.stamp_disc(m.world_x, m.world_y, RADII[m.family])
+        if m.family in BOX_MESHES:
+            hx, hy = _box_half_extents(m.family)
+            g.stamp_box(m.world_x, m.world_y, m.yaw, hx, hy)
+        else:
+            g.stamp_disc(m.world_x, m.world_y, RADII[m.family])
     return g
 
 

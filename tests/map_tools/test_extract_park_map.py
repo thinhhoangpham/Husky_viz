@@ -30,6 +30,19 @@ def test_build_places_has_named_furniture_not_trees():
     sample = next(iter(places.values()))
     assert isinstance(sample["x"], float) and isinstance(sample["y"], float)
 
+def test_bench_footprint_covers_full_length():
+    models = parse_models(WORLD)
+    g = build_grid(models, resolution=0.15)
+    bench = next(m for m in models if m.name == "bench")
+    # The bench yaw is ~-1.563 (long axis ~ along world y). Sample a point ~0.7 m
+    # from the bench center along its long axis; a disc (old behavior) would miss
+    # it, an oriented box covers it. Long half-extent ~0.89 m.
+    import math
+    L = 0.85  # within the ~0.89 m half-length
+    px = bench.world_x + L * math.cos(bench.yaw + math.pi / 2)
+    py = bench.world_y + L * math.sin(bench.yaw + math.pi / 2)
+    assert g.is_occupied(px, py) is True
+
 def test_main_writes_three_files(tmp_path):
     from map_tools.extract_park_map import main
     out = tmp_path / "maps"

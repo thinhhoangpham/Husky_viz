@@ -33,6 +33,7 @@ class Model:
     family: str
     world_x: float
     world_y: float
+    yaw: float
 
 
 # The <state world_name='default'> block holds each model's runtime pose and,
@@ -43,7 +44,7 @@ _MODEL_RE = re.compile(r"<model name='([^']+)'>")
 _LINK_RE = re.compile(r"<link name='([^']+)'>")
 _POSE_RE = re.compile(
     r"<pose[^>]*>\s*([-\d.eE]+)\s+([-\d.eE]+)\s+[-\d.eE]+\s+"
-    r"[-\d.eE]+\s+[-\d.eE]+\s+[-\d.eE]+\s*</pose>")
+    r"[-\d.eE]+\s+[-\d.eE]+\s+([-\d.eE]+)\s*</pose>")
 
 
 def _state_block(text):
@@ -73,6 +74,7 @@ def parse_models(world_path):
             continue
         # Find link_0's pose within this model chunk.
         link_x = link_y = None
+        link_yaw = 0.0
         for lm in _LINK_RE.finditer(chunk):
             if lm.group(1) == "link_0":
                 after = chunk[lm.end():]
@@ -80,11 +82,13 @@ def parse_models(world_path):
                 if pm:
                     link_x = float(pm.group(1))
                     link_y = float(pm.group(2))
+                    link_yaw = float(pm.group(3))
                 break
         if link_x is None:
             # Fallback: model pose (first pose in the chunk).
             pm = _POSE_RE.search(chunk)
             link_x = float(pm.group(1))
             link_y = float(pm.group(2))
-        models.append(Model(name, family, link_x, link_y))
+            link_yaw = float(pm.group(3))
+        models.append(Model(name, family, link_x, link_y, link_yaw))
     return models
