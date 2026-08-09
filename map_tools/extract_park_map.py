@@ -28,23 +28,35 @@ RADII = {
     "trash_bin_1": 0.25,
 }
 
-# Families stamped as yaw-oriented boxes, with their collision .dae (relative to
-# the models_opt/ root). Everything else (trees, lamp, trash_bin_1) stays a disc
-# via RADII. lamp (0.095 m wide) and trash_bin_1 (~0.10x0.06 m) are EXCLUDED here
-# on purpose: at 0.15 m grid resolution their box footprint is sub-cell, so
-# stamp_box can find zero (or ~1) cell centers inside it and the object nearly
-# or entirely vanishes from the map. Discs still mark them correctly.
+# Families stamped as yaw-oriented boxes: (collision .dae path relative to the
+# models_opt/ root, mesh scale). Everything else (trees, lamp, trash_bin_1)
+# stays a disc via RADII. lamp (0.095 m wide) and trash_bin_1 (~0.10x0.06 m)
+# are EXCLUDED here on purpose: at 0.15 m grid resolution their box footprint
+# is sub-cell, so stamp_box can find zero (or ~1) cell centers inside it and
+# the object nearly or entirely vanishes from the map. Discs still mark them
+# correctly.
+#
+# The scale is PER MESH, read from the <collision><geometry><mesh><scale> in
+# park.world -- NOT the <state><scale>, which is always "1 1 1" (runtime
+# state, not the model's authored scale) and NOT model.sdf's default scale
+# (park.world's <scale> is the one actually applied at spawn time and can
+# differ from model.sdf, as it does for garden_table: model.sdf says 1 1 1 but
+# so does park.world here -- the two happen to agree for garden_table, but
+# bench's park.world scale (0.15) also differs from its model.sdf default
+# (0.1); park.world is the source of truth because it's the file actually
+# loaded).
 import os as _os
 _MODELS_ROOT = _os.path.join(_os.path.dirname(__file__), "..", "models_opt")
 BOX_MESHES = {
-    "bench":        _os.path.join(_MODELS_ROOT, "bench", "Bench_1.dae"),
-    "garden_table": _os.path.join(_MODELS_ROOT, "garden_table", "garden_table.dae"),
+    "bench":        (_os.path.join(_MODELS_ROOT, "bench", "Bench_1.dae"), 0.15),
+    "garden_table": (_os.path.join(_MODELS_ROOT, "garden_table", "garden_table.dae"), 1.0),
 }
 # Cache footprints so each .dae is parsed once.
 _footprint_cache = {}
 def _box_half_extents(family):
     if family not in _footprint_cache:
-        dx, dy = footprint_dxdy(BOX_MESHES[family])
+        path, scale = BOX_MESHES[family]
+        dx, dy = footprint_dxdy(path, scale)
         _footprint_cache[family] = (dx / 2.0, dy / 2.0)
     return _footprint_cache[family]
 

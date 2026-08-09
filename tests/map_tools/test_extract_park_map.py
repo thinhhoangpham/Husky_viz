@@ -43,6 +43,20 @@ def test_bench_footprint_covers_full_length():
     py = bench.world_y + L * math.sin(bench.yaw + math.pi / 2)
     assert g.is_occupied(px, py) is True
 
+def test_garden_table_footprint_covers_true_length():
+    # garden_table's real footprint is ~1.319 x 3.000 m (scale 1.0, not the
+    # 0.15 wrongly applied before) -- long half-extent ~1.5 m. A point 1.2 m
+    # out along the long axis must be covered; the old (buggy, scale=0.15)
+    # ~0.2 m dot would have missed it entirely.
+    import math
+    models = parse_models(WORLD)
+    g = build_grid(models, resolution=0.15)
+    table = next(m for m in models if m.name == "garden_table")
+    L = 1.2
+    px = table.world_x + L * math.cos(table.yaw + math.pi / 2)
+    py = table.world_y + L * math.sin(table.yaw + math.pi / 2)
+    assert g.is_occupied(px, py) is True
+
 def test_lamp_and_bin_still_marked():
     # Regression guard: lamp (0.095 m wide) and trash_bin_1 (~0.10x0.06 m) are
     # sub-cell at 0.15 m resolution -- boxing them finds zero/near-zero cell

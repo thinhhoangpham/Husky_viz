@@ -12,3 +12,12 @@ def test_bench_footprint_is_long_and_scaled():
 def test_trash_bin_footprint_small():
     dx, dy = footprint_dxdy(os.path.join(MODELS, "trash_bin_1", "trash_bin.dae"))
     assert dx < 0.2 and dy < 0.2
+
+def test_garden_table_footprint_at_true_scale():
+    # garden_table's SDF mesh <scale> in park.world is 1 1 1, NOT 0.15 like
+    # bench -- guards the scale-per-mesh bug (table was ~6.7x too small when
+    # 0.15 was wrongly applied to every mesh).
+    dx, dy = footprint_dxdy(
+        os.path.join(MODELS, "garden_table", "garden_table.dae"), scale=1.0)
+    assert abs(dx - 1.319) < 0.05
+    assert abs(dy - 3.000) < 0.05
