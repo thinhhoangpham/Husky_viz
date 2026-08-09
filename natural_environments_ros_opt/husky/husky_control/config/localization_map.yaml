@@ -1,0 +1,83 @@
+# MAP-frame EKF  (robot_localization ekf_localization_node)
+# ---------------------------------------------------------------------------
+# This is the SECOND EKF in a standard robot_localization dual-EKF topology.
+# It produces the GLOBALLY anchored, GPS-corrected estimate that the autonomous
+# driver navigates on.
+#
+# WHY A SECOND EKF AND NOT JUST ONE:
+# robot_localization's design splits localization into two filters so the TF
+# tree stays continuous AND globally correct at the same time:
+#   * odom-frame EKF  (localization.yaml)  -> publishes  odom -> base_link
+#         smooth, continuous, no jumps, but drifts. Fuses wheel odom + IMU.
+#   * map-frame EKF   (THIS FILE)          -> publishes  map  -> odom
+#         globally accurate, corrects drift with GPS, may jump on a GPS update.
+# Composed, the TF tree is  map -> odom -> base_link, which is what every ROS
+# consumer expects. Neither filter ever publishes the same transform, so there
+# is no TF conflict.
+#
+# WHAT THIS FILTER FUSES:
+#   odom0 = husky_velocity_controller/odom   wheel odometry (vx, vyaw)
+#   imu0  = imu/data                         absolute yaw + yaw rate
+#   odom1 = odometry/gps                     ABSOLUTE x,y from navsat_transform
+#
+# THE ODOM-SPOOF ATTACK SURFACE:
+# odom0 is husky_velocity_controller/odom, exactly as in the odom-frame filter.
+# Between the 2 Hz GPS position corrections this wheel-odometry velocity is the
+# ONLY thing moving the fused pose, so injecting a fast, large fake velocity on
+# that topic drags the fused (x, y) away from truth faster than GPS can pull it
+# back. That is the intended, demonstrable vulnerability. See the README /
+# handover notes for the exact rostopic pub payload.
+# ---------------------------------------------------------------------------
+
+odom_frame: odom
+base_link_frame: base_link
+map_frame: map
+world_frame: map          # <-- the ONLY substantive difference from the odom EKF
+
+two_d_mode: true
+predict_to_current_time: true
+frequency: 50
+
+# --- wheel odometry: velocities only (same config as the odom-frame EKF) -----
+# We fuse vx, vy, vyaw (NOT absolute x/y/yaw) so wheel odom contributes motion
+# without asserting a global position of its own. This is what makes the spoof
+# work: a lie about VELOCITY is integrated into the fused POSITION.
+odom0: husky_velocity_controller/odom
+odom0_config: [false, false, false,
+               false, false, false,
+               true,  true,  true,
+               false, false, true,
+               false, false, false]
+odom0_differential: false
+odom0_queue_size: 10
+
+# --- IMU: absolute heading + yaw rate ----------------------------------------
+# imu/data (imu_link) is used here rather than compass/data to match the
+# odom-frame EKF, so both filters share one heading source and their frames
+# cannot diverge. The driver still reads compass/data for its own steering; see
+# the note in drive_to_point_gps.py.
+imu0: imu/data
+imu0_config: [false, false, false,
+              true,  true,  true,
+              false, false, false,
+              true,  true,  true,
+              false, false, false]
+imu0_differential: true
+imu0_queue_size: 10
+imu0_remove_gravitational_acceleration: true
+
+# --- GPS: absolute position from navsat_transform_node -----------------------
+# odometry/gps carries ABSOLUTE x, y in the map frame (navsat_transform already
+# did the lat/lon -> metres projection and datum alignment). We fuse x and y
+# ONLY - not yaw (GPS has none) and not velocity. This is the anchor that stops
+# the fused pose from drifting, and the thing an odom spoof has to fight.
+# odom1 is navsat_transform's default output topic /odometry/gps, fused
+# directly.
+odom1: odometry/gps
+odom1_config: [true,  true,  false,
+               false, false, false,
+               false, false, false,
+               false, false, false,
+               false, false, false]
+odom1_differential: false
+odom1_queue_size: 10
