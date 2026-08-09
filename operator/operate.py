@@ -40,6 +40,7 @@ from gcs_state import GcsState
 from gcs_csv import CSV_HEADER as GCS_CSV_HEADER, build_row
 from gcs_intervene import Intervene
 from gcs_commands import parse_command
+from places import load_places, resolve as resolve_place  # operator/ is on sys.path[0]
 
 # goal_marker.py lives at the repo root; when run by path, sys.path[0] is this
 # script's dir (operator/), so add the repo root so the import resolves.
@@ -50,6 +51,7 @@ from goal_marker import place_goal_marker
 # the map-frame goal we send. (The old /odometry/filtered is the odom frame.)
 ODOM_TOPIC = "/odometry/filtered_map"
 GOAL_FRAME = "map"
+_PLACES_PATH = os.path.join(os.path.dirname(__file__), "..", "maps", "park_places.yaml")
 PLANNER_CMD_TOPIC = "/cmd_vel"                              # move_base output
 CTRL_CMD_TOPIC = "/husky_velocity_controller/cmd_vel"      # controller input
 
@@ -250,6 +252,17 @@ class Operator(object):
             return
         if cmd == "goal":
             self._do_goal(args[0], args[1])
+        elif cmd == "goal_xy":
+            self._do_goal_xy(args[0], args[1])
+        elif cmd == "goal_name":
+            try:
+                places = load_places(_PLACES_PATH)
+                gx, gy = resolve_place(args[0], places)
+            except (KeyError, IOError) as exc:
+                rospy.logwarn("named goal failed: %s", exc)
+                return
+            rospy.loginfo("named goal '%s' -> map (%.2f, %.2f)", args[0], gx, gy)
+            self._do_goal_xy(gx, gy)
         elif cmd == "cancel":
             self.client.cancel_all_goals(); self.state.set_mode("AUTO")
             rospy.loginfo("CANCELLED goal")
@@ -305,6 +318,42 @@ class Operator(object):
         self.client.send_goal(goal)
         self.state.set_mode("AUTO")
         rospy.loginfo("SENT goal map=(%.2f, %.2f) via %s", gx, gy, path)
+
+    def _do_goal_xy(self, gx, gy):
+        """Send a goal already in map-frame metres (no lat/lon conversion).
+        Identical to _do_goal from `self._goal_x = ...` onward; only the
+        lat/lon -> map step is skipped because (gx, gy) is already map-frame."""
+        self._goal_x, self._goal_y = gx, gy
+        self.state.sent_goal = (gx, gy)
+        with self._lock:
+            cached_odom = self._odom
+        if cached_odom is not None:
+            sp = cached_odom.pose.pose.position
+        else:
+            # No odom cached yet (e.g. right at startup) -- short bounded wait
+            # instead of the REPL-freezing 30s blocking wait_for_message.
+            try:
+                start = rospy.wait_for_message(ODOM_TOPIC, Odometry, timeout=2.0)
+                sp = start.pose.pose.position
+            except rospy.ROSException:
+                rospy.logwarn("_do_goal_xy: no odom available yet; sending goal "
+                              "with heading 0.0 (unable to face the target).")
+                sp = None
+        gyaw = math.atan2(gy - sp.y, gx - sp.x) if sp is not None else 0.0
+        gq = quaternion_from_euler(0.0, 0.0, gyaw)
+        goal = MoveBaseGoal()
+        goal.target_pose.header.frame_id = GOAL_FRAME
+        goal.target_pose.header.stamp = rospy.Time.now()
+        goal.target_pose.pose.position.x = gx
+        goal.target_pose.pose.position.y = gy
+        goal.target_pose.pose.orientation.x = gq[0]
+        goal.target_pose.pose.orientation.y = gq[1]
+        goal.target_pose.pose.orientation.z = gq[2]
+        goal.target_pose.pose.orientation.w = gq[3]
+        place_goal_marker("goal_marker_real", gx, gy, "0 1 0", frame="map")
+        self.client.send_goal(goal)
+        self.state.set_mode("AUTO")
+        rospy.loginfo("SENT map goal (%.2f, %.2f)", gx, gy)
 
     def _teleop_repl(self):
         """Raw-key teleop: i/,=fwd/back, j/l=turn, k=stop, x/Esc=exit.
@@ -394,6 +443,8 @@ class Operator(object):
         print(
             "Commands:\n"
             "  goal <lat> <lon>  send a GPS goal (map-frame, via /fromLL)\n"
+            "  goal xy <x> <y>   send a map-frame goal (metres) directly\n"
+            "  goal <name>       send a goal by name (maps/park_places.yaml)\n"
             "  cancel            cancel the active move_base goal\n"
             "  teleop            enter raw-key teleop (i/,/j/l/k, x or Esc to exit)\n"
             "  stop              zero velocity, mode=STOPPED\n"
