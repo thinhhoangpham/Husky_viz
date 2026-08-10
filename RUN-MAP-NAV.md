@@ -4,13 +4,8 @@ The robot plans over a **preloaded map** of the park (extracted from `park.world
 and drives to goals, avoiding both mapped obstacles and live lidar obstacles.
 
 Prerequisite: the dataset overlay at `~/husky_overlay_ws` is built (provides the
-dual-EKF + GPS + Ouster lidar robot). One terminal per step.
-
-**Every terminal needs these exports:**
-
-```bash
-export ROS_IP=172.20.0.1 ROS_MASTER_URI=http://172.20.0.1:11311 ROBOT_HOST_IP=172.20.0.1
-```
+dual-EKF + GPS + Ouster lidar robot). One terminal per step; each step's block
+sets the ROS env it needs, so you can copy-paste any step into a fresh terminal.
 
 ---
 
@@ -29,14 +24,16 @@ The subnet is pinned so the gateway is always `172.20.0.1` (the hardcoded
 ## Step 1 — World + robot (Terminal 1)
 
 ```bash
+export ROS_IP=172.20.0.1 ROS_MASTER_URI=http://172.20.0.1:11311 ROBOT_HOST_IP=172.20.0.1
 cd ~/Documents/Husky_viz
 ./load-park-world.sh
 ```
 
 Wait until Gazebo shows the park + robot, then **wait ~30–60 s** for the GPS/EKF
-to converge (the `map` pose stabilizes). Quick check:
+to converge (the `map` pose stabilizes). Quick check (new terminal):
 
 ```bash
+export ROS_IP=172.20.0.1 ROS_MASTER_URI=http://172.20.0.1:11311 ROBOT_HOST_IP=172.20.0.1
 rosnode list | grep -E "ekf_localization|navsat"      # localization up
 rostopic echo -n1 /odometry/filtered_map | grep frame_id   # frame_id: "map"
 ```
@@ -46,14 +43,16 @@ rostopic echo -n1 /odometry/filtered_map | grep frame_id   # frame_id: "map"
 ## Step 2 — move_base with the static map (Terminal 2)
 
 ```bash
+export ROS_IP=172.20.0.1 ROS_MASTER_URI=http://172.20.0.1:11311 ROBOT_HOST_IP=172.20.0.1
 cd ~/Documents/Husky_viz
 roslaunch launch/move_base_gps_map.launch
 ```
 
 Loads `map_server` (`/map` from `maps/park_map.yaml`) + move_base with the static
-map layered under live lidar, in the `map` frame. Quick check:
+map layered under live lidar, in the `map` frame. Quick check (new terminal):
 
 ```bash
+export ROS_IP=172.20.0.1 ROS_MASTER_URI=http://172.20.0.1:11311 ROBOT_HOST_IP=172.20.0.1
 rosparam get /move_base/global_costmap/static_map     # true
 ```
 
@@ -62,6 +61,7 @@ rosparam get /move_base/global_costmap/static_map     # true
 ## Step 3 — Operator view (Terminal 3)
 
 ```bash
+export ROS_IP=172.20.0.1 ROS_MASTER_URI=http://172.20.0.1:11311 ROBOT_HOST_IP=172.20.0.1
 cd ~/Documents/Husky_viz/operator
 docker compose up -d
 docker compose exec operator bash -lc "source /opt/ros/noetic/setup.bash && ./operator/operate.py"
@@ -97,7 +97,7 @@ not 0):** for a 1.5 m box use z = 3.65. Edit `x`/`y` to a point ahead of the
 robot.
 
 ```bash
-export ROS_IP=172.20.0.1 ROS_MASTER_URI=http://172.20.0.1:11311
+export ROS_IP=172.20.0.1 ROS_MASTER_URI=http://172.20.0.1:11311 ROBOT_HOST_IP=172.20.0.1
 python3 - <<'PY'
 import rospy
 from gazebo_msgs.srv import SpawnModel
@@ -121,18 +121,9 @@ PY
 Remove it:
 
 ```bash
+export ROS_IP=172.20.0.1 ROS_MASTER_URI=http://172.20.0.1:11311 ROBOT_HOST_IP=172.20.0.1
 rosservice call /gazebo/delete_model '{model_name: surprise_box}'
 ```
-
----
-
-## Regenerate the map (after editing park.world)
-
-```bash
-cd ~/Documents/Husky_viz && python3 -m map_tools.extract_park_map
-```
-
-Writes `maps/park_map.{pgm,yaml}` + `maps/park_places.yaml`, then restart Step 2.
 
 ---
 
