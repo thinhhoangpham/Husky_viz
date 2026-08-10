@@ -1010,3 +1010,304 @@ git commit -m "docs: RUN-MAP-NAV runbook for offline-map navigation"
 - **Spec coverage:** extractor (§4.1) → Tasks 1-3; static-map wiring (§4.2) → Task 4; named-goal lookup (§4.3) → Tasks 5-6; testing (§6) → Tasks 1-7; two-tree-family handling → Task 1 + RADII in Task 3. All §7 open items resolved: (1) radii = constants; (2) map origin from obstacle spread + margin (Task 3 build_grid); (3) allow_unknown/track_unknown_space (Task 4 Steps 1,3); (4) named-goal wiring (Tasks 5-6) + free-cell offset (Task 5 resolve); (5) furniture footprints (RADII).
 - **Frame/units:** everything map-frame metres; `goal xy` and named goals bypass lat/lon (Task 6). inflation_radius corrected to 0.5 (the real value in costmap_common_gps.yaml), not 0.35.
 - **`operator` stdlib shadow:** handled via import shims in tests and `sys.path[0]` import in operate.py (operator/ is the script dir at runtime).
+
+---
+
+## Task 8: Oriented-box footprints for furniture (ADDENDUM, added 2026-08-09)
+
+**Why:** In-sim registration test (Task 4) showed trees/lamps/bins overlap lidar
+correctly, but **benches do not** — a bench is a long object (~1.78 m) and the
+disc footprint from Tasks 1-3 marks only one end. Live lidar sees the whole
+bench; the static map under-covers it. Fix: stamp furniture as **yaw-oriented
+boxes** sized from the real mesh bounds, instead of discs. Trees stay discs
+(radially symmetric; complex meshes).
+
+**Scope decision (from the user):** yaw-only oriented box (NOT full 3D
+projection). Even for the garden_table, whose collision mesh is stored rolled on
+its side, a yaw-only box using the mesh's (dx, dy) footprint still covers where
+the object's corners/legs contact the ground — "the corners mark the obstacles
+anyway." Families boxed: bench, garden_table, trash_bin_1, lamp. Trees
+(arbolpartes4, tree_8) keep discs.
+
+**Verified facts (from park.world + the .dae meshes, all mesh dims × 0.15 world scale):**
+- Furniture yaw = the 6th value of the `link_0` pose in the `<state>` block; it
+  equals the model-pose yaw for every furniture family (bench link_0 yaw
+  -1.56296 == model; garden_table link_0 yaw -1.75602 == model). So reading yaw
+  from the SAME link_0 pose the parser already uses for x/y is correct.
+- Mesh footprint (union of ALL `positions` float_arrays in the .dae, × 0.15):
+  - bench (`models_opt/bench/Bench_1.dae`): 0.829 × 1.782 m
+  - garden_table (`models_opt/garden_table/garden_table.dae`): 0.198 × 0.450 m
+  - lamp (`models_opt/lamp/street_lamp.dae`): 0.095 × 0.472 m
+  - trash_bin_1 (`models_opt/trash_bin_1/trash_bin.dae`): 0.102 × 0.057 m
+- model:// URIs resolve to `models_opt/<name>/...` (e.g. model://bench/Bench_1.dae
+  → models_opt/bench/Bench_1.dae).
+- MESH_SCALE = 0.15 (the `<scale>` in every furniture collision block).
+
+**Files:**
+- Create: `map_tools/mesh_bounds.py` — parse a .dae, return scaled (dx, dy) footprint.
+- Modify: `map_tools/sdf_parse.py` — add `yaw` to `Model` and capture it in `_POSE_RE`.
+- Modify: `map_tools/occupancy_grid.py` — add `Grid.stamp_box`.
+- Modify: `map_tools/extract_park_map.py` — box furniture, disc trees; per-family mesh path table.
+- Modify tests: `test_sdf_parse.py`, `test_occupancy_grid.py`, `test_extract_park_map.py`, and new `test_mesh_bounds.py`.
+- Regenerate: `maps/park_map.pgm`, `maps/park_map.yaml` (places file unchanged).
+
+**Interfaces:**
+- Consumes: existing Task 1-3 code.
+- Produces:
+  - `mesh_bounds.footprint_dxdy(dae_path, scale=0.15) -> (dx, dy)` — union of all
+    `positions` arrays, × scale, returns local x-extent and y-extent (metres).
+  - `Model` gains field `yaw: float` (radians). `world_x`, `world_y`, `family`,
+    `name` unchanged.
+  - `Grid.stamp_box(cx, cy, yaw, half_dx, half_dy)` — marks occupied every cell
+    whose center lies inside the rectangle centered at (cx,cy), half-extents
+    (half_dx, half_dy) along the box's local axes, rotated by `yaw`.
+
+- [ ] **Step 1: Failing test for mesh_bounds**
+
+```python
+# tests/map_tools/test_mesh_bounds.py
+import os
+from map_tools.mesh_bounds import footprint_dxdy
+
+MODELS = os.path.join(os.path.dirname(__file__), "..", "..", "models_opt")
+
+def test_bench_footprint_is_long_and_scaled():
+    dx, dy = footprint_dxdy(os.path.join(MODELS, "bench", "Bench_1.dae"))
+    # union of all positions arrays, x0.15: ~0.829 x 1.782 m. Long axis ~1.78 m.
+    assert abs(dx - 0.829) < 0.02
+    assert abs(dy - 1.782) < 0.02
+
+def test_trash_bin_footprint_small():
+    dx, dy = footprint_dxdy(os.path.join(MODELS, "trash_bin_1", "trash_bin.dae"))
+    assert dx < 0.2 and dy < 0.2
+```
+
+- [ ] **Step 2: Run to verify fail**
+
+Run: `python3 -m pytest tests/map_tools/test_mesh_bounds.py -v`
+Expected: FAIL (module missing)
+
+- [ ] **Step 3: Implement mesh_bounds.py**
+
+```python
+# map_tools/mesh_bounds.py
+"""Compute a mesh's ground footprint (dx, dy) in metres from a COLLADA .dae.
+
+Unions ALL <float_array id="...positions...">, so multi-submesh models (a bench
+is 5 sub-meshes: legs, slats, frame) get the true extent, not one piece. Returns
+the local x and y extents scaled by the world <scale> (0.15 for park furniture).
+z is ignored (yaw-only box footprint, per the plan).
+"""
+import re
+
+_POS_RE = re.compile(
+    r'<float_array id="[^"]*positions[^"]*"[^>]*>([^<]*)</float_array>', re.I)
+
+
+def footprint_dxdy(dae_path, scale=0.15):
+    txt = open(dae_path).read()
+    xs, ys = [], []
+    for data in _POS_RE.findall(txt):
+        vals = [float(v) for v in data.split()]
+        xs.extend(vals[0::3])
+        ys.extend(vals[1::3])
+    if not xs:
+        raise ValueError("no positions arrays in %s" % dae_path)
+    return (max(xs) - min(xs)) * scale, (max(ys) - min(ys)) * scale
+```
+
+- [ ] **Step 4: Run to verify pass**
+
+Run: `cd /home/thinh/Documents/Husky_viz && python3 -m pytest tests/map_tools/test_mesh_bounds.py -v`
+Expected: PASS
+
+- [ ] **Step 5: Failing test for Model.yaw**
+
+```python
+# add to tests/map_tools/test_sdf_parse.py
+def test_bench_has_yaw():
+    models = parse_models(WORLD)
+    bench = next(m for m in models if m.name == "bench")
+    # bench link_0 pose yaw is -1.56296 rad
+    assert abs(bench.yaw - (-1.56296)) < 0.01
+
+def test_tree_has_yaw_field():
+    models = parse_models(WORLD)
+    tree = next(m for m in models if m.name == "arbolpartes4")
+    assert hasattr(tree, "yaw")  # yaw present for all models (unused for discs)
+```
+
+- [ ] **Step 6: Run to verify fail**
+
+Run: `cd /home/thinh/Documents/Husky_viz && python3 -m pytest tests/map_tools/test_sdf_parse.py -k yaw -v`
+Expected: FAIL (Model has no yaw)
+
+- [ ] **Step 7: Add yaw to sdf_parse**
+
+In `map_tools/sdf_parse.py`: add `yaw: float` to the `Model` dataclass (after
+`world_y`). Extend `_POSE_RE` to capture the 6th value:
+
+```python
+_POSE_RE = re.compile(
+    r"<pose[^>]*>\s*([-\d.eE]+)\s+([-\d.eE]+)\s+[-\d.eE]+\s+"
+    r"[-\d.eE]+\s+[-\d.eE]+\s+([-\d.eE]+)\s*</pose>")
+```
+
+In `parse_models`, wherever a pose is matched, also read `float(pm.group(3))` as
+yaw (both the link_0 branch and the fallback branch), and pass it to
+`Model(name, family, link_x, link_y, link_yaw)`. Initialise `link_yaw = 0.0`
+alongside `link_x = link_y = None`.
+
+- [ ] **Step 8: Run to verify pass (and no regression)**
+
+Run: `cd /home/thinh/Documents/Husky_viz && python3 -m pytest tests/map_tools/test_sdf_parse.py -v`
+Expected: PASS (all, including the existing trunk-offset guard).
+
+- [ ] **Step 9: Failing test for stamp_box**
+
+```python
+# add to tests/map_tools/test_occupancy_grid.py
+import math
+def test_stamp_box_axis_aligned():
+    g = Grid(-5, -5, 5, 5, 0.1)
+    # A 2 x 0.4 m box (half 1.0 x 0.2) at origin, yaw 0: long axis = x.
+    g.stamp_box(0.0, 0.0, 0.0, 1.0, 0.2)
+    assert g.is_occupied(0.9, 0.0) is True    # inside along long axis
+    assert g.is_occupied(0.0, 0.1) is True    # inside along short axis
+    assert g.is_occupied(0.0, 0.5) is False   # outside short axis
+    assert g.is_occupied(1.5, 0.0) is False   # outside long axis
+
+def test_stamp_box_rotated_90deg():
+    g = Grid(-5, -5, 5, 5, 0.1)
+    # Same box rotated 90 deg: long axis now y.
+    g.stamp_box(0.0, 0.0, math.pi / 2, 1.0, 0.2)
+    assert g.is_occupied(0.0, 0.9) is True    # long axis now along y
+    assert g.is_occupied(0.9, 0.0) is False   # was inside at yaw 0, now outside
+```
+
+- [ ] **Step 10: Run to verify fail**
+
+Run: `cd /home/thinh/Documents/Husky_viz && python3 -m pytest tests/map_tools/test_occupancy_grid.py -k box -v`
+Expected: FAIL (stamp_box missing)
+
+- [ ] **Step 11: Implement stamp_box**
+
+```python
+# add to map_tools/occupancy_grid.py (Grid method)
+    def stamp_box(self, cx, cy, yaw, half_dx, half_dy):
+        """Mark occupied every cell whose center is inside an oriented rectangle
+        centered at (cx, cy), half-extents (half_dx, half_dy) along the box's
+        local axes, rotated by yaw (radians). Iterates the cell window covering
+        the box's bounding circle, transforms each cell center into box-local
+        coords, and tests the axis-aligned half-extents there."""
+        import math
+        reach = math.hypot(half_dx, half_dy)
+        r_cells = int(math.ceil(reach / self.resolution))
+        c0, r0 = self.world_to_cell(cx, cy)
+        cos_y, sin_y = math.cos(yaw), math.sin(yaw)
+        for dr in range(-r_cells, r_cells + 1):
+            for dc in range(-r_cells, r_cells + 1):
+                wx = self.origin_x + (c0 + dc + 0.5) * self.resolution
+                wy = self.origin_y + (r0 + dr + 0.5) * self.resolution
+                # World -> box-local: rotate by -yaw about (cx, cy).
+                lx = (wx - cx) * cos_y + (wy - cy) * sin_y
+                ly = -(wx - cx) * sin_y + (wy - cy) * cos_y
+                if abs(lx) <= half_dx and abs(ly) <= half_dy:
+                    self._set_occ(c0 + dc, r0 + dr)
+```
+
+- [ ] **Step 12: Run to verify pass**
+
+Run: `cd /home/thinh/Documents/Husky_viz && python3 -m pytest tests/map_tools/test_occupancy_grid.py -v`
+Expected: PASS (all, incl. the existing disc tests).
+
+- [ ] **Step 13: Failing test for extractor boxing furniture**
+
+```python
+# add to tests/map_tools/test_extract_park_map.py
+def test_bench_footprint_covers_full_length():
+    models = parse_models(WORLD)
+    g = build_grid(models, resolution=0.15)
+    bench = next(m for m in models if m.name == "bench")
+    # The bench yaw is ~-1.563 (long axis ~ along world y). Sample a point ~0.7 m
+    # from the bench center along its long axis; a disc (old behavior) would miss
+    # it, an oriented box covers it. Long half-extent ~0.89 m.
+    import math
+    L = 0.85  # within the ~0.89 m half-length
+    px = bench.world_x + L * math.cos(bench.yaw + math.pi / 2)
+    py = bench.world_y + L * math.sin(bench.yaw + math.pi / 2)
+    assert g.is_occupied(px, py) is True
+```
+
+- [ ] **Step 14: Run to verify fail**
+
+Run: `cd /home/thinh/Documents/Husky_viz && python3 -m pytest tests/map_tools/test_extract_park_map.py -k full_length -v`
+Expected: FAIL (disc doesn't reach the bench end)
+
+- [ ] **Step 15: Box furniture in the extractor**
+
+In `map_tools/extract_park_map.py`:
+- Add a mesh-path + box-family table:
+
+```python
+from map_tools.mesh_bounds import footprint_dxdy
+
+# Families stamped as yaw-oriented boxes, with their collision .dae (relative to
+# the models_opt/ root). Everything else (trees) stays a disc via RADII.
+import os as _os
+_MODELS_ROOT = _os.path.join(_os.path.dirname(__file__), "..", "models_opt")
+BOX_MESHES = {
+    "bench":        _os.path.join(_MODELS_ROOT, "bench", "Bench_1.dae"),
+    "garden_table": _os.path.join(_MODELS_ROOT, "garden_table", "garden_table.dae"),
+    "lamp":         _os.path.join(_MODELS_ROOT, "lamp", "street_lamp.dae"),
+    "trash_bin_1":  _os.path.join(_MODELS_ROOT, "trash_bin_1", "trash_bin.dae"),
+}
+# Cache footprints so each .dae is parsed once.
+_footprint_cache = {}
+def _box_half_extents(family):
+    if family not in _footprint_cache:
+        dx, dy = footprint_dxdy(BOX_MESHES[family])
+        _footprint_cache[family] = (dx / 2.0, dy / 2.0)
+    return _footprint_cache[family]
+```
+
+- In `build_grid`, replace the single `stamp_disc` loop with: box the box-families,
+  disc the rest.
+
+```python
+    for m in models:
+        if m.family in BOX_MESHES:
+            hx, hy = _box_half_extents(m.family)
+            g.stamp_box(m.world_x, m.world_y, m.yaw, hx, hy)
+        else:
+            g.stamp_disc(m.world_x, m.world_y, RADII[m.family])
+```
+
+- `RADII` keeps its tree entries (arbolpartes4, tree_8); the furniture entries
+  are now unused by build_grid but leave them (harmless, and test_radii still
+  passes). Add a one-line comment that furniture radii are superseded by BOX_MESHES.
+
+- [ ] **Step 16: Run to verify pass**
+
+Run: `cd /home/thinh/Documents/Husky_viz && python3 -m pytest tests/map_tools/ -v`
+Expected: PASS (all — every prior task's tests plus the new box tests).
+
+- [ ] **Step 17: Regenerate the map artifacts**
+
+Run: `cd /home/thinh/Documents/Husky_viz && python3 -m map_tools.extract_park_map`
+Then sanity check occupancy grew (boxes cover more than discs did):
+Run: `python3 -c "d=open('maps/park_map.pgm','rb').read(); print('occ', d.count(0))"`
+Expected: a nonzero occupied count, larger than the disc-only version.
+
+- [ ] **Step 18: Commit**
+
+```bash
+git add map_tools/mesh_bounds.py map_tools/sdf_parse.py map_tools/occupancy_grid.py map_tools/extract_park_map.py tests/map_tools/ maps/park_map.pgm maps/park_map.yaml
+git commit -m "feat(map): yaw-oriented box footprints for furniture (bench/table/lamp/bin)"
+```
+
+- [ ] **Step 19: In-sim re-verification (CONTROLLER runs this, not the implementer)**
+
+The implementer STOPS after Step 18. The controller brings up the sim from a
+clean kill, drives past benches/tables/bins, and confirms in RViz that lidar
+marks now overlap the static-map boxes along the full bench length.

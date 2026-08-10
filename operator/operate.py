@@ -32,7 +32,7 @@ import rospy
 from actionlib_msgs.msg import GoalStatus, GoalStatusArray
 from geometry_msgs.msg import Twist
 from move_base_msgs.msg import MoveBaseAction, MoveBaseActionGoal, MoveBaseGoal
-from nav_msgs.msg import Odometry
+from nav_msgs.msg import Odometry, OccupancyGrid
 from std_msgs.msg import Bool
 from tf.transformations import quaternion_from_euler, euler_from_quaternion
 
@@ -40,6 +40,7 @@ from gcs_state import GcsState
 from gcs_csv import CSV_HEADER as GCS_CSV_HEADER, build_row
 from gcs_intervene import Intervene
 from gcs_commands import parse_command
+from places import load_places, resolve as resolve_place  # operator/ is on sys.path[0]
 
 # goal_marker.py lives at the repo root; when run by path, sys.path[0] is this
 # script's dir (operator/), so add the repo root so the import resolves.
@@ -50,6 +51,7 @@ from goal_marker import place_goal_marker
 # the map-frame goal we send. (The old /odometry/filtered is the odom frame.)
 ODOM_TOPIC = "/odometry/filtered_map"
 GOAL_FRAME = "map"
+_PLACES_PATH = os.path.join(os.path.dirname(__file__), "..", "maps", "park_places.yaml")
 PLANNER_CMD_TOPIC = "/cmd_vel"                              # move_base output
 CTRL_CMD_TOPIC = "/husky_velocity_controller/cmd_vel"      # controller input
 
@@ -74,6 +76,53 @@ STATUS_TEXT = {
     GoalStatus.REJECTED: "REJECTED", GoalStatus.PREEMPTED: "PREEMPTED",
     GoalStatus.LOST: "LOST",
 }
+
+def snap_to_free(data, info, wx, wy, max_radius_m=5.0, free_cost=0,
+                  clearance_m=0.6, lethal_cost=90):
+    """Pure grid math: return (x,y) of the nearest costmap cell to world point
+    (wx,wy) that is both genuinely free (cost in [0, free_cost], unknown -1
+    excluded) AND has clearance -- every cell within clearance_m of it is
+    below lethal_cost. Searches outward in square rings up to max_radius_m so
+    the first accepted candidate is the closest one. `data` is the flat
+    costmap.data sequence, `info` is the costmap.info (needs .resolution,
+    .width, .height, .origin.position.x/y). clearance_m should cover the
+    robot's half-footprint plus margin (default 0.6, vs. a 0.5 inflation
+    radius) so the snapped goal is actually reachable by the planner, not
+    just "less lethal" than the original point. Returns (wx,wy) unchanged if
+    no cell satisfies both conditions within max_radius_m.
+    """
+    res = info.resolution
+    ox, oy = info.origin.position.x, info.origin.position.y
+
+    def cost(cx, cy):
+        if 0 <= cx < info.width and 0 <= cy < info.height:
+            return data[cy * info.width + cx]
+        return 100
+
+    def has_clearance(cx, cy):
+        rad_cells = math.ceil(clearance_m / res)
+        for dc in range(-rad_cells, rad_cells + 1):
+            for dr in range(-rad_cells, rad_cells + 1):
+                if cost(cx + dc, cy + dr) >= lethal_cost:
+                    return False
+        return True
+
+    c0 = int((wx - ox) / res)
+    r0 = int((wy - oy) / res)
+    max_r = int(max_radius_m / res)
+    for rad in range(0, max_r + 1):
+        for dc in range(-rad, rad + 1):
+            for dr in range(-rad, rad + 1):
+                if max(abs(dc), abs(dr)) != rad:  # only the ring edge
+                    continue
+                cx, cy = c0 + dc, r0 + dr
+                c = cost(cx, cy)
+                if 0 <= c <= free_cost and has_clearance(cx, cy):
+                    sx = ox + (cx + 0.5) * res
+                    sy = oy + (cy + 0.5) * res
+                    return sx, sy
+    return wx, wy
+
 
 def yaw_of(odom):
     q = odom.pose.pose.orientation
@@ -136,11 +185,14 @@ class Operator(object):
         self._goal_y = 0.0
         self._lock = threading.Lock()
         self._odom = None          # latest Odometry
+        self._costmap = None       # latest global costmap (OccupancyGrid)
         self._planner_cmd = (0.0, 0.0)  # (linear.x, angular.z) from /cmd_vel
         self._ctrl_cmd = (0.0, 0.0)     # from controller cmd_vel
         rospy.Subscriber(ODOM_TOPIC, Odometry, self._on_odom, queue_size=1)
         rospy.Subscriber(PLANNER_CMD_TOPIC, Twist, self._on_planner, queue_size=1)
         rospy.Subscriber(CTRL_CMD_TOPIC, Twist, self._on_ctrl, queue_size=1)
+        rospy.Subscriber("/move_base/global_costmap/costmap", OccupancyGrid,
+                          self._on_costmap, queue_size=1)
 
         self.state = GcsState()
         self._active_goal = None      # (x,y) from /move_base/goal
@@ -161,6 +213,26 @@ class Operator(object):
         with self._lock:
             self._odom = msg
             self._last_odom_wall = time.time()
+
+    def _on_costmap(self, msg):
+        with self._lock:
+            self._costmap = msg
+
+    def _snap_to_free(self, wx, wy, max_radius_m=5.0, free_cost=0,
+                       clearance_m=0.6, lethal_cost=90):
+        """Snap (wx,wy) to the nearest free cell (with footprint clearance)
+        in the latest global costmap. Returns the input unchanged if no
+        costmap yet or nothing suitable found within max_radius_m; caller
+        still sends the goal in that case."""
+        with self._lock:
+            cm = self._costmap
+        if cm is None:
+            rospy.logwarn("_snap_to_free: no costmap received yet; sending "
+                          "goal unsnapped (%.2f, %.2f)", wx, wy)
+            return wx, wy
+        return snap_to_free(cm.data, cm.info, wx, wy, max_radius_m=max_radius_m,
+                             free_cost=free_cost, clearance_m=clearance_m,
+                             lethal_cost=lethal_cost)
 
     def _on_planner(self, msg):
         with self._lock:
@@ -250,6 +322,21 @@ class Operator(object):
             return
         if cmd == "goal":
             self._do_goal(args[0], args[1])
+        elif cmd == "goal_xy":
+            self._do_goal_xy(args[0], args[1])
+        elif cmd == "goal_name":
+            try:
+                places = load_places(_PLACES_PATH)
+                gx, gy = resolve_place(args[0], places)
+            except (KeyError, IOError) as exc:
+                rospy.logwarn("named goal failed: %s", exc)
+                return
+            rospy.loginfo("named goal '%s' -> map (%.2f, %.2f)", args[0], gx, gy)
+            sx, sy = self._snap_to_free(gx, gy)
+            if (sx, sy) != (gx, gy):
+                rospy.loginfo("named goal '%s': snapped (%.2f,%.2f)->(%.2f,%.2f) "
+                              "to nearest free cell", args[0], gx, gy, sx, sy)
+            self._do_goal_xy(sx, sy)
         elif cmd == "cancel":
             self.client.cancel_all_goals(); self.state.set_mode("AUTO")
             rospy.loginfo("CANCELLED goal")
@@ -305,6 +392,42 @@ class Operator(object):
         self.client.send_goal(goal)
         self.state.set_mode("AUTO")
         rospy.loginfo("SENT goal map=(%.2f, %.2f) via %s", gx, gy, path)
+
+    def _do_goal_xy(self, gx, gy):
+        """Send a goal already in map-frame metres (no lat/lon conversion).
+        Identical to _do_goal from `self._goal_x = ...` onward; only the
+        lat/lon -> map step is skipped because (gx, gy) is already map-frame."""
+        self._goal_x, self._goal_y = gx, gy
+        self.state.sent_goal = (gx, gy)
+        with self._lock:
+            cached_odom = self._odom
+        if cached_odom is not None:
+            sp = cached_odom.pose.pose.position
+        else:
+            # No odom cached yet (e.g. right at startup) -- short bounded wait
+            # instead of the REPL-freezing 30s blocking wait_for_message.
+            try:
+                start = rospy.wait_for_message(ODOM_TOPIC, Odometry, timeout=2.0)
+                sp = start.pose.pose.position
+            except rospy.ROSException:
+                rospy.logwarn("_do_goal_xy: no odom available yet; sending goal "
+                              "with heading 0.0 (unable to face the target).")
+                sp = None
+        gyaw = math.atan2(gy - sp.y, gx - sp.x) if sp is not None else 0.0
+        gq = quaternion_from_euler(0.0, 0.0, gyaw)
+        goal = MoveBaseGoal()
+        goal.target_pose.header.frame_id = GOAL_FRAME
+        goal.target_pose.header.stamp = rospy.Time.now()
+        goal.target_pose.pose.position.x = gx
+        goal.target_pose.pose.position.y = gy
+        goal.target_pose.pose.orientation.x = gq[0]
+        goal.target_pose.pose.orientation.y = gq[1]
+        goal.target_pose.pose.orientation.z = gq[2]
+        goal.target_pose.pose.orientation.w = gq[3]
+        place_goal_marker("goal_marker_real", gx, gy, "0 1 0", frame="map")
+        self.client.send_goal(goal)
+        self.state.set_mode("AUTO")
+        rospy.loginfo("SENT map goal (%.2f, %.2f)", gx, gy)
 
     def _teleop_repl(self):
         """Raw-key teleop: i/,=fwd/back, j/l=turn, k=stop, x/Esc=exit.
@@ -394,6 +517,8 @@ class Operator(object):
         print(
             "Commands:\n"
             "  goal <lat> <lon>  send a GPS goal (map-frame, via /fromLL)\n"
+            "  goal xy <x> <y>   send a map-frame goal (metres) directly\n"
+            "  goal <name>       send a goal by name (maps/park_places.yaml)\n"
             "  cancel            cancel the active move_base goal\n"
             "  teleop            enter raw-key teleop (i/,/j/l/k, x or Esc to exit)\n"
             "  stop              zero velocity, mode=STOPPED\n"
