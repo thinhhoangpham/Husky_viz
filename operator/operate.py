@@ -77,12 +77,19 @@ STATUS_TEXT = {
     GoalStatus.LOST: "LOST",
 }
 
-def snap_to_free(data, info, wx, wy, max_radius_m=5.0, cost_thresh=50):
-    """Pure grid math: return (x,y) of the nearest costmap cell with
-    cost < cost_thresh to world point (wx,wy), searching outward in square
-    rings up to max_radius_m. `data` is the flat costmap.data sequence,
-    `info` is the costmap.info (needs .resolution, .width, .height,
-    .origin.position.x/y). Returns (wx,wy) unchanged if none found.
+def snap_to_free(data, info, wx, wy, max_radius_m=5.0, free_cost=0,
+                  clearance_m=0.6, lethal_cost=90):
+    """Pure grid math: return (x,y) of the nearest costmap cell to world point
+    (wx,wy) that is both genuinely free (cost in [0, free_cost], unknown -1
+    excluded) AND has clearance -- every cell within clearance_m of it is
+    below lethal_cost. Searches outward in square rings up to max_radius_m so
+    the first accepted candidate is the closest one. `data` is the flat
+    costmap.data sequence, `info` is the costmap.info (needs .resolution,
+    .width, .height, .origin.position.x/y). clearance_m should cover the
+    robot's half-footprint plus margin (default 0.6, vs. a 0.5 inflation
+    radius) so the snapped goal is actually reachable by the planner, not
+    just "less lethal" than the original point. Returns (wx,wy) unchanged if
+    no cell satisfies both conditions within max_radius_m.
     """
     res = info.resolution
     ox, oy = info.origin.position.x, info.origin.position.y
@@ -92,6 +99,14 @@ def snap_to_free(data, info, wx, wy, max_radius_m=5.0, cost_thresh=50):
             return data[cy * info.width + cx]
         return 100
 
+    def has_clearance(cx, cy):
+        rad_cells = math.ceil(clearance_m / res)
+        for dc in range(-rad_cells, rad_cells + 1):
+            for dr in range(-rad_cells, rad_cells + 1):
+                if cost(cx + dc, cy + dr) >= lethal_cost:
+                    return False
+        return True
+
     c0 = int((wx - ox) / res)
     r0 = int((wy - oy) / res)
     max_r = int(max_radius_m / res)
@@ -100,10 +115,11 @@ def snap_to_free(data, info, wx, wy, max_radius_m=5.0, cost_thresh=50):
             for dr in range(-rad, rad + 1):
                 if max(abs(dc), abs(dr)) != rad:  # only the ring edge
                     continue
-                c = cost(c0 + dc, r0 + dr)
-                if c is not None and 0 <= c < cost_thresh:
-                    sx = ox + (c0 + dc + 0.5) * res
-                    sy = oy + (r0 + dr + 0.5) * res
+                cx, cy = c0 + dc, r0 + dr
+                c = cost(cx, cy)
+                if 0 <= c <= free_cost and has_clearance(cx, cy):
+                    sx = ox + (cx + 0.5) * res
+                    sy = oy + (cy + 0.5) * res
                     return sx, sy
     return wx, wy
 
@@ -202,18 +218,21 @@ class Operator(object):
         with self._lock:
             self._costmap = msg
 
-    def _snap_to_free(self, wx, wy, max_radius_m=5.0, cost_thresh=50):
-        """Snap (wx,wy) to the nearest free cell in the latest global costmap.
-        Returns the input unchanged if no costmap yet or nothing free found
-        within max_radius_m; caller still sends the goal in that case."""
+    def _snap_to_free(self, wx, wy, max_radius_m=5.0, free_cost=0,
+                       clearance_m=0.6, lethal_cost=90):
+        """Snap (wx,wy) to the nearest free cell (with footprint clearance)
+        in the latest global costmap. Returns the input unchanged if no
+        costmap yet or nothing suitable found within max_radius_m; caller
+        still sends the goal in that case."""
         with self._lock:
             cm = self._costmap
         if cm is None:
             rospy.logwarn("_snap_to_free: no costmap received yet; sending "
                           "goal unsnapped (%.2f, %.2f)", wx, wy)
             return wx, wy
-        return snap_to_free(cm.data, cm.info, wx, wy,
-                             max_radius_m=max_radius_m, cost_thresh=cost_thresh)
+        return snap_to_free(cm.data, cm.info, wx, wy, max_radius_m=max_radius_m,
+                             free_cost=free_cost, clearance_m=clearance_m,
+                             lethal_cost=lethal_cost)
 
     def _on_planner(self, msg):
         with self._lock:

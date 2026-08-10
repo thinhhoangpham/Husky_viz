@@ -91,14 +91,70 @@ def test_snap_free_point_unchanged():
 
 def test_snap_out_of_lethal_block():
     # 10x10 grid, 1m resolution. Lethal 3x3 block centered on cell (5,5).
+    # With clearance_m=0.6 (1 cell at this resolution), the accepted cell
+    # must have a full clear 3x3 neighborhood, pushing the result out to
+    # ring radius 3 (not radius 2, which is only "not lethal itself" but
+    # still touches the lethal block's neighborhood).
     lethal = [(cx, cy) for cx in range(4, 7) for cy in range(4, 7)]
     data, info = _grid(10, 10, 1.0, 0.0, 0.0, lethal_cells=lethal)
     sx, sy = snap_to_free(data, info, 5.5, 5.5)
     cell_x = int(sx)
     cell_y = int(sy)
     assert (cell_x, cell_y) not in lethal
-    # Nearest free ring around (5,5) is radius 2 -> cells at distance 2.
-    assert max(abs(cell_x - 5), abs(cell_y - 5)) == 2
+    assert max(abs(cell_x - 5), abs(cell_y - 5)) == 3
+
+
+def test_snap_out_of_lethal_block_has_full_clearance():
+    # Same block as above; assert the snapped cell's clearance ring (radius
+    # 1, from clearance_m=0.6 at 1m resolution) contains no lethal cell.
+    lethal = [(cx, cy) for cx in range(4, 7) for cy in range(4, 7)]
+    data, info = _grid(10, 10, 1.0, 0.0, 0.0, lethal_cells=lethal)
+    sx, sy = snap_to_free(data, info, 5.5, 5.5)
+    cell_x, cell_y = int(sx), int(sy)
+    for dc in (-1, 0, 1):
+        for dr in (-1, 0, 1):
+            assert (cell_x + dc, cell_y + dr) not in lethal
+
+
+def test_snap_skips_inflated_ring_for_truly_free_cell():
+    # Reproduces the reported bug: a large lethal core surrounded by an
+    # inflated ring (cost 99, below the old cost_thresh=50 rejection but
+    # NOT free), with truly-free (cost 0) cells only further out. The old
+    # behavior (cost < 50) would accept an inflated-adjacent cell that still
+    # has no clearance; the fix must skip past the inflated ring entirely.
+    width = height = 21
+    res = 1.0
+    data = [0] * (width * height)
+    cx0, cy0 = 10, 10
+
+    def set_cost(cx, cy, val):
+        data[cy * width + cx] = val
+
+    # Lethal core: 3x3 block (cost 100).
+    for cx in range(cx0 - 1, cx0 + 2):
+        for cy in range(cy0 - 1, cy0 + 2):
+            set_cost(cx, cy, 100)
+    # Inflated ring immediately around the core (cost 99): rings at
+    # Chebyshev distance 2 and 3 from center.
+    for rad in (2, 3):
+        for dc in range(-rad, rad + 1):
+            for dr in range(-rad, rad + 1):
+                if max(abs(dc), abs(dr)) != rad:
+                    continue
+                set_cost(cx0 + dc, cy0 + dr, 99)
+    # Everything at distance >= 4 stays cost 0 (already initialized).
+
+    info = SimpleNamespace(
+        resolution=res, width=width, height=height,
+        origin=SimpleNamespace(position=SimpleNamespace(x=0.0, y=0.0)))
+    sx, sy = snap_to_free(data, info, float(cx0) + 0.5, float(cy0) + 0.5,
+                           max_radius_m=10.0)
+    cell_x, cell_y = int(sx), int(sy)
+    dist = max(abs(cell_x - cx0), abs(cell_y - cy0))
+    # Must land beyond the inflated ring (distance >= 4), not on an
+    # inflated-adjacent cell.
+    assert dist >= 4
+    assert data[cell_y * width + cell_x] == 0
 
 
 def test_snap_no_costmap_returns_unchanged_via_wrapper_contract():
