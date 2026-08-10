@@ -51,20 +51,34 @@ odom0_config: [false, false, false,
 odom0_differential: false
 odom0_queue_size: 10
 
-# --- IMU: absolute heading + yaw rate ----------------------------------------
-# imu/data (imu_link) is used here rather than compass/data to match the
-# odom-frame EKF, so both filters share one heading source and their frames
-# cannot diverge. The driver still reads compass/data for its own steering; see
-# the note in drive_to_point_gps.py.
+# --- IMU: yaw rate only (heading now comes from compass/data, see imu1 below) -
+# imu/data (imu_link) is mounted rotated 90deg and is unreliable for absolute
+# heading, so it no longer fuses orientation here. It still contributes angular
+# velocity (vroll, vpitch, vyaw). The driver reads compass/data directly for its
+# own steering; see the note in drive_to_point_gps.py.
 imu0: imu/data
 imu0_config: [false, false, false,
-              true,  true,  true,
+              false, false, false,
               false, false, false,
               true,  true,  true,
               false, false, false]
 imu0_differential: true
 imu0_queue_size: 10
 imu0_remove_gravitational_acceleration: true
+
+# --- Compass: ABSOLUTE world heading (drift-free) ----------------------------
+# /compass/data yaw is the ONLY absolute heading reference. Without it the map
+# EKF heading drifts from wheel scrub + the 90deg-mis-mounted imu/data. Fuse
+# YAW ONLY, absolute (differential: false), so heading is anchored to truth.
+imu1: compass/data
+imu1_config: [false, false, false,
+              false, false, true,
+              false, false, false,
+              false, false, false,
+              false, false, false]
+imu1_differential: false
+imu1_queue_size: 10
+imu1_remove_gravitational_acceleration: false
 
 # --- GPS: absolute position from navsat_transform_node -----------------------
 # odometry/gps carries ABSOLUTE x, y in the map frame (navsat_transform already
