@@ -34,6 +34,32 @@ Husky:
 
 ---
 
+### Step 0 — create the Docker network (once per boot)
+
+The operator container attaches to a fixed-subnet Docker network `husky_lan` so
+the gateway IP is always `172.20.0.1` — the value hardcoded as `ROS_IP` /
+`ROS_MASTER_URI` / `ROBOT_HOST_IP` everywhere below. Create it before anything
+else:
+
+```bash
+# Force-disconnect any attached containers, then remove husky_lan (no-op if absent)
+if docker network inspect husky_lan >/dev/null 2>&1; then
+  for c in $(docker network inspect husky_lan --format '{{range .Containers}}{{.Name}} {{end}}'); do
+    docker network disconnect -f husky_lan "$c" 2>/dev/null || true
+  done
+  docker network rm husky_lan 2>/dev/null || true
+fi
+docker network create --subnet 172.20.0.0/16 husky_lan
+```
+
+> **Why `--subnet` is required:** without pinning the subnet, Docker may assign a
+> different range on recreation (e.g. `172.21.0.0/16`, gateway `172.21.0.1`); the
+> hardcoded `172.20.0.1` then exists on no interface and `roslaunch` fails with
+> `Unable to contact my own server at [http://172.20.0.1:...]`. Pinning
+> `172.20.0.0/16` guarantees the gateway is `172.20.0.1`.
+
+---
+
 ### Step 1 — start the world + dataset robot (Terminal 1)
 
 ```bash
@@ -170,7 +196,7 @@ conversion):
 Click the "2D Nav Goal" button (arrow icon) in RViz, then click a point on the
 map. move_base receives it immediately as an action goal.
 
-#### Option B — Operator prompt (interactive REPL)
+#### Option B — Operator prompt + container-side RViz (the intended operator view)
 
 ```bash
 cd ~/Documents/Husky_viz/operator
@@ -179,8 +205,23 @@ docker compose up -d
 docker compose exec operator bash -lc "source /opt/ros/noetic/setup.bash && ./operator/operate.py"
 ```
 
-This starts the operator and waits at the `operator>` prompt. At the prompt, send
-goals using one of:
+`docker compose up -d` starts the operator container, which (with the default
+`OPERATOR_RVIZ=1`) launches its **own RViz inside the container** (Xvfb +
+noVNC), preloaded with `operator/operator.rviz` — the robot model, lidar,
+costmaps, global/local plan, and active goal. **Open the operator's view in a
+browser at http://localhost:6080/vnc.html** (Fixed Frame `map`). This is the
+operator-side visualization — you do NOT need the host RViz from the previous
+section for the operator flow. Set `OPERATOR_RVIZ=0 docker compose up -d` if you
+want the REPL only.
+
+> The container reaches the native ROS master over `husky_lan` (Step 0). TF and
+> all `/move_base/*` + `/os0_cloud_node/points` topics flow into the container,
+> so the RViz view mirrors what the robot sees. The RobotModel display needs the
+> `robot_description` URDF (published on the master by `load-park-world.sh`); if
+> the robot mesh does not render, the pose axes / lidar / costmaps still do.
+
+The `docker compose exec ... operate.py` line then opens the `operator>` prompt.
+At the prompt, send goals using one of:
 
 ```
 goal <lat> <lon>          # GPS lat/lon (in degrees) — converted to map frame
@@ -328,9 +369,19 @@ pat="$(echo "$SIM_PATTERNS" | tr ' ' '|')"
 alive="$(pgrep -f "$pat" | grep -v "^$$\$" || true)"
 if [ -z "$alive" ]; then echo "CLEAN: all sim procs down"; else echo "WARNING: still alive: $alive"; fi
 
-# Remove operator containers
+# Stop + remove the operator container (frees the 6080 noVNC port)
+cd ~/Documents/Husky_viz/operator && docker compose down 2>/dev/null || true
 docker rm -f $(docker ps -aq --filter name=operator) 2>/dev/null || true
 
-# Clean up any test obstacles spawned in Gazebo
-# (Gazebo does not persist spawns across shutdowns, so this is optional)
+# Remove the husky_lan network (disconnect any stragglers first)
+if docker network inspect husky_lan >/dev/null 2>&1; then
+  for c in $(docker network inspect husky_lan --format '{{range .Containers}}{{.Name}} {{end}}'); do
+    docker network disconnect -f husky_lan "$c" 2>/dev/null || true
+  done
+  docker network rm husky_lan 2>/dev/null || true
+fi
+
+# Delete any test obstacles spawned live in Gazebo (only needed if the sim is
+# still up; they do not persist across a gzserver restart). Example:
+#   rosservice call /gazebo/delete_model '{model_name: obstacle_replan_test}'
 ```

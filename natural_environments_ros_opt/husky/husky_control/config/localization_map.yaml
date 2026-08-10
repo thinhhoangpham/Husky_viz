@@ -17,7 +17,10 @@
 #
 # WHAT THIS FILTER FUSES:
 #   odom0 = husky_velocity_controller/odom   wheel odometry (vx, vyaw)
-#   imu0  = imu/data                         absolute yaw + yaw rate
+#   imu0  = imu/data                         yaw RATE only (NOT absolute yaw --
+#                                            imu/data is mounted 90deg wrong)
+#   imu1  = compass/data                     ABSOLUTE yaw (drift-free heading
+#                                            anchor; added by the compass fix)
 #   odom1 = odometry/gps                     ABSOLUTE x,y from navsat_transform
 #
 # THE ODOM-SPOOF ATTACK SURFACE:
