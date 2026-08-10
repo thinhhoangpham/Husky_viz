@@ -77,6 +77,26 @@ export ROS_IP=172.20.0.1 ROS_MASTER_URI=http://172.20.0.1:11311 ROBOT_HOST_IP=17
 rosservice call /gazebo/delete_model '{model_name: surprise_box}'
 ```
 
+## Step 6 — (optional) Attacker: GPS spoof
+
+While the robot is driving to a goal, an attacker on the network slowly fakes
+its GPS. `navsat_transform` accepts the drifting fixes, so the map-EKF's fused
+position is dragged off course — the robot chases a phantom and thrashes, while
+the operator's display still looks nominal (it reads the corrupted pose).
+
+Send a goal (Step 4) so the robot is en route, then run the attacker:
+
+```bash
+export ROS_IP=172.20.0.1 ROS_MASTER_URI=http://172.20.0.1:11311 ROBOT_HOST_IP=172.20.0.1
+cd ~/Documents/Husky_viz/attacker
+docker compose run --rm attacker ./attacker/attack.sh navsat --drift-rate 0.5 --max-offset 15 --duration 40
+```
+
+Watch in RViz: the robot lurches/spins off its route as the fused pose drifts
+(~15 m over 40 s). When the attack stops, genuine GPS reels the estimate back.
+
+Stronger variant: `--drift-rate 1.5 --max-offset 40 --duration 40`.
+
 ## Stop everything
 
 ```bash
@@ -87,5 +107,6 @@ for p in gzserver gzclient gazebo rosmaster move_base ekf_localization navsat \
 done
 pgrep -f 'gzserver|gazebo|move_base|ekf_localization|map_server' | xargs -r kill -9 2>/dev/null || true
 cd ~/Documents/Husky_viz/operator && docker compose down 2>/dev/null || true
+docker rm -f $(docker ps -aq --filter name=attacker) 2>/dev/null || true
 docker network rm husky_lan 2>/dev/null || true
 ```
