@@ -67,11 +67,21 @@ rostopic echo -n1 /odometry/filtered_map
 ```
 
 **Map-frame EKF convergence:** The dataset robot runs a **map-frame EKF** (not
-the odom-frame one used in GPS-Nav) that fuses GPS + compass to anchor the
-robot's pose in the world frame. On startup, the map→odom→base_link TF chain
-takes ~30–60 s to converge because GPS needs a valid fix. Watch `/odometry/filtered_map`
-with `rostopic echo` or just observe RViz; you will see the pose stabilize.
-Until then, move_base's global plan may be off.
+the odom-frame one used in GPS-Nav) that fuses GPS (position) + compass (heading)
+to anchor the robot's pose in the world frame. On startup, the
+map→odom→base_link TF chain takes ~30–60 s to converge because GPS needs a valid
+fix. Watch `/odometry/filtered_map` with `rostopic echo` or just observe RViz;
+you will see the pose stabilize. Until then, move_base's global plan may be off.
+
+> **Compass-heading fix (required for correct lidar registration):** the map EKF
+> (`natural_environments_ros_opt/husky/husky_control/config/localization_map.yaml`)
+> now fuses `/compass/data` yaw as its absolute heading anchor (and no longer
+> fuses the 90°-mis-mounted `/imu/data` yaw). Without this, the map-frame heading
+> drifts under wheel scrub — verified ~36° off — which **rotates the lidar point
+> cloud in the map frame** (red points swing when the robot turns) and mis-places
+> obstacles. With the fix, EKF heading tracks the compass within ~2° through a
+> turn and lidar obstacles stay fixed on the objects. If you reset this config,
+> re-apply the fix or turning will de-register the lidar.
 
 > **CLI tool note (TF lookup):** Tools like `rostopic hz` and `rosrun tf tf_echo`
 > can hang on this box's software-GL Gazebo setup if there is heavy rendering.
@@ -183,7 +193,7 @@ Examples:
 ```
 goal 49.9000094 8.9000327   # Dataset waypoint 3
 goal xy 5.0 -3.5            # Direct map metres
-goal bench                  # Named location (must match exactly; run 'goal list' to see all)
+goal bench                  # Named location (must match a name in maps/park_places.yaml exactly)
 ```
 
 **Named goal lookup and snapping:**
@@ -195,8 +205,8 @@ goal bench                  # Named location (must match exactly; run 'goal list
   move_base **snaps** the goal to the nearest free cell within ~1 m. This allows
   you to use "Goal: bench" even if the exact bench location is technically
   inside the 3D mesh — the goal is moved to a reachable perimeter automatically.
-- Available named goals (from `park_places.yaml`): see the file directly or run
-  `goal list` at the operator prompt.
+- Available named goals: read `maps/park_places.yaml` directly (e.g.
+  `grep -E '^[a-z]' maps/park_places.yaml`). There is no `goal list` command.
 
 Other prompt commands: `cancel`, `teleop`, `stop`, `estop`/`release`, `auto`,
 `status`, `quit`.
@@ -226,8 +236,13 @@ All tests below were performed on a clean sim and confirmed working.
   (not in the preloaded map).
 - **Result:** lidar detected it within 1–2 s. move_base recomputed the global plan
   to route around it. DWA local planner kept **~2 m clearance** from the obstacle
-  (due to `occdist_scale=0.4` and inflation radius of 0.3 m), with no contact.
+  (due to `occdist_scale=0.4` and `inflation_radius: 0.5` m), with no contact.
   Robot continued to the goal via the new path.
+
+  > This clearance required a fix: the `DWAPlannerROS` block was originally
+  > missing all trajectory-scoring params, so DWA ran with the default
+  > `occdist_scale=0.01` (near-zero obstacle avoidance) and **grazed** obstacles.
+  > Adding `occdist_scale: 0.4` + the scoring/sim params gave it a safe berth.
 
 ---
 
