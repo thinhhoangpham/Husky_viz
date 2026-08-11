@@ -146,6 +146,59 @@ The spoof only affects the fused pose while `abs_fix` is in `gps` mode; running
 `mode landmark` at the `operator>` prompt removes navsat from the loop live, letting
 the operator switch away from a spoofed source mid-attack.
 
+## Step 7 — Full demo: GPS → spoof → switch to landmarks → recover
+
+The headline flow: the robot navigates on GPS, an attacker drifts the GPS so the
+robot is dragged off course, then the operator switches the absolute source to
+landmarks live — GPS leaves the loop, and the robot reaches its goal on lidar
+localization instead.
+
+Assumes Steps 0–3 are up (world+robot, move_base, localizer, selector, operator).
+The selector starts in `gps` mode by default.
+
+1. **Confirm GPS mode and send the goal.** At the `operator>` prompt:
+
+   ```
+   status                         # expect: abs_fix=gps
+   goal 49.9000094 8.9000327      # GPS lat/lon goal (known-good, free space)
+   ```
+
+   The robot should begin driving toward the goal on the GPS-anchored pose.
+
+2. **Launch the GPS spoof** (separate terminal) while the robot is en route:
+
+   ```bash
+   export ROS_IP=172.20.0.1 ROS_MASTER_URI=http://172.20.0.1:11311 ROBOT_HOST_IP=172.20.0.1
+   cd ~/Documents/Husky_viz/attacker
+   docker compose run --rm attacker ./attacker/attack.sh navsat --drift-rate 0.5 --max-offset 15 --duration 40
+   ```
+
+   Watch in RViz (**http://localhost:6080/vnc.html**): the fused pose drifts and
+   the robot lurches off its route. Because the selector is in `gps` mode, the
+   spoofed navsat fix is what `abs_fix` carries.
+
+3. **Switch to landmarks live** — at the `operator>` prompt, mid-attack:
+
+   ```
+   mode landmark                  # abs_fix now = landmark localizer, navsat out of the loop
+   status                         # expect: abs_fix=landmark
+   ```
+
+   The GPS spoof no longer reaches the EKF: `abs_fix` is now filled by the lidar
+   landmark localizer, which the attacker cannot touch. The fused pose re-anchors
+   to what the robot actually sees.
+
+4. **Confirm recovery.** Re-send the same goal so the robot re-plans from the
+   now-truthful pose (the drift during the attack may have left it mid-route):
+
+   ```
+   goal 49.9000094 8.9000327
+   status                         # watch dist decrease; abs_fix should stay 'landmark'
+   ```
+
+   The robot should drive to the goal on landmark localization and arrive, with
+   the attacker still running — demonstrating the switch defeats the spoof.
+
 ## Stop everything
 
 ```bash
