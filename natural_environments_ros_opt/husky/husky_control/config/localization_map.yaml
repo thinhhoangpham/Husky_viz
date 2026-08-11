@@ -83,13 +83,17 @@ imu1_differential: false
 imu1_queue_size: 10
 imu1_remove_gravitational_acceleration: false
 
-# --- GPS: absolute position from navsat_transform_node -----------------------
-# odometry/gps carries ABSOLUTE x, y in the map frame (navsat_transform already
-# did the lat/lon -> metres projection and datum alignment). We fuse x and y
-# ONLY - not yaw (GPS has none) and not velocity. This is the anchor that stops
-# the fused pose from drifting, and the thing an odom spoof has to fight.
-# odom1 is navsat_transform's default output topic /odometry/gps, fused
-# directly.
+# --- Absolute position anchor: odometry/abs_fix (neutral, dual-source) --------
+# odom1 = odometry/abs_fix carries ABSOLUTE x, y in the map frame. The topic is
+# named neutrally because its SOURCE depends on the navigation mode:
+#   * GPS mode      -> navsat_transform publishes the fix here (its default
+#                      output odometry/gps is remapped to odometry/abs_fix in
+#                      control.launch). lat/lon -> metres projection + datum done.
+#   * Landmark mode -> landmark_localizer publishes here directly, from lidar-vs-
+#                      map matching (GPS-free). navsat is not started.
+# Either way we fuse x and y ONLY - not yaw (no heading here; compass supplies
+# yaw via imu1) and not velocity. This is the anchor that stops the fused pose
+# from drifting, and the thing an odom spoof has to fight.
 odom1: odometry/abs_fix
 odom1_config: [true,  true,  false,
                false, false, false,
