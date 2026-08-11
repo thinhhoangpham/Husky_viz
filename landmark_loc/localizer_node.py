@@ -2,7 +2,9 @@
 """ROS node: publish an absolute map-frame pose fix from lidar landmark matching.
 
 Pipeline per cloud: cloud->array -> crop -> cluster -> classify -> gate catalog
-by the EKF prior -> associate -> rigid-transform solve -> publish /odometry/landmark_fix
+by a GPS-anchored dead-reckoned prior (initial pre-attack GPS anchor advanced by
+odom-frame motion, re-anchored on each accepted fix) -> associate ->
+rigid-transform solve -> publish /odometry/landmark_fix
 (only on a fit that passes the residual+count gate; otherwise silent so the EKF
 coasts on odom). Position-only: yaw from the solve is logged, not fused (the
 map-EKF takes yaw from /compass/data).
@@ -66,6 +68,7 @@ def main():
     import rospy
     from nav_msgs.msg import Odometry
     from sensor_msgs.msg import PointCloud2
+    from sensor_msgs.msg import NavSatFix
 
     rospy.init_node("landmark_localizer")
     places = rospy.get_param("~places_path",
@@ -86,34 +89,66 @@ def main():
     landmarks = catalog.load(places)
     rospy.loginfo("landmark_localizer: %d catalog landmarks", len(landmarks))
 
-    state = {"prior": None, "last_pub": rospy.Time(0)}
+    state = {
+        "anchor_map": None,    # (ax, ay, ayaw) immutable-ish map anchor
+        "anchor_odom": None,   # (ox0, oy0, oyaw0) odom pose captured with anchor
+        "odom_now": None,      # (ox, oy, oyaw) latest odom-frame pose
+        "gps_valid": False,    # /navsat/fix status.status >= 0 seen
+        "last_pub": rospy.Time(0),
+    }
     pub = rospy.Publisher("/odometry/landmark_fix", Odometry, queue_size=5)
 
-    def on_prior(msg):
-        q = msg.pose.pose.orientation
-        yaw = math.atan2(2 * (q.w * q.z + q.x * q.y),
-                         1 - 2 * (q.y * q.y + q.z * q.z))
-        state["prior"] = (msg.pose.pose.position.x,
-                          msg.pose.pose.position.y, yaw)
+    def _yaw(q):
+        return math.atan2(2 * (q.w * q.z + q.x * q.y),
+                          1 - 2 * (q.y * q.y + q.z * q.z))
+
+    def on_odom(msg):
+        p_ = msg.pose.pose.position
+        state["odom_now"] = (p_.x, p_.y, _yaw(msg.pose.pose.orientation))
+
+    def on_navsat(msg):
+        if msg.status.status >= 0:
+            state["gps_valid"] = True
+
+    def on_map(msg):
+        # ONE-TIME anchor capture: only before an anchor exists, only when GPS
+        # is valid and an odom pose is available. Never updates the anchor after.
+        if state["anchor_map"] is not None:
+            return
+        if not state["gps_valid"] or state["odom_now"] is None:
+            return
+        p_ = msg.pose.pose.position
+        state["anchor_map"] = (p_.x, p_.y, _yaw(msg.pose.pose.orientation))
+        state["anchor_odom"] = state["odom_now"]
+        rospy.loginfo("anchor captured: map=(%.2f,%.2f,%.2f) odom=(%.2f,%.2f,%.2f)",
+                      state["anchor_map"][0], state["anchor_map"][1], state["anchor_map"][2],
+                      state["anchor_odom"][0], state["anchor_odom"][1], state["anchor_odom"][2])
 
     def on_cloud(msg):
         now = rospy.Time.now()
         if (now - state["last_pub"]).to_sec() < 1.0 / p["rate"]:
             return
-        if state["prior"] is None:
+        if (state["anchor_map"] is None or state["anchor_odom"] is None
+                or state["odom_now"] is None):
             return
+        prior = compose_prior(state["anchor_map"], state["anchor_odom"],
+                              state["odom_now"])
         pts = cloud_to_array(msg)
         if len(pts) == 0:
             return
         cropped = segment.crop(pts, p["z_min"], p["z_max"], p["max_range"])
         clusters = segment.cluster(cropped, p["link_dist"], p["min_pts"], p["max_extent"])
         obs = classify.to_observations(clusters)
-        gated = catalog.gate(landmarks, state["prior"], p["max_range"], p["fov_halfwidth"])
-        result = solve.solve_pose(obs, gated, state["prior"],
-                                  p["dist_gate"], p["residual_gate"])
+        gated = catalog.gate(landmarks, prior, p["max_range"], p["fov_halfwidth"])
+        result = solve.solve_pose(obs, gated, prior, p["dist_gate"], p["residual_gate"])
         if result is None:
             return
         x, y, yaw, rms, n = result
+        # RE-ANCHOR: an accepted (gated) fix is a trustworthy landmark-derived
+        # absolute position. Reset the dead-reckoning baseline to it so drift
+        # only accumulates between fixes, never over the whole run.
+        state["anchor_map"] = (x, y, prior[2])   # keep composed yaw (yaw not solved/fused)
+        state["anchor_odom"] = state["odom_now"]
         od = Odometry()
         od.header.stamp = now
         od.header.frame_id = "map"
@@ -125,7 +160,9 @@ def main():
         pub.publish(od)
         state["last_pub"] = now
 
-    rospy.Subscriber("/odometry/filtered_map", Odometry, on_prior, queue_size=5)
+    rospy.Subscriber("/odometry/filtered_odom", Odometry, on_odom, queue_size=5)
+    rospy.Subscriber("/navsat/fix", NavSatFix, on_navsat, queue_size=5)
+    rospy.Subscriber("/odometry/filtered_map", Odometry, on_map, queue_size=5)
     rospy.Subscriber("/os0_cloud_node/points", PointCloud2, on_cloud, queue_size=1)
     rospy.spin()
 
