@@ -18,13 +18,26 @@ cd ~/Documents/Husky_viz
 
 Wait for Gazebo to show the park + robot, then ~30–60 s for the pose to settle.
 
-## Step 2 — Navigation + map
+## Step 2 — Navigation + map  (choose ONE localization mode)
+
+### Option A — GPS mode (spoofable; used by the attacker demo in Step 6)
 
 ```bash
 export ROS_IP=172.20.0.1 ROS_MASTER_URI=http://172.20.0.1:11311 ROBOT_HOST_IP=172.20.0.1
 cd ~/Documents/Husky_viz
 roslaunch launch/move_base_gps_map.launch
 ```
+
+### Option B — Landmark mode (GPS-free; recognizes park landmarks from lidar)
+
+```bash
+export ROS_IP=172.20.0.1 ROS_MASTER_URI=http://172.20.0.1:11311 ROBOT_HOST_IP=172.20.0.1
+cd ~/Documents/Husky_viz
+roslaunch launch/move_base_landmark.launch
+```
+
+In landmark mode the GPS-spoof of Step 6 has nothing to attack (no navsat in the
+loop) — the robot keeps localizing off the furniture it can see.
 
 ## Step 3 — Operator
 

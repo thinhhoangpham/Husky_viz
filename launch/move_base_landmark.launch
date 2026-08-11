@@ -1,0 +1,52 @@
+<?xml version="1.0"?>
+<!--
+  GPS-FREE landmark-localization move_base, sibling of move_base_gps_map.launch.
+  Identical map_server + move_base + costmaps + planner. The ONLY difference:
+  instead of GPS (navsat feeding odometry/abs_fix), the landmark_localizer node
+  fills odometry/abs_fix from lidar-vs-map matching. GPS transform is NOT started
+  here; the map-EKF (already running from control.launch, odom1=odometry/abs_fix)
+  fuses the landmark fix in place of GPS. Compass still supplies yaw.
+
+  The robot, dual-EKF and TF chain are ASSUMED ALREADY RUNNING (load-park-world.sh).
+
+  landmark_localizer node convention (why it launches this way):
+    landmark_loc is NOT a catkin package on ROS_PACKAGE_PATH - it is a loose
+    script tree, exactly like drive_to_point_gps.py / husky_teleop_gui.py, which
+    the repo's own shell scripts run as `python3 <absolute path>`. localizer_node.py
+    does `from landmark_loc import ...`, so the repo root must be on PYTHONPATH.
+    We therefore run it by absolute path under `env PYTHONPATH=<repo> python3`
+    via launch-prefix. roslaunch still requires a resolvable pkg/type to build a
+    <node>; we use pkg="map_server" type="map_server" purely as a locator - its
+    resolved binary path is appended as a trailing argv that the rospy node
+    ignores (the node reads only rosparams). The __name:= roslaunch appends names
+    the node landmark_localizer, and ~places_path is read from the private param.
+-->
+<launch>
+
+  <node name="map_server" pkg="map_server" type="map_server"
+        args="/home/thinh/Documents/Husky_viz/maps/park_map.yaml" output="screen"/>
+
+  <node pkg="move_base" type="move_base" respawn="false" name="move_base" output="screen">
+
+    <param name="base_global_planner" value="navfn/NavfnROS"/>
+    <param name="base_local_planner"  value="dwa_local_planner/DWAPlannerROS"/>
+
+    <rosparam file="/home/thinh/Documents/Husky_viz/config/planner_gps.yaml" command="load"/>
+
+    <rosparam file="/home/thinh/Documents/Husky_viz/config/costmap_common_gps.yaml" command="load" ns="global_costmap"/>
+    <rosparam file="/home/thinh/Documents/Husky_viz/config/costmap_common_gps.yaml" command="load" ns="local_costmap"/>
+
+    <rosparam file="/home/thinh/Documents/Husky_viz/config/costmap_local_gps.yaml"      command="load" ns="local_costmap"/>
+    <rosparam file="/home/thinh/Documents/Husky_viz/config/costmap_global_gps_map.yaml" command="load" ns="global_costmap"/>
+
+    <remap from="cmd_vel" to="/cmd_vel"/>
+    <remap from="odom"    to="/odometry/filtered_map"/>
+  </node>
+
+  <node name="landmark_localizer" pkg="map_server" type="map_server"
+        launch-prefix="env PYTHONPATH=/home/thinh/Documents/Husky_viz python3 /home/thinh/Documents/Husky_viz/landmark_loc/localizer_node.py"
+        output="screen">
+    <param name="places_path" value="/home/thinh/Documents/Husky_viz/maps/park_places.yaml"/>
+  </node>
+
+</launch>
