@@ -2,7 +2,7 @@
 """ROS node: publish an absolute map-frame pose fix from lidar landmark matching.
 
 Pipeline per cloud: cloud->array -> crop -> cluster -> classify -> gate catalog
-by the EKF prior -> associate -> rigid-transform solve -> publish /odometry/abs_fix
+by the EKF prior -> associate -> rigid-transform solve -> publish /odometry/landmark_fix
 (only on a fit that passes the residual+count gate; otherwise silent so the EKF
 coasts on odom). Position-only: yaw from the solve is logged, not fused (the
 map-EKF takes yaw from /compass/data).
@@ -58,7 +58,7 @@ def main():
     rospy.loginfo("landmark_localizer: %d catalog landmarks", len(landmarks))
 
     state = {"prior": None, "last_pub": rospy.Time(0)}
-    pub = rospy.Publisher("/odometry/abs_fix", Odometry, queue_size=5)
+    pub = rospy.Publisher("/odometry/landmark_fix", Odometry, queue_size=5)
 
     def on_prior(msg):
         q = msg.pose.pose.orientation

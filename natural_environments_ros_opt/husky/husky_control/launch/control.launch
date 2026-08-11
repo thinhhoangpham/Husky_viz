@@ -74,7 +74,7 @@
       <rosparam command="load" file="$(find husky_control)/config/navsat_transform.yaml" />
       <remap from="gps/fix"           to="/navsat/fix"/>
       <remap from="odometry/filtered" to="odometry/filtered_map"/>
-      <remap from="odometry/gps" to="odometry/abs_fix"/>
+      <remap from="odometry/gps" to="odometry/gps_fix"/>
     </node>
   </group>
 
