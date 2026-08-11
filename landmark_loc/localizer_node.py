@@ -85,6 +85,7 @@ def main():
         fov_halfwidth=rospy.get_param("~fov_halfwidth", math.pi),
         base_var=rospy.get_param("~base_var", 0.5),
         rate=rospy.get_param("~rate", 5.0),
+        anchor_min_dist=rospy.get_param("~anchor_min_dist", 5.0),
     )
     landmarks = catalog.load(places)
     rospy.loginfo("landmark_localizer: %d catalog landmarks", len(landmarks))
@@ -94,7 +95,6 @@ def main():
         "anchor_odom": None,   # (ox0, oy0, oyaw0) odom pose captured with anchor
         "odom_now": None,      # (ox, oy, oyaw) latest odom-frame pose
         "gps_valid": False,    # /navsat/fix status.status >= 0 seen
-        "abs_fix_seen": False,  # /odometry/abs_fix observed => EKF is GPS-anchored
         "last_pub": rospy.Time(0),
     }
     pub = rospy.Publisher("/odometry/landmark_fix", Odometry, queue_size=5)
@@ -111,16 +111,20 @@ def main():
         if msg.status.status >= 0:
             state["gps_valid"] = True
 
-    def on_abs_fix(_msg):
-        state["abs_fix_seen"] = True
-
     def on_map(msg):
         # ONE-TIME anchor capture: only before an anchor exists, only when GPS
         # is valid and an odom pose is available. Never updates the anchor after.
         if state["anchor_map"] is not None:
             return
-        if (not state["gps_valid"] or not state["abs_fix_seen"]
-                or state["odom_now"] is None):
+        if not state["gps_valid"] or state["odom_now"] is None:
+            return
+        # Wait for the map-EKF to CONVERGE: before GPS is fused, filtered_map
+        # sits at the origin (0,0); once anchored it jumps to the true pose
+        # (robot spawns ~45m from the datum). Capturing while still near origin
+        # would record a ~45m-wrong anchor that never self-corrects. Requiring
+        # the pose to be clearly away from origin proves GPS has converged.
+        if math.hypot(msg.pose.pose.position.x,
+                      msg.pose.pose.position.y) < p["anchor_min_dist"]:
             return
         p_ = msg.pose.pose.position
         state["anchor_map"] = (p_.x, p_.y, _yaw(msg.pose.pose.orientation))
@@ -167,7 +171,6 @@ def main():
 
     rospy.Subscriber("/odometry/filtered_odom", Odometry, on_odom, queue_size=5)
     rospy.Subscriber("/navsat/fix", NavSatFix, on_navsat, queue_size=5)
-    rospy.Subscriber("/odometry/abs_fix", Odometry, on_abs_fix, queue_size=5)
     rospy.Subscriber("/odometry/filtered_map", Odometry, on_map, queue_size=5)
     rospy.Subscriber("/os0_cloud_node/points", PointCloud2, on_cloud, queue_size=1)
     rospy.spin()
