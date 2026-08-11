@@ -45,7 +45,7 @@ python node, run by absolute path like the repo's other scripts, in a second ter
 export ROS_IP=172.20.0.1 ROS_MASTER_URI=http://172.20.0.1:11311 ROBOT_HOST_IP=172.20.0.1
 cd ~/Documents/Husky_viz
 source /opt/ros/noetic/setup.bash
-PYTHONPATH=~/Documents/Husky_viz python3 ~/Documents/Husky_viz/landmark_loc/localizer_node.py
+PYTHONPATH=~/Documents/Husky_viz:$PYTHONPATH python3 ~/Documents/Husky_viz/landmark_loc/localizer_node.py
 ```
 
 In landmark mode the GPS-spoof of Step 6 has nothing to attack (no navsat in the
