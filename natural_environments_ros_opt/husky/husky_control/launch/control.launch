@@ -1,0 +1,95 @@
+<?xml version="1.0"?>
+<launch>
+
+  <arg name="multimaster" default="$(optenv ROBOT_MULTIMASTER false)"/> 
+  <arg name="simulation" default="$(optenv ROBOT_SIMULATION false)"/>
+  <arg name="robot_namespace" default="$(optenv ROBOT_NAMESPACE robot)"/>
+  <arg name="enable_ekf" default="$(optenv ENABLE_EKF true)"/>
+
+  <arg name="config_extras"
+       default="$(eval optenv('HUSKY_CONFIG_EXTRAS', find('husky_control') + '/config/empty.yaml'))"/>
+
+  <!-- <include file="$(find multimaster_launch)/launch/multimaster_robot.launch" if="$(arg multimaster)">
+    <arg name="gazebo_interface" value="$(find husky_control)/config/gazebo_interface.yaml" />
+    <arg name="public_interface" value="$(find husky_control)/config/public_interface.yaml" />
+    <arg name="robot_namespace" value="$(arg robot_namespace)"/>
+    <arg name="simulation" value="$(arg simulation)"/>
+  </include> -->
+
+  <!-- Load robot description -->
+  <include file="$(find husky_description)/launch/description.launch" >
+  </include>
+
+  <!-- Load controller configuration -->
+  <rosparam command="load" file="$(find husky_control)/config/control.yaml" />
+
+  <!-- Spawn controllers -->
+  <node name="base_controller_spawner" pkg="controller_manager" type="spawner"
+        args="husky_joint_publisher husky_velocity_controller"/>
+  <rosparam param="wheel_radius_multiplier" ns="husky_velocity_controller" subst_value="True">
+        $(optenv HUSKY_WHEEL_MULTIPLIER 1.0)
+  </rosparam>
+
+  <!-- Localization: standard robot_localization dual-EKF + navsat_transform.
+       Composed TF tree:  map -> odom -> base_link.
+
+       * ekf_localization       (localization.yaml)      publishes odom->base_link
+                                                          out topic: odometry/filtered
+       * ekf_localization_map   (localization_map.yaml)  publishes map->odom
+                                                          out topic: odometry/filtered_map
+       * navsat_transform_node  (navsat_transform.yaml)  raw GPS -> odometry/gps
+                                                          manual-datum mode: no
+                                                          IMU sub; heading from
+                                                          datum_yaw + yaw_offset
+
+       The autonomous driver (drive_to_point_gps.py) navigates on
+       /odometry/filtered_map by default. odom0 on the map EKF is still
+       husky_velocity_controller/odom, so spoofing that topic drags the fused
+       pose - that is the intended, demonstrable attack surface.
+
+       enable_ekf gates the WHOLE localization stack (both EKFs + navsat), same
+       as before. With enable_ekf:=false the driver must be run in raw-GPS mode
+       (USE_EKF=false); see drive_to_point_gps.py. -->
+  <group if="$(arg enable_ekf)" >
+    <!-- odom-frame EKF: smooth, continuous odom->base_link TF (drifts). -->
+    <node pkg="robot_localization" type="ekf_localization_node" name="ekf_localization">
+      <rosparam command="load" file="$(find husky_control)/config/localization.yaml" />
+      <remap from="odometry/filtered" to="odometry/filtered_odom"/>
+    </node>
+
+    <!-- map-frame EKF: GPS-anchored map->odom TF; the driver navigates on this. -->
+    <node pkg="robot_localization" type="ekf_localization_node" name="ekf_localization_map">
+      <rosparam command="load" file="$(find husky_control)/config/localization_map.yaml" />
+      <remap from="odometry/filtered" to="odometry/filtered_map"/>
+    </node>
+
+    <!-- navsat_transform: raw /navsat/fix -> odometry/gps (map frame).
+         Runs in MANUAL-DATUM mode (wait_for_datum:true in navsat_transform.yaml -
+         NOTE the datum only takes effect because of that flag), so it does NOT
+         subscribe to any IMU topic and takes heading from datum_yaw + yaw_offset.
+         There is therefore intentionally NO imu/data remap here: it would be inert
+         (no subscriber is created) and only misleads. The compass is consumed by
+         the driver, not by this node. -->
+    <node pkg="robot_localization" type="navsat_transform_node" name="navsat_transform">
+      <rosparam command="load" file="$(find husky_control)/config/navsat_transform.yaml" />
+      <remap from="gps/fix"           to="/navsat/fix"/>
+      <remap from="odometry/filtered" to="odometry/filtered_map"/>
+      <remap from="odometry/gps" to="odometry/abs_fix"/>
+    </node>
+  </group>
+
+  <node pkg="interactive_marker_twist_server" type="marker_server" name="twist_marker_server" output="screen">
+    <param name="link_name" value="base_link" />
+  </node>
+
+  <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher" />
+
+  <node pkg="twist_mux" type="twist_mux" name="twist_mux">
+    <rosparam command="load" file="$(find husky_control)/config/twist_mux.yaml" />
+    <remap from="cmd_vel_out" to="husky_velocity_controller/cmd_vel"/>
+  </node>
+
+  <!-- Override the default control parameters, see config/empty.yaml for default. -->
+  <rosparam command="load" file="$(arg config_extras)" />
+
+</launch>

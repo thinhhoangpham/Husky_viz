@@ -90,7 +90,7 @@ imu1_remove_gravitational_acceleration: false
 # the fused pose from drifting, and the thing an odom spoof has to fight.
 # odom1 is navsat_transform's default output topic /odometry/gps, fused
 # directly.
-odom1: odometry/gps
+odom1: odometry/abs_fix
 odom1_config: [true,  true,  false,
                false, false, false,
                false, false, false,
