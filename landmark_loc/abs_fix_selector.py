@@ -66,3 +66,67 @@ class AbsFixArbiter(object):
         last = self._last_seen.get(self._selected)
         stale = last is None or (now - last) > self.stale_timeout
         return self._selected + (":stale" if stale else "")
+
+
+def main():
+    import rospy
+    from nav_msgs.msg import Odometry
+    from std_msgs.msg import String
+    from topic_tools.srv import MuxSelect, MuxSelectResponse
+
+    rospy.init_node("abs_fix_selector")
+    stale_timeout = rospy.get_param("~stale_timeout", DEFAULT_STALE_TIMEOUT)
+    initial = rospy.get_param("~initial_mode", "gps")
+    if initial not in SOURCES:
+        rospy.logwarn("initial_mode '%s' unknown; defaulting to gps", initial)
+        initial = "gps"
+
+    arb = AbsFixArbiter(stale_timeout=stale_timeout, initial=initial)
+    out_pub = rospy.Publisher(OUTPUT_TOPIC, Odometry, queue_size=5)
+    status_pub = rospy.Publisher(STATUS_TOPIC, String, queue_size=1, latch=True)
+    last_status = {"value": None}
+
+    def publish_status():
+        s = arb.status(rospy.get_time())
+        if s != last_status["value"]:
+            last_status["value"] = s
+            status_pub.publish(String(data=s))
+
+    def on_source(msg, name):
+        arb.note_message(name, rospy.get_time())
+        if arb.should_forward(name):
+            out_pub.publish(msg)          # forwarded UNCHANGED
+        publish_status()
+
+    for fname, topic in SOURCES.items():
+        rospy.Subscriber(topic, Odometry, on_source, callback_args=fname,
+                         queue_size=5)
+
+    def on_select(req):
+        # req.topic is an INPUT TOPIC NAME (topic_tools/MuxSelect convention).
+        name = TOPIC_TO_NAME.get(req.topic)
+        if name is None:
+            rospy.logwarn("set_abs_fix_mode: unknown topic '%s'", req.topic)
+            return MuxSelectResponse(prev_topic="")  # empty => rejected
+        prev = arb.select(name)
+        rospy.loginfo("abs_fix source: %s -> %s", prev, name)
+        publish_status()
+        return MuxSelectResponse(prev_topic=SOURCES[prev])
+
+    rospy.Service(SELECT_SERVICE, MuxSelect, on_select)
+
+    publish_status()  # latch the initial mode immediately
+
+    # Stale watchdog: re-evaluate status ~2 Hz so :stale latches even when the
+    # selected source is fully silent (no callback would otherwise fire).
+    def on_timer(_evt):
+        publish_status()
+    rospy.Timer(rospy.Duration(0.5), on_timer)
+
+    rospy.loginfo("abs_fix_selector up: initial=%s, stale_timeout=%.1fs",
+                  initial, stale_timeout)
+    rospy.spin()
+
+
+if __name__ == "__main__":
+    main()
