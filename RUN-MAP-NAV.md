@@ -44,6 +44,7 @@ python node, run by absolute path like the repo's other scripts, in a second ter
 # in a second terminal (or backgrounded), start the landmark localizer:
 export ROS_IP=172.20.0.1 ROS_MASTER_URI=http://172.20.0.1:11311 ROBOT_HOST_IP=172.20.0.1
 cd ~/Documents/Husky_viz
+source /opt/ros/noetic/setup.bash
 PYTHONPATH=~/Documents/Husky_viz python3 ~/Documents/Husky_viz/landmark_loc/localizer_node.py
 ```
 
