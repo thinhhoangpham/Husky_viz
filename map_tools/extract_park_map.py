@@ -8,11 +8,12 @@ we emit RAW footprints, no pre-inflation.
 """
 import os
 import sys
+import math
 import argparse
 
 from map_tools.sdf_parse import parse_models
 from map_tools.occupancy_grid import Grid
-from map_tools.mesh_bounds import footprint_dxdy
+from map_tools.mesh_bounds import footprint
 
 # Footprint radii in metres, BEFORE costmap inflation. See the plan for rationale.
 # NOTE: the furniture entries here (bench/garden_table/lamp/trash_bin_1) are
@@ -51,13 +52,16 @@ BOX_MESHES = {
     "bench":        (_os.path.join(_MODELS_ROOT, "bench", "Bench_1.dae"), 0.15),
     "garden_table": (_os.path.join(_MODELS_ROOT, "garden_table", "garden_table.dae"), 1.0),
 }
-# Cache footprints so each .dae is parsed once.
+# Cache footprints so each .dae is parsed once. Stores (half_dx, half_dy, cx,
+# cy): the mesh-local center offset (cx, cy) accounts for COLLADA node
+# transforms that translate geometry away from the mesh origin (e.g. the
+# bench, whose footprint center is ~1.4 m from its origin) -- see
+# mesh_bounds.footprint().
 _footprint_cache = {}
-def _box_half_extents(family):
+def _box_extents(family):
     if family not in _footprint_cache:
         path, scale = BOX_MESHES[family]
-        dx, dy = footprint_dxdy(path, scale)
-        _footprint_cache[family] = (dx / 2.0, dy / 2.0)
+        _footprint_cache[family] = footprint(path, scale)
     return _footprint_cache[family]
 
 # Families that become named goal destinations (not trees).
@@ -71,8 +75,13 @@ def build_grid(models, resolution=0.15, margin=5.0):
              max(xs) + margin, max(ys) + margin, resolution)
     for m in models:
         if m.family in BOX_MESHES:
-            hx, hy = _box_half_extents(m.family)
-            g.stamp_box(m.world_x, m.world_y, m.yaw, hx, hy)
+            hx, hy, cx, cy = _box_extents(m.family)
+            # Rotate the mesh-local center offset by the model's yaw and
+            # apply it on top of the link pose -- the box must be stamped at
+            # the geometry's true (world-frame) center, not the link origin.
+            sx = m.world_x + (cx * math.cos(m.yaw) - cy * math.sin(m.yaw))
+            sy = m.world_y + (cx * math.sin(m.yaw) + cy * math.cos(m.yaw))
+            g.stamp_box(sx, sy, m.yaw, hx, hy)
         else:
             g.stamp_disc(m.world_x, m.world_y, RADII[m.family])
     return g

@@ -30,17 +30,40 @@ def test_build_places_has_named_furniture_not_trees():
     sample = next(iter(places.values()))
     assert isinstance(sample["x"], float) and isinstance(sample["y"], float)
 
+def test_bench_box_is_stamped_at_shifted_geometry_center_not_link_origin():
+    # Bench_1.dae's COLLADA node transforms translate the geometry ~1.4 m from
+    # the mesh origin (see mesh_bounds.footprint). The box must be stamped at
+    # the rotated true geometry center (~36.2, -0.56 for this model's pose),
+    # not at the link_0 pose (~37.61, -0.16) -- that was the ~1.2 m bug.
+    models = parse_models(WORLD)
+    g = build_grid(models, resolution=0.15)
+    bench = next(m for m in models if m.name == "bench")
+    assert abs(bench.world_x - 37.61) < 0.05
+    assert abs(bench.world_y - (-0.16)) < 0.05
+
+    # True (shifted) geometry center is occupied.
+    assert g.is_occupied(36.2, -0.56) is True
+    # The link origin itself is no longer necessarily the box center -- it's
+    # ~1.4 m away from the true geometry, well outside the box's ~0.9 m
+    # long half-extent.
+    assert g.is_occupied(bench.world_x, bench.world_y) is False
+
+
 def test_bench_footprint_covers_full_length():
     models = parse_models(WORLD)
     g = build_grid(models, resolution=0.15)
     bench = next(m for m in models if m.name == "bench")
     # The bench yaw is ~-1.563 (long axis ~ along world y). Sample a point ~0.7 m
-    # from the bench center along its long axis; a disc (old behavior) would miss
-    # it, an oriented box covers it. Long half-extent ~0.89 m.
+    # from the SHIFTED bench center along its long axis; a disc (old behavior)
+    # would miss it, an oriented box covers it. Long half-extent ~0.89 m.
     import math
+    from map_tools.extract_park_map import _box_extents
+    hx, hy, cx, cy = _box_extents("bench")
+    cx_w = bench.world_x + (cx * math.cos(bench.yaw) - cy * math.sin(bench.yaw))
+    cy_w = bench.world_y + (cx * math.sin(bench.yaw) + cy * math.cos(bench.yaw))
     L = 0.85  # within the ~0.89 m half-length
-    px = bench.world_x + L * math.cos(bench.yaw + math.pi / 2)
-    py = bench.world_y + L * math.sin(bench.yaw + math.pi / 2)
+    px = cx_w + L * math.cos(bench.yaw + math.pi / 2)
+    py = cy_w + L * math.sin(bench.yaw + math.pi / 2)
     assert g.is_occupied(px, py) is True
 
 def test_garden_table_footprint_covers_true_length():
