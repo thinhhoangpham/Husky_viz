@@ -77,11 +77,13 @@ sources and the map-EKF:
   `"gps"`, `"landmark"`, `"gps:stale"`, `"landmark:stale"`. Latched so any
   late-joining observer (operator status line, RViz, logger, future supervisor)
   immediately reads the current mode without issuing a call.
-- **Service `/set_abs_fix_mode`** — request `mode` (string: `"gps"` or
-  `"landmark"`), response `ok` (bool) + `active_source` (string, the mode now
-  live). An unknown mode returns `ok=false` and leaves the mode unchanged. The
-  service is how the mode is *changed*; the latched topic is how it is
-  *observed*. A future automatic supervisor is a second client of this service.
+- **Service `/set_abs_fix_mode`** — stock `topic_tools/MuxSelect` type: request
+  `topic` (the input topic name of the desired source, e.g. `/odometry/gps_fix`),
+  response `prev_topic` (the previously-selected input topic; empty string means
+  the request was rejected and the mode left unchanged). Using the stock type
+  avoids a custom `.srv`/catkin package. The service is how the mode is
+  *changed*; the latched topic is how it is *observed*. A future automatic
+  supervisor is a second client of this service.
 
 ### Arbitration behavior (strict forward + stale flag)
 
@@ -125,9 +127,10 @@ what makes the switch truly live (no process churn, no launch swap).
 
 ## Operator REPL additions (`operator/operate.py`)
 
-- New command **`mode gps`** / **`mode landmark`** — calls `/set_abs_fix_mode`
-  and prints the returned `active_source`, so the operator knows the switch took
-  effect. An unknown/failed switch prints the failure.
+- New command **`mode gps`** / **`mode landmark`** — maps the friendly name to
+  its input topic and calls `/set_abs_fix_mode`; a non-empty `prev_topic` in the
+  reply confirms the switch took effect (empty means rejected). An unknown/failed
+  switch prints the failure.
 - **Status line** (`_print_status`) gains the current mode + stale flag, read
   from the latched `/abs_fix_mode` topic.
 - Help text lists the new command.
@@ -160,7 +163,7 @@ without a running master. Given a sequence of `(source, timestamp)` inputs and
    first). Start `abs_fix_selector` and both feeders.
 2. GPS mode by default: confirm `abs_fix` tracks `gps_fix` and the robot
    navigates a goal.
-3. Mid-drive `mode landmark`: confirm `active_source` returns `landmark`,
+3. Mid-drive `mode landmark`: confirm the reply's `prev_topic` is non-empty,
    `/abs_fix_mode` latches `landmark`, `abs_fix` now tracks `landmark_fix`, and
    the robot keeps navigating.
 4. Silence the selected source (stop its feeder input): confirm `/abs_fix_mode`
