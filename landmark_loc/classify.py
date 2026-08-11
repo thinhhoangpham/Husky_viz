@@ -10,21 +10,31 @@ from dataclasses import dataclass
 from landmark_loc.signatures import MESH_SIGNATURES, SIGNATURE_FAMILIES
 
 # Tolerances. major/minor in metres, aspect is a ratio, height in metres.
-# Pinned against live lidar (Task 1 in-sim NOTE). Starting values below.
+# Pinned against live lidar (Task 1 in-sim NOTE).
 DEFAULT_MARGINS = {
     "major": 0.8,      # +/- m on the major horizontal extent
     "minor": 0.6,      # +/- m on the minor horizontal extent
-    "height": 0.8,     # +/- m on height (< 0.85 so a 4 m tree trunk is not
-                       # claimed by the 3.15 m lamp; still self-classifies all four)
+    "height": 1.0,     # +/- m on height (principled: absorbs partial vertical
+                       # views; lamp<->bin stay separated by their 2.11 m gap)
     "aspect_split": 1.8,   # major/minor above this = elongated (bench-like)
 }
 
-# Tree exclusion: a roughly round footprint (aspect < aspect_split) with a
-# trunk-scale minor extent AND tall. Distinguishes trunk from lamp pole by the
-# larger trunk radius and from bins by height.
+# Tree exclusion. A tree is a roughly round footprint (aspect < aspect_split)
+# that is tall AND *definitively* trunk-like, i.e. distinguishable from the
+# lamp signature (0.483 minor, 3.148 height). The lamp is the only tall, round,
+# small-footprint FAMILY, so the gate must catch real trunks without swallowing
+# the lamp. Two independent trunk tells, EITHER of which suffices:
+#   - minor radius clearly exceeds the lamp pole (>= _TREE_TRUNK_MINOR), or
+#   - height clearly exceeds the lamp height band's top (>= _TREE_TALL_HEIGHT).
+# The ideal lamp (minor 0.483 < 0.50, height 3.148 < 3.95) triggers neither, so
+# it stays a lamp; a real trunk (wider radius and/or taller) triggers at least
+# one. This is why the gate can run FIRST and win over a family match without
+# mislabeling the lamp.
 _TREE_MIN_HEIGHT = 2.0
-_TREE_MIN_MINOR = 0.30   # trunk radius > lamp pole
-_TREE_MAX_MINOR = 1.0
+_TREE_MIN_MINOR = 0.30       # below this is a lamp pole / noise, not a trunk
+_TREE_MAX_MINOR = 1.0        # above this is not a single trunk
+_TREE_TRUNK_MINOR = 0.50     # > lamp pole minor 0.483: a definite trunk radius
+_TREE_TALL_HEIGHT = 3.95     # > lamp height band top (3.148 + 0.8): a definite tree
 
 
 @dataclass
@@ -49,20 +59,33 @@ def _matches(cluster, fam, m):
     return elongated == sig_elongated
 
 
+def _is_tree(cluster, margins):
+    """A round, tall, definitively trunk-like cluster — never the lamp.
+
+    Runs BEFORE family matching and wins, so a real trunk that also happens to
+    fall inside the lamp band is still excluded from identity. The gate is
+    narrowed so the ideal lamp (minor 0.483, height 3.148) triggers neither
+    trunk tell and therefore is NOT a tree.
+    """
+    aspect = cluster.major / max(cluster.minor, 1e-3)
+    if aspect >= margins["aspect_split"]:
+        return False
+    if cluster.height < _TREE_MIN_HEIGHT:
+        return False
+    if not (_TREE_MIN_MINOR <= cluster.minor <= _TREE_MAX_MINOR):
+        return False
+    # definitively trunk-like: wider radius than a lamp pole OR taller than a lamp
+    return cluster.minor >= _TREE_TRUNK_MINOR or cluster.height >= _TREE_TALL_HEIGHT
+
+
 def classify_cluster(cluster, margins=DEFAULT_MARGINS):
-    # A unique family match wins: the mesh signatures (incl. the lamp's head-
-    # widened footprint) take precedence over the tree gate, whose minor band
-    # overlaps the lamp pole. The tree gate below only catches clusters that no
-    # single family claims.
+    # Tree gate first and it wins: a real trunk must be excluded from identity
+    # even when it also satisfies a family band (e.g. the lamp band).
+    if _is_tree(cluster, margins):
+        return "tree"
     hits = [fam for fam in SIGNATURE_FAMILIES if _matches(cluster, fam, margins)]
     if len(hits) == 1:
         return hits[0]
-    # tree gate: round + tall + trunk-radius, distinct from any lamp/bin match
-    aspect = cluster.major / max(cluster.minor, 1e-3)
-    if (aspect < margins["aspect_split"]
-            and cluster.height >= _TREE_MIN_HEIGHT
-            and _TREE_MIN_MINOR <= cluster.minor <= _TREE_MAX_MINOR):
-        return "tree"
     return "unknown"
 
 

@@ -22,6 +22,24 @@ def test_round_tall_trunk_is_tree_not_lamp():
     assert got == "tree"
 
 
+def test_real_trunks_inside_lamp_height_band_are_tree_not_lamp():
+    # Adversarial: trunks whose height sits INSIDE the lamp height band and whose
+    # footprint falls inside the lamp footprint band. They must be excluded from
+    # identity (tree), never emitted as a phantom lamp landmark.
+    for h in (2.5, 3.0, 3.5):
+        got = classify.classify_cluster(_c(major=0.6, minor=0.5, height=h))
+        assert got == "tree", f"trunk at height {h} misclassified as {got}"
+    # exact reviewer example
+    assert classify.classify_cluster(_c(major=0.6, minor=0.5, height=3.5)) == "tree"
+
+
+def test_ideal_lamp_is_still_lamp():
+    from landmark_loc.signatures import MESH_SIGNATURES as S
+    s = S["lamp"]
+    got = classify.classify_cluster(_c(s["major"], s["minor"], s["height"]))
+    assert got == "lamp"
+
+
 def test_ambiguous_between_bands_is_unknown():
     # deliberately between bench and table aspect/size
     got = classify.classify_cluster(_c(major=1.9, minor=1.3, height=0.9))
