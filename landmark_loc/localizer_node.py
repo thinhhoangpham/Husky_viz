@@ -94,6 +94,7 @@ def main():
         "anchor_odom": None,   # (ox0, oy0, oyaw0) odom pose captured with anchor
         "odom_now": None,      # (ox, oy, oyaw) latest odom-frame pose
         "gps_valid": False,    # /navsat/fix status.status >= 0 seen
+        "abs_fix_seen": False,  # /odometry/abs_fix observed => EKF is GPS-anchored
         "last_pub": rospy.Time(0),
     }
     pub = rospy.Publisher("/odometry/landmark_fix", Odometry, queue_size=5)
@@ -110,12 +111,16 @@ def main():
         if msg.status.status >= 0:
             state["gps_valid"] = True
 
+    def on_abs_fix(_msg):
+        state["abs_fix_seen"] = True
+
     def on_map(msg):
         # ONE-TIME anchor capture: only before an anchor exists, only when GPS
         # is valid and an odom pose is available. Never updates the anchor after.
         if state["anchor_map"] is not None:
             return
-        if not state["gps_valid"] or state["odom_now"] is None:
+        if (not state["gps_valid"] or not state["abs_fix_seen"]
+                or state["odom_now"] is None):
             return
         p_ = msg.pose.pose.position
         state["anchor_map"] = (p_.x, p_.y, _yaw(msg.pose.pose.orientation))
@@ -162,6 +167,7 @@ def main():
 
     rospy.Subscriber("/odometry/filtered_odom", Odometry, on_odom, queue_size=5)
     rospy.Subscriber("/navsat/fix", NavSatFix, on_navsat, queue_size=5)
+    rospy.Subscriber("/odometry/abs_fix", Odometry, on_abs_fix, queue_size=5)
     rospy.Subscriber("/odometry/filtered_map", Odometry, on_map, queue_size=5)
     rospy.Subscriber("/os0_cloud_node/points", PointCloud2, on_cloud, queue_size=1)
     rospy.spin()
