@@ -88,6 +88,62 @@ def footprint(dae_path, scale=0.15):
     return half_dx, half_dy, cx, cy
 
 
+def bounds3d(dae_path, scale=0.15):
+    """Like footprint() but also returns z half-extent and z center.
+
+    Applies each visual_scene node's <matrix> to its geometry vertices before
+    bounding (same as footprint), so translated/rotated geometry is handled.
+    Returns (half_dx, half_dy, half_dz, cx, cy, cz), all scaled to metres.
+    """
+    txt = _strip_namespace(open(dae_path).read())
+    root = ET.fromstring(txt)
+
+    geom_positions = {}
+    for geom in root.findall(".//geometry"):
+        gid = geom.get("id")
+        verts = []
+        for arr in geom.findall(".//float_array"):
+            arr_id = arr.get("id") or ""
+            if "positions" not in arr_id.lower():
+                continue
+            vals = _parse_floats(arr.text or "")
+            verts.extend(zip(vals[0::3], vals[1::3], vals[2::3]))
+        if verts:
+            geom_positions.setdefault(gid, []).extend(verts)
+
+    xs, ys, zs = [], [], []
+    for node in root.findall(".//visual_scene//node"):
+        ig = node.find(".//instance_geometry")
+        if ig is None:
+            continue
+        gid = ig.get("url", "").lstrip("#")
+        verts = geom_positions.get(gid)
+        if not verts:
+            continue
+        mat_el = node.find("matrix")
+        if mat_el is not None:
+            m = _parse_floats(mat_el.text)
+            R = [m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10]]
+            T = [m[3], m[7], m[11]]
+        else:
+            R, T = _identity()
+        for vx, vy, vz in verts:
+            xs.append(R[0] * vx + R[1] * vy + R[2] * vz + T[0])
+            ys.append(R[3] * vx + R[4] * vy + R[5] * vz + T[1])
+            zs.append(R[6] * vx + R[7] * vy + R[8] * vz + T[2])
+
+    if not xs:
+        raise ValueError("no positions arrays in %s" % dae_path)
+
+    half_dx = (max(xs) - min(xs)) / 2.0 * scale
+    half_dy = (max(ys) - min(ys)) / 2.0 * scale
+    half_dz = (max(zs) - min(zs)) / 2.0 * scale
+    cx = (min(xs) + max(xs)) / 2.0 * scale
+    cy = (min(ys) + max(ys)) / 2.0 * scale
+    cz = (min(zs) + max(zs)) / 2.0 * scale
+    return half_dx, half_dy, half_dz, cx, cy, cz
+
+
 def footprint_dxdy(dae_path, scale=0.15):
     """Backward-compat wrapper: full extents only, no center offset."""
     half_dx, half_dy, _cx, _cy = footprint(dae_path, scale)
