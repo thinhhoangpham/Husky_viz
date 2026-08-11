@@ -1,0 +1,40 @@
+<?xml version="1.0"?>
+<!--
+  GPS-FREE landmark-localization move_base, sibling of move_base_gps_map.launch.
+  Identical map_server + move_base + costmaps + planner. The ONLY difference from
+  GPS mode: navsat is NOT started here (no GPS transform in the loop). In landmark
+  mode the landmark_localizer node fills odometry/abs_fix from lidar-vs-map
+  matching instead; the map-EKF (already running from control.launch,
+  odom1=odometry/abs_fix) fuses that fix in place of GPS. Compass still supplies yaw.
+
+  The landmark_localizer is NOT a <node> in this launch file. landmark_loc is a
+  loose script tree, not a catkin package, so (per repo convention for loose
+  python nodes - e.g. drive_to_point_gps.py in drive-park.sh, husky_teleop_gui.py
+  in start-park.sh:267) it is run separately from the runbook as
+  `python3 <abs-path>`. See RUN-MAP-NAV.md Step 2 Option B.
+
+  The robot, dual-EKF and TF chain are ASSUMED ALREADY RUNNING (load-park-world.sh).
+-->
+<launch>
+
+  <node name="map_server" pkg="map_server" type="map_server"
+        args="/home/thinh/Documents/Husky_viz/maps/park_map.yaml" output="screen"/>
+
+  <node pkg="move_base" type="move_base" respawn="false" name="move_base" output="screen">
+
+    <param name="base_global_planner" value="navfn/NavfnROS"/>
+    <param name="base_local_planner"  value="dwa_local_planner/DWAPlannerROS"/>
+
+    <rosparam file="/home/thinh/Documents/Husky_viz/config/planner_gps.yaml" command="load"/>
+
+    <rosparam file="/home/thinh/Documents/Husky_viz/config/costmap_common_gps.yaml" command="load" ns="global_costmap"/>
+    <rosparam file="/home/thinh/Documents/Husky_viz/config/costmap_common_gps.yaml" command="load" ns="local_costmap"/>
+
+    <rosparam file="/home/thinh/Documents/Husky_viz/config/costmap_local_gps.yaml"      command="load" ns="local_costmap"/>
+    <rosparam file="/home/thinh/Documents/Husky_viz/config/costmap_global_gps_map.yaml" command="load" ns="global_costmap"/>
+
+    <remap from="cmd_vel" to="/cmd_vel"/>
+    <remap from="odom"    to="/odometry/filtered_map"/>
+  </node>
+
+</launch>

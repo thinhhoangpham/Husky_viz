@@ -12,7 +12,7 @@ localization chain, by logging all three stages side by side against one clock:
     navsat_transform_node
         |
         v
-    /odometry/gps (nav_msgs/Odometry)        map-frame position derived FROM the
+    /odometry/abs_fix (nav_msgs/Odometry)    map-frame position derived FROM the
         |                                    GPS fix.
         v
     map EKF (ekf_localization_map)
@@ -50,7 +50,7 @@ class GpsChainRecorder(object):
         self.args = args
         self._lock = threading.Lock()
         self._navsat = None          # (lat, lon, status) from /navsat/fix
-        self._gps_odom = None        # (x, y) from /odometry/gps
+        self._gps_odom = None        # (x, y) from /odometry/abs_fix
         self._filtered_map = None    # (x, y) from /odometry/filtered_map
         self._stop = threading.Event()
         self._start_wall = None
@@ -59,7 +59,7 @@ class GpsChainRecorder(object):
         # Read-only subscribers; queue_size=1 -> always the freshest value.
         rospy.Subscriber("/navsat/fix", NavSatFix,
                          self._on_navsat, queue_size=1)
-        rospy.Subscriber("/odometry/gps", Odometry,
+        rospy.Subscriber("/odometry/abs_fix", Odometry,
                          self._on_gps_odom, queue_size=1)
         rospy.Subscriber("/odometry/filtered_map", Odometry,
                          self._on_filtered_map, queue_size=1)
@@ -120,7 +120,7 @@ class GpsChainRecorder(object):
         rate = rospy.Rate(self.args.rate)
 
         rospy.loginfo(
-            "recording /navsat/fix, /odometry/gps, /odometry/filtered_map "
+            "recording /navsat/fix, /odometry/abs_fix, /odometry/filtered_map "
             "at %.1f Hz -> %s%s",
             self.args.rate, self.args.csv,
             (" for %.0f s" % self.args.duration)
@@ -150,7 +150,7 @@ class GpsChainRecorder(object):
 def parse_args():
     p = argparse.ArgumentParser(
         description="Record the GPS localization chain (/navsat/fix, "
-                    "/odometry/gps, /odometry/filtered_map) to one CSV on a "
+                    "/odometry/abs_fix, /odometry/filtered_map) to one CSV on a "
                     "shared time axis, via latest-value sampling.")
     p.add_argument("--duration", type=float, default=0.0,
                    help="seconds to record; 0 = until Ctrl-C (default 0)")

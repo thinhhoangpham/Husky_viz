@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plot the GPS-spoof propagation chain: /navsat/fix -> /odometry/gps -> /odometry/filtered_map."""
+"""Plot the GPS-spoof propagation chain: /navsat/fix -> /odometry/abs_fix -> /odometry/filtered_map."""
 import csv
 import matplotlib
 matplotlib.use("Agg")
@@ -38,7 +38,7 @@ a1.legend(loc="upper left")
 a1.grid(True, alpha=0.3)
 
 # Bottom: the two downstream map-frame y estimates, overlaid (should coincide)
-a2.plot(t, gy, color="tab:orange", lw=3, label="/odometry/gps  y  (navsat_transform output)")
+a2.plot(t, gy, color="tab:orange", lw=3, label="/odometry/abs_fix  y  (navsat_transform output)")
 a2.plot(t, fy, color="tab:blue", lw=1.3, label="/odometry/filtered_map  y  (map-EKF, operator sees)")
 a2.set_ylabel("map-frame y (m)")
 a2.set_xlabel("time since record start (s)")
