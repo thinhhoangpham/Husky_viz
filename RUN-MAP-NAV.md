@@ -36,6 +36,17 @@ cd ~/Documents/Husky_viz
 roslaunch launch/move_base_landmark.launch
 ```
 
+Then start the landmark localizer — this is the piece that fills `/odometry/abs_fix`
+from the lidar in landmark mode (the map-EKF fuses it in place of GPS). It is a loose
+python node, run by absolute path like the repo's other scripts, in a second terminal:
+
+```bash
+# in a second terminal (or backgrounded), start the landmark localizer:
+export ROS_IP=172.20.0.1 ROS_MASTER_URI=http://172.20.0.1:11311 ROBOT_HOST_IP=172.20.0.1
+cd ~/Documents/Husky_viz
+PYTHONPATH=~/Documents/Husky_viz python3 ~/Documents/Husky_viz/landmark_loc/localizer_node.py
+```
+
 In landmark mode the GPS-spoof of Step 6 has nothing to attack (no navsat in the
 loop) — the robot keeps localizing off the furniture it can see.
 
