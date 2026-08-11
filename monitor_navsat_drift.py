@@ -16,7 +16,7 @@ attack progresses:
     /odometry/filtered_map (nav_msgs/Odometry) -- the MAP-frame EKF output that
         move_base actually plans against. THE load-bearing signal: does it walk
         away as the spoof injects a growing offset?
-    /odometry/gps (nav_msgs/Odometry) -- navsat_transform's output. This
+    /odometry/abs_fix (nav_msgs/Odometry) -- navsat_transform's output. This
         distinguishes the two failure modes: if it TRACKS the injected offset,
         the lie propagated (attack works); if it COLLAPSES to (0,0), the
         flood/rejection failure mode is occurring (attack rejected).
@@ -54,14 +54,14 @@ class NavSatDriftMonitor(object):
         self.args = args
         self._lock = threading.Lock()
         self._fused_xy = None       # (x, y) from /odometry/filtered_map, map m
-        self._gps_anchor_xy = None  # (x, y) from /odometry/gps, map m
+        self._gps_anchor_xy = None  # (x, y) from /odometry/abs_fix, map m
         self._stop = threading.Event()
         self._start_wall = None
 
         # Read-only defender subscriptions to the robot's own estimator outputs.
         rospy.Subscriber("/odometry/filtered_map", Odometry,
                          self._on_fused, queue_size=1)
-        rospy.Subscriber("/odometry/gps", Odometry,
+        rospy.Subscriber("/odometry/abs_fix", Odometry,
                          self._on_gps_anchor, queue_size=1)
 
         # CSV: open once, write header, flush every row so a mid-run Ctrl-C
