@@ -19,21 +19,36 @@ DEFAULT_MARGINS = {
     "aspect_split": 1.8,   # major/minor above this = elongated (bench-like)
 }
 
-# Tree exclusion. A tree is a roughly round footprint (aspect < aspect_split)
-# that is tall AND *definitively* trunk-like, i.e. distinguishable from the
-# lamp signature (0.483 minor, 3.148 height). The lamp is the only tall, round,
-# small-footprint FAMILY, so the gate must catch real trunks without swallowing
-# the lamp. Two independent trunk tells, EITHER of which suffices:
-#   - minor radius clearly exceeds the lamp pole (>= _TREE_TRUNK_MINOR), or
-#   - height clearly exceeds the lamp height band's top (>= _TREE_TALL_HEIGHT).
-# The ideal lamp (minor 0.483 < 0.50, height 3.148 < 3.95) triggers neither, so
-# it stays a lamp; a real trunk (wider radius and/or taller) triggers at least
-# one. This is why the gate can run FIRST and win over a family match without
-# mislabeling the lamp.
-_TREE_MIN_HEIGHT = 2.0
+# Tree exclusion. A tree is a ROUND footprint (aspect < aspect_split) with a
+# trunk-scale minor radius. It is identified by that FOOTPRINT, not by height:
+# the localizer crops points to z in [-0.73, 1.2], so every cluster is <= 1.93 m
+# tall and real trunks appear SHORT. A height floor would make the gate dead
+# (all trees fall through to the bin band, bin height 1.041 +/- 1.0). So there
+# is NO minimum-height requirement for the footprint tells.
+#
+# The gate must catch real trunks (arbolpartes4 radius ~0.30 -> ~0.6 m minor,
+# tree_8 radius ~0.45 -> ~0.9 m minor, stumps down to ~0.4 m minor) WITHOUT
+# swallowing the four landmark families. Real trunk minors (~0.4-0.9) overlap
+# the bin (0.382) and lamp (0.483) footprints, so three independent trunk tells,
+# ANY of which suffices:
+#   1. wide trunk: minor >= _TREE_TRUNK_MINOR (0.50, wider than bin 0.382 AND
+#      lamp 0.483) -> catches tree_8, arbolpartes4, tall trunks. Bin/lamp spared.
+#   2. round stump: clearly round (aspect <= _TREE_STUMP_ASPECT) AND not
+#      lamp-tall (height < _LAMP_BAND_BOTTOM). Catches thin stumps (minor ~0.4)
+#      whose footprint sits in the bin band but whose aspect (~1.25) is far
+#      rounder than the bin (1.79). Spares the bin (aspect 1.79 > 1.5) and the
+#      lamp (genuinely tall: 3.148 >= lamp band bottom; the crop caps trunks at
+#      1.93 m so no trunk can be lamp-tall).
+#   3. tall trunk: height >= _TREE_TALL_HEIGHT (> lamp band top) -> catches thin,
+#      very tall trunks in unclipped views. Lamp (3.148 < 3.95) spared.
+# Bench/table are elongated (aspect >= aspect_split) so tell (1)-(3) never see
+# them.
 _TREE_MIN_MINOR = 0.30       # below this is a lamp pole / noise, not a trunk
 _TREE_MAX_MINOR = 1.0        # above this is not a single trunk
-_TREE_TRUNK_MINOR = 0.50     # > lamp pole minor 0.483: a definite trunk radius
+_TREE_TRUNK_MINOR = 0.50     # > bin 0.382 and lamp 0.483: a definite trunk radius
+_TREE_STUMP_ASPECT = 1.5     # rounder than the bin (aspect 1.79): a round stump
+_LAMP_BAND_BOTTOM = 2.148    # lamp 3.148 - height margin 1.0; a trunk (<=1.93 m
+                             # under the crop) is never this tall, the lamp is
 _TREE_TALL_HEIGHT = 3.95     # > lamp height band top (3.148 + 0.8): a definite tree
 
 
@@ -60,22 +75,28 @@ def _matches(cluster, fam, m):
 
 
 def _is_tree(cluster, margins):
-    """A round, tall, definitively trunk-like cluster — never the lamp.
+    """A round, trunk-footprint cluster — never a landmark family.
 
-    Runs BEFORE family matching and wins, so a real trunk that also happens to
-    fall inside the lamp band is still excluded from identity. The gate is
-    narrowed so the ideal lamp (minor 0.483, height 3.148) triggers neither
-    trunk tell and therefore is NOT a tree.
+    Runs BEFORE family matching and wins, so a real trunk that also falls inside
+    a family band (bin or lamp) is still excluded from identity. Identified by
+    the ROUND, trunk-scale FOOTPRINT — NOT by a height floor, because the crop
+    caps clusters at ~1.93 m and real trunks appear short. See the module-level
+    comment for the three tells and why each spares the four families.
     """
     aspect = cluster.major / max(cluster.minor, 1e-3)
     if aspect >= margins["aspect_split"]:
-        return False
-    if cluster.height < _TREE_MIN_HEIGHT:
-        return False
+        return False  # elongated: bench / table
     if not (_TREE_MIN_MINOR <= cluster.minor <= _TREE_MAX_MINOR):
         return False
-    # definitively trunk-like: wider radius than a lamp pole OR taller than a lamp
-    return cluster.minor >= _TREE_TRUNK_MINOR or cluster.height >= _TREE_TALL_HEIGHT
+    # (1) wide trunk radius
+    if cluster.minor >= _TREE_TRUNK_MINOR:
+        return True
+    # (3) thin but clearly taller than any lamp
+    if cluster.height >= _TREE_TALL_HEIGHT:
+        return True
+    # (2) round stump: rounder than a bin and not lamp-tall
+    return (aspect <= _TREE_STUMP_ASPECT
+            and cluster.height < _LAMP_BAND_BOTTOM)
 
 
 def classify_cluster(cluster, margins=DEFAULT_MARGINS):

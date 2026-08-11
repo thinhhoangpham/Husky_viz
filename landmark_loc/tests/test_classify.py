@@ -33,6 +33,27 @@ def test_real_trunks_inside_lamp_height_band_are_tree_not_lamp():
     assert classify.classify_cluster(_c(major=0.6, minor=0.5, height=3.5)) == "tree"
 
 
+def test_short_trunks_under_crop_are_tree_not_bin():
+    # The localizer crops z in [-0.73, 1.2] -> clusters <= 1.93 m, so real trees
+    # appear SHORT. These trunk/stump footprints must classify as tree (dropped),
+    # NOT as phantom bins.
+    short_trunks = [
+        (0.9, 0.85, 1.8),   # tree_8 trunk (radius ~0.45 -> dia ~0.9)
+        (0.6, 0.55, 1.6),   # arbolpartes4 trunk (radius ~0.30 -> dia ~0.6)
+        (0.5, 0.4, 1.5),    # stump
+    ]
+    for mj, mn, h in short_trunks:
+        got = classify.classify_cluster(_c(major=mj, minor=mn, height=h))
+        assert got == "tree", f"short trunk {mj}/{mn}/{h} misclassified as {got}"
+
+
+def test_ideal_bin_is_still_bin():
+    from landmark_loc.signatures import MESH_SIGNATURES as S
+    s = S["trash_bin_1"]
+    got = classify.classify_cluster(_c(s["major"], s["minor"], s["height"]))
+    assert got == "trash_bin_1"
+
+
 def test_ideal_lamp_is_still_lamp():
     from landmark_loc.signatures import MESH_SIGNATURES as S
     s = S["lamp"]
