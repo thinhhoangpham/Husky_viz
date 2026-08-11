@@ -1,51 +1,35 @@
 # Husky viz
 
-## Project
-- Project folder: `/Volumes/Extreme Pro/Husky viz` (external drive; the path contains spaces — always quote it).
-- Contents (observed):
-  - `bag files/park_1_bag/park_1.bag` (44,599,180,254 bytes ≈ 44.6 GB) with a `check_park_1.txt` sha256 checksum file
-  - `bag_file_explorer.ipynb`, `data_analysis.ipynb`
-  - `park_1_topic_breakdown.md`
-  - several `umdhusky-data_collection-syscall-*-processed.csv` syscall trace files (columns: Epoch Time, Hours, Minutes, Seconds, Milliseconds, Node, PID, System Call, Unfinished Call, Resumed Call, Execution Time, Return Code, Arguments)
-  - D3 visualization files `timearcs.html`/`timearcs.js`, `ridge-plot.html`/`ridge-plot.js`, `colors.json`, `arc_dot.txt`
-  - `docs/` (includes `husky_rosbag_datasets.md` and student abstracts/reports)
-  - `Husky-main/` and `HuskyA300-Dashboard-main/` source trees
-  - `park_1_lidar_trajectory.gif`
-- `dataset.txt` contains: https://www.uma.es/robotics-and-mechatronics/info/132852/negs-ugv-dataset
-- macOS on Apple Silicon (arm64). The external drive generates AppleDouble `._*` metadata files.
+## Environment (native Linux)
+- **This is a NATIVE Linux box with ROS Noetic installed directly** — the sim runs
+  via `roslaunch` on the host, not in any container. The robot's real X display is
+  **`:0`** (Xorg). There is no Xvfb, no `:1`, no noVNC.
+- **The Gazebo GUI client `gzclient` must be running on `:0` for the lidar to
+  produce its point cloud.** The Ouster is a GPU-ray sensor: it needs a live GL
+  context to render the ray pass. Symptom of a missing GL context: `/os0_cloud_node/imu`
+  publishes but `/os0_cloud_node/points` has zero publishers, so landmark
+  localization and obstacle avoidance go inert. If `/points` has no publisher,
+  check DISPLAY/gzclient FIRST — it is not a code or spawn problem.
+- Project folder: `/home/thinh/Documents/Husky_viz`.
+- Bag: `bag files/park_1_bag/park_1.bag` (≈44.6 GB), with `check_park_1.txt` sha256.
+  `bag_file_explorer.ipynb` reads it with the `rosbags` Python library (pure Python).
+- Syscall traces: `umdhusky-data_collection-syscall-*-processed.csv`; viz via
+  `data_analysis.ipynb`, `timearcs.html/js`, `ridge-plot.html/js`.
 
 ## The bag — verified fact
 - `park_1.bag` is a **ROS 1** bag: the file header is literally `#ROSBAG V2.0`, and its message types use ROS 1 naming (`gazebo_msgs/ModelStates`, `geometry_msgs/PoseWithCovariance`) with no `/msg/` infix.
 - **Discrepancy:** `park_1_topic_breakdown.md` claims the bag is "a ROS 2 Gazebo simulation" and cites `sensor_msgs/msg/...` naming as the tell. That ROS 2 claim is incorrect — verified against the file bytes. Its other claim, that the data is simulator-generated rather than a real robot (based on `/gazebo/model_states`), is consistent with the contents.
 - Because it is ROS 1, it plays natively under Noetic with no conversion.
-- `bag_file_explorer.ipynb` reads the bag with the `rosbags` Python library (pure Python) — it does NOT need the Docker container or a ROS install.
-
-## Docker simulation environment
-- **Build context lives at `~/husky-docker/` (internal SSD), NOT in the project folder.** Reason: Docker's build-context sender fails on the external drive with `failed to xattr .../._Dockerfile: operation not permitted`. A `.dockerignore` does not fix this — the failure happens while loading the build definition, before ignore rules apply. This is why the context was moved.
-- Files there: `Dockerfile`, `entrypoint.sh`, `docker-compose.yml`, `.dockerignore`, `README.md`.
-- Image: `husky-docker-husky:latest`. Base `ros:noetic-robot`, native `linux/arm64` (no emulation). `ros-noetic-desktop-full` plus `ros-noetic-husky-simulator`, `husky-desktop`, `husky-viz` — all available as arm64 Focal debs.
-- GUI: Xvfb + fluxbox + x11vnc + noVNC. Browser at http://localhost:6080/vnc.html. Chosen because macOS Docker has no GPU passthrough, so all rendering is software (llvmpipe); noVNC keeps GL inside the container and ships only pixels, which beats XQuartz/X11 forwarding for 3D.
-- Mount: project folder bind-mounted read-write at `/workspace`. Bag path inside the container: `/workspace/bag files/park_1_bag/park_1.bag`.
-- Docker Desktop file sharing must include `/Volumes/Extreme Pro`.
-- **Avoid `docker compose down` — prefer `docker compose stop`/`start`.** `down` removes the container and leaves a stale mount entry in the Docker daemon; the next `up` then fails with `error while creating mount source path '/host_mnt/Volumes/Extreme Pro/Husky viz': mkdir /host_mnt/Volumes/Extreme Pro: file exists`, even though the drive is still mounted on the host.
-- Recovery: **only a Docker Desktop restart clears it.** `docker compose rm -f` followed by `up` does NOT work — the stale entry lives in the daemon's mount table, not the container definition. Note a Docker restart also stops unrelated containers (e.g. `n8n`, `parquet-api`), which do not auto-restart.
-
-## Performance fix (important)
-- Symptom: Gazebo's GUI appeared frozen — menus did not respond to clicks, though the scene still rendered and VNC was healthy (1 ms latency).
-- Cause: `gzclient` consumed **756% CPU** with load average **22.69** on the 8-core VM; llvmpipe spawns one render thread per core and starved Qt's event loop.
-- Fix: `LP_NUM_THREADS=4` (set in the `environment:` block of `docker-compose.yml`) and Xvfb reduced to `1280x720` (in `entrypoint.sh`).
-- Result, measured: gzclient 756% → **107%**, container 717% → **248%**, CPU idle 25.5% → **84.3%**, load 22.69 → **6.44**. Menus became responsive.
-- Note: setting the env var in `entrypoint.sh` alone is NOT sufficient — `docker compose exec` shells do not inherit the entrypoint's exports, and that is where `roslaunch`/gzclient are started. It must be in the compose `environment:` block.
 
 ## Usage
-- Start everything: `"/Volumes/Extreme Pro/Husky viz/start-sim.sh"` (brings up the container and launches the sim in the foreground; Ctrl-C stops it).
-- Shut down everything: `"/Volumes/Extreme Pro/Husky viz/stop-sim.sh"` — SIGINTs the sim inside the container, then runs a full `docker compose down`, then probes whether the bind mount survived and warns if a Docker Desktop restart is needed. Because it uses `down`, expect to need that restart (see the Docker section above); for a lighter stop that avoids the trap entirely, use `docker compose stop` instead.
-- **Do not run `start-sim.sh` while a sim is already running.** The duplicate nodes kill `robot_state_publisher` and the controller spawner dies mid-way, leaving `husky_velocity_controller` in state `initialized` rather than `running` — the robot then silently ignores all `cmd_vel` input and teleop appears dead. Check with `rosrun controller_manager controller_manager list`; both `husky_joint_publisher` and `husky_velocity_controller` must read `( running )`.
-- Manual launch: `cd ~/husky-docker && docker compose exec husky bash`, then `source /opt/ros/noetic/setup.bash && export DISPLAY=:1 && roslaunch husky_gazebo husky_playpen.launch`. Lighter alternative world: `husky_empty_world.launch`.
-- `roscore` is started by the container entrypoint, so `roslaunch` attaches to it rather than starting its own.
-- Control the robot (second terminal): `rosrun teleop_twist_keyboard teleop_twist_keyboard.py cmd_vel:=/kb_teleop/cmd_vel` — keys `i`/`,` forward/back, `j`/`l` turn, `k` stop, `q`/`z` speed. GUI alternative: `rosrun rqt_robot_steering rqt_robot_steering` with topic `/kb_teleop/cmd_vel`.
+- Bring up the world + robot: `./load-park-world.sh` (two stages — park world first,
+  then the Husky spawned into it once the world is genuinely up). Run it with the
+  real display on `:0` and ensure `gzclient` is up so the lidar cloud publishes.
+- The offline-map navigation demo (world → move_base → localizer → selector →
+  operator → goals → attacker) is in `RUN-MAP-NAV.md`.
+- Control the robot manually: `rosrun teleop_twist_keyboard teleop_twist_keyboard.py cmd_vel:=/kb_teleop/cmd_vel` — keys `i`/`,` forward/back, `j`/`l` turn, `k` stop, `q`/`z` speed.
 - Use `/kb_teleop/cmd_vel` rather than `/cmd_vel`: Husky runs `twist_mux`, which arbitrates inputs by priority; `/kb_teleop/cmd_vel` is the keyboard slot. Available cmd_vel topics: `/cmd_vel`, `/husky_velocity_controller/cmd_vel`, `/joy_teleop/cmd_vel`, `/kb_teleop/cmd_vel`, `/twist_marker_server/cmd_vel`.
-- Play the bag: `rosbag play "/workspace/bag files/park_1_bag/park_1.bag"` (not yet exercised this session).
+- Controller health check (a real recurring bug): `rosrun controller_manager controller_manager list` — both `husky_joint_publisher` and `husky_velocity_controller` must read `( running )`.
 
 ---
 
@@ -153,8 +137,7 @@ master, then injects). Design and rationale (tiers, why no Gazebo attacker model
 - **Runbook: `attacker/README.md`** — four phases: **0** host prep, **1**
   `scan.sh` (nmap reachability), **2** `enum.sh` (read-only graph read), **3**
   `attack.sh` (inject).
-- **Sim runs NATIVELY on this Linux box** (`roslaunch`, not a container here —
-  unlike the macOS `~/husky-docker` setup in the Docker section above). The
+- **Sim runs NATIVELY on this Linux box** (`roslaunch`, not a container). The
   attacker container reaches the native master via the **docker0 gateway IP**.
 - **The `ROS_IP` gotcha (bites once):** before `roslaunch`, the host must
   `export ROS_IP=<docker0 gw IP>` and `ROS_MASTER_URI=http://$ROS_IP:11311`.
