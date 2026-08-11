@@ -33,6 +33,35 @@ def cloud_to_array(cloud_msg):
     return np.array(list(pts), dtype=float)
 
 
+def compose_prior(anchor_map, anchor_odom, odom_now):
+    """Map-frame prior = anchor_map advanced by the odom-frame displacement of
+    odom_now relative to anchor_odom.
+
+    anchor_map  = (ax, ay, ayaw)   immutable map-frame anchor (pre-attack GPS,
+                                   or the last accepted landmark fix)
+    anchor_odom = (ox0, oy0, oyaw0) odom-frame pose captured with the anchor
+    odom_now    = (ox, oy, oyaw)    current odom-frame pose (attack-independent)
+
+    The odom frame drifts but its relative motion is trustworthy, so the
+    displacement since the anchor, applied from the anchor, tracks the robot's
+    true pose without ever reading the (spoofable) map pose.
+    """
+    ax, ay, ayaw = anchor_map
+    ox0, oy0, oyaw0 = anchor_odom
+    ox, oy, oyaw = odom_now
+    # displacement in the odom frame, rotated into the anchor-odom body frame
+    dx_o, dy_o = ox - ox0, oy - oy0
+    c0, s0 = math.cos(-oyaw0), math.sin(-oyaw0)
+    rx = c0 * dx_o - s0 * dy_o
+    ry = s0 * dx_o + c0 * dy_o
+    # apply that body-frame displacement from the map-frame anchor
+    ca, sa = math.cos(ayaw), math.sin(ayaw)
+    px = ax + ca * rx - sa * ry
+    py = ay + sa * rx + ca * ry
+    pyaw = ayaw + (oyaw - oyaw0)
+    return (px, py, pyaw)
+
+
 def main():
     import rospy
     from nav_msgs.msg import Odometry
