@@ -18,9 +18,17 @@ cd ~/Documents/Husky_viz
 
 Wait for Gazebo to show the park + robot, then ~30–60 s for the pose to settle.
 
-## Step 2 — Navigation + map  (choose ONE localization mode)
+## Step 2 — Navigation + map
 
-### Option A — GPS mode (spoofable; used by the attacker demo in Step 6)
+The absolute pose source is now a **live switch**, not a launch-time choice. Both
+feeders — navsat's GPS fix and the landmark localizer's lidar fix — run at the same
+time, publishing to separate topics (`/odometry/gps_fix`, `/odometry/landmark_fix`).
+A selector node arbitrates which one reaches the EKF as `/odometry/abs_fix`; the
+operator switches between them at runtime with the `mode` command (Step 4).
+
+Start map_server + move_base. The old launch files still exist and either works —
+they just start move_base identically now; the mode difference is no longer which
+launch file you pick, it's the live `mode` command:
 
 ```bash
 export ROS_IP=172.20.0.1 ROS_MASTER_URI=http://172.20.0.1:11311 ROBOT_HOST_IP=172.20.0.1
@@ -28,17 +36,11 @@ cd ~/Documents/Husky_viz
 roslaunch launch/move_base_gps_map.launch
 ```
 
-### Option B — Landmark mode (GPS-free; recognizes park landmarks from lidar)
+(`launch/move_base_landmark.launch` works identically — pick either.)
 
-```bash
-export ROS_IP=172.20.0.1 ROS_MASTER_URI=http://172.20.0.1:11311 ROBOT_HOST_IP=172.20.0.1
-cd ~/Documents/Husky_viz
-roslaunch launch/move_base_landmark.launch
-```
-
-Then start the landmark localizer — this is the piece that fills `/odometry/abs_fix`
-from the lidar in landmark mode (the map-EKF fuses it in place of GPS). It is a loose
-python node, run by absolute path like the repo's other scripts, in a second terminal:
+Then start the landmark localizer — this is the piece that fills `/odometry/landmark_fix`
+from the lidar. It is a loose python node, run by absolute path like the repo's other
+scripts, in a second terminal:
 
 ```bash
 # in a second terminal (or backgrounded), start the landmark localizer:
@@ -48,8 +50,21 @@ source /opt/ros/noetic/setup.bash
 PYTHONPATH=~/Documents/Husky_viz:$PYTHONPATH python3 ~/Documents/Husky_viz/landmark_loc/localizer_node.py
 ```
 
-In landmark mode the GPS-spoof of Step 6 has nothing to attack (no navsat in the
-loop) — the robot keeps localizing off the furniture it can see.
+Then start the pose-source selector — it fills `/odometry/abs_fix` by forwarding
+exactly one of the two feeders, and starts in `gps` mode by default. It is also a
+loose python node, run by absolute path, in a third terminal:
+
+```bash
+# in a third terminal: start the pose-source selector (fills /odometry/abs_fix)
+export ROS_IP=172.20.0.1 ROS_MASTER_URI=http://172.20.0.1:11311 ROBOT_HOST_IP=172.20.0.1
+cd ~/Documents/Husky_viz
+source /opt/ros/noetic/setup.bash
+python3 ~/Documents/Husky_viz/landmark_loc/abs_fix_selector.py
+```
+
+With both feeders running and the selector arbitrating, the operator can flip
+between GPS and landmark localization live via `mode gps` / `mode landmark`
+(Step 4) without restarting anything.
 
 ## Step 3 — Operator
 
@@ -68,9 +83,14 @@ Watch the robot in a browser: **http://localhost:6080/vnc.html**
 goal 49.9000094 8.9000327      # GPS lat/lon
 goal xy 9.17 13.55             # map coordinates
 goal garden_table              # landmark name
+mode gps                       # switch absolute source to GPS (navsat)
+mode landmark                  # switch absolute source to landmark localizer
 ```
 
 Landmarks: `bench`, `garden_table`, `lamp`, `trash_bin_1`.
+
+Switching is live — no relaunch needed. `status` shows `abs_fix=<mode>` (with
+`:stale` appended if the selected source has gone silent).
 
 ## Step 5 — (optional) Drop an obstacle in its path
 
@@ -121,6 +141,10 @@ Watch in RViz: the robot lurches/spins off its route as the fused pose drifts
 (~15 m over 40 s). When the attack stops, genuine GPS reels the estimate back.
 
 Stronger variant: `--drift-rate 1.5 --max-offset 40 --duration 40`.
+
+The spoof only affects the fused pose while `abs_fix` is in `gps` mode; running
+`mode landmark` at the `operator>` prompt removes navsat from the loop live, letting
+the operator switch away from a spoofed source mid-attack.
 
 ## Stop everything
 
