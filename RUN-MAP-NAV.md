@@ -20,15 +20,9 @@ Wait for Gazebo to show the park + robot, then ~30–60 s for the pose to settle
 
 ## Step 2 — Navigation + map
 
-The absolute pose source is now a **live switch**, not a launch-time choice. Both
-feeders — navsat's GPS fix and the landmark localizer's lidar fix — run at the same
-time, publishing to separate topics (`/odometry/gps_fix`, `/odometry/landmark_fix`).
-A selector node arbitrates which one reaches the EKF as `/odometry/abs_fix`; the
-operator switches between them at runtime with the `mode` command (Step 4).
+Start these **three** nodes, each in its own new terminal (Step 1 is Terminal 1). All three must be running.
 
-Start map_server + move_base. The old launch files still exist and either works —
-they just start move_base identically now; the mode difference is no longer which
-launch file you pick, it's the live `mode` command:
+**Terminal 2 — map_server + move_base:**
 
 ```bash
 export ROS_IP=172.20.0.1 ROS_MASTER_URI=http://172.20.0.1:11311 ROBOT_HOST_IP=172.20.0.1
@@ -36,35 +30,25 @@ cd ~/Documents/Husky_viz
 roslaunch launch/move_base_gps_map.launch
 ```
 
-(`launch/move_base_landmark.launch` works identically — pick either.)
-
-Then start the landmark localizer — this is the piece that fills `/odometry/landmark_fix`
-from the lidar. It is a loose python node, run by absolute path like the repo's other
-scripts, in a second terminal:
+**Terminal 3 — landmark localizer** (fills `/odometry/landmark_fix` from the lidar):
 
 ```bash
-# in a second terminal (or backgrounded), start the landmark localizer:
 export ROS_IP=172.20.0.1 ROS_MASTER_URI=http://172.20.0.1:11311 ROBOT_HOST_IP=172.20.0.1
 cd ~/Documents/Husky_viz
 source /opt/ros/noetic/setup.bash
 PYTHONPATH=~/Documents/Husky_viz:$PYTHONPATH python3 ~/Documents/Husky_viz/landmark_loc/localizer_node.py
 ```
 
-Then start the pose-source selector — it fills `/odometry/abs_fix` by forwarding
-exactly one of the two feeders, and starts in `gps` mode by default. It is also a
-loose python node, run by absolute path, in a third terminal:
+**Terminal 4 — pose-source selector** (fills `/odometry/abs_fix`; starts in `gps` mode):
 
 ```bash
-# in a third terminal: start the pose-source selector (fills /odometry/abs_fix)
 export ROS_IP=172.20.0.1 ROS_MASTER_URI=http://172.20.0.1:11311 ROBOT_HOST_IP=172.20.0.1
 cd ~/Documents/Husky_viz
 source /opt/ros/noetic/setup.bash
 python3 ~/Documents/Husky_viz/landmark_loc/abs_fix_selector.py
 ```
 
-With both feeders running and the selector arbitrating, the operator can flip
-between GPS and landmark localization live via `mode gps` / `mode landmark`
-(Step 4) without restarting anything.
+Both pose feeders (GPS + landmark) run at once, publishing to separate topics. The selector forwards exactly one to the EKF, and the operator switches between them live with `mode gps` / `mode landmark` (Step 4) — no relaunch, no choosing a launch file.
 
 ## Step 3 — Operator
 
