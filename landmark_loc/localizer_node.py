@@ -10,6 +10,7 @@ coasts on odom). Position-only: yaw from the solve is logged, not fused (the
 map-EKF takes yaw from /compass/data).
 """
 import math
+import statistics
 
 import numpy as np
 
@@ -85,8 +86,9 @@ def main():
         residual_gate=rospy.get_param("~residual_gate", 1.0),
         fov_halfwidth=rospy.get_param("~fov_halfwidth", math.pi),
         base_var=rospy.get_param("~base_var", 0.5),
-        rate=rospy.get_param("~rate", 5.0),
+        rate=rospy.get_param("~rate", 2.0),
         anchor_min_dist=rospy.get_param("~anchor_min_dist", 5.0),
+        smooth_window=rospy.get_param("~smooth_window", 5),
     )
     landmarks = catalog.load(places)
     rospy.loginfo("landmark_localizer: %d catalog landmarks", len(landmarks))
@@ -97,6 +99,7 @@ def main():
         "odom_now": None,      # (ox, oy, oyaw) latest odom-frame pose
         "gps_valid": False,    # /navsat/fix status.status >= 0 seen
         "last_pub": rospy.Time(0),
+        "fix_history": [],   # last N accepted (x, y) fixes for median smoothing
     }
     pub = rospy.Publisher("/odometry/landmark_fix", Odometry, queue_size=5)
 
@@ -154,23 +157,31 @@ def main():
                                             p["max_prior_dist"])
         result = solve.solve_pose(obs, gated, prior, p["constellation_tol"], p["residual_gate"],
                                    p["max_prior_dist"])
-        _matched = ",".join(lm.name for _o, lm in _pairs)
-        rospy.loginfo_throttle(0.5,
-            "[diag] obs=%d assoc=%d prior=(%.1f,%.1f) matched=[%s] %s"
-            % (len(obs), len(_pairs), prior[0], prior[1], _matched,
-               ("FIX x=%.2f y=%.2f rms=%.2f n=%d" % result[:4] if result else "STALE")))
         if result is None:
+            _matched = ",".join(lm.name for _o, lm in _pairs)
+            rospy.loginfo_throttle(0.5,
+                "[diag] obs=%d assoc=%d prior=(%.1f,%.1f) matched=[%s] %s"
+                % (len(obs), len(_pairs), prior[0], prior[1], _matched, "STALE"))
             return
         x, y, yaw, rms, n = result
         # Anchor stays FIXED at the initial spawn pose (no re-anchoring). The
         # prior is always initial-anchor + odom/compass motion; landmarks
         # correct the published fix but never move the dead-reckoning baseline.
+        state["fix_history"].append((x, y))
+        state["fix_history"] = state["fix_history"][-p["smooth_window"]:]
+        sx = statistics.median(h[0] for h in state["fix_history"])
+        sy = statistics.median(h[1] for h in state["fix_history"])
+        _matched = ",".join(lm.name for _o, lm in _pairs)
+        rospy.loginfo_throttle(0.5,
+            "[diag] obs=%d assoc=%d prior=(%.1f,%.1f) matched=[%s] "
+            "FIX x=%.2f y=%.2f rms=%.2f n=%d pub=(%.2f,%.2f)"
+            % (len(obs), len(_pairs), prior[0], prior[1], _matched, x, y, rms, n, sx, sy))
         od = Odometry()
         od.header.stamp = now
         od.header.frame_id = "map"
         od.child_frame_id = "base_link"
-        od.pose.pose.position.x = x
-        od.pose.pose.position.y = y
+        od.pose.pose.position.x = sx
+        od.pose.pose.position.y = sy
         od.pose.pose.orientation.w = 1.0
         od.pose.covariance = covariance_for(n, p["base_var"])
         pub.publish(od)
