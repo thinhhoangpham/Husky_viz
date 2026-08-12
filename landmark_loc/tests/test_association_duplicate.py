@@ -13,8 +13,8 @@ That solve_pose-level defect is now FIXED: `solve_pose` routes association
 through `constellation.match`, which is one-to-one by construction, so two
 observations can no longer bind to a single map landmark. The `associate()`
 characterization below remains as legacy documentation of the underlying
-function's behavior -- `associate` itself is unchanged and still exercised
-directly elsewhere (e.g. by `constellation.match`'s tie-breaking).
+function's behavior -- `associate` itself is unchanged, now unused in
+production, and exercised only by the characterization tests in this file.
 
 These tests are TEST-ONLY; no production code is modified by them.
 """
@@ -23,6 +23,7 @@ import math
 from landmark_loc.solve import associate, solve_pose
 from landmark_loc.classify import Observation
 from landmark_loc.catalog import MapLandmark
+from landmark_loc import constellation
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +117,6 @@ def test_duplicate_association_no_longer_passes_gates():
         if out is not None:
             _, _, _, _, n = out
             # if it returns a fit, it rests on TWO DISTINCT benches, not one
-            pairs = __import__("landmark_loc.constellation", fromlist=["match"]).match(
-                obs, _LANDMARKS, _PRIOR, 0.3)
+            pairs = constellation.match(obs, _LANDMARKS, _PRIOR, 0.3)
             names = {lm.name for _, lm in pairs}
             assert len(names) == len({id(lm) for _, lm in pairs})
