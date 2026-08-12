@@ -1,9 +1,14 @@
-# Local (rolling-window) costmap for the GPS-anchored move_base.
+# Local (rolling-window) costmap for obstacle avoidance.
 #
-# global_frame is `map` -- the GPS-anchored, drift-free frame published by
-# /ekf_localization_map (+ navsat_transform). Both costmaps and every goal live
-# in this frame, so the plan never drifts with the odom estimate.
-global_frame: map
+# global_frame is `odom` -- the smooth, locally-consistent frame from the
+# odom-frame EKF (/ekf_localization). Obstacle avoidance must NOT depend on the
+# absolute (map) pose: the lidar sees "something solid ahead" in the robot's own
+# frame, and that fact is true regardless of localization drift or a GPS spoof.
+# Anchoring the local costmap to `map` (as before) let a wrong map->odom
+# transform misplace obstacles, so the robot drove into real obstacles it had
+# marked in the wrong spot. `odom` keeps obstacles correctly placed relative to
+# the robot. The GLOBAL costmap stays in `map` for long-range planning.
+global_frame: odom
 robot_base_frame: base_link
 
 rolling_window: true
