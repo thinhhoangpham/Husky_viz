@@ -51,12 +51,17 @@ def test_solve_pose_rejects_high_residual():
 
 
 def test_solve_pose_matcher_recovers_under_wrong_prior():
+    # "wrong" but within realistic short-term odom drift of the true
+    # constellation centroid (~4.67, 1.0) -- i.e. within max_prior_dist
+    # (default 5m) of the correct constellation, per the primary prior
+    # filter in constellation.match. See test_far_constellation_rejected_by_prior_filter
+    # for the case where the prior is farther than max_prior_dist.
     lms = [MapLandmark("a", "bench", 5.0, 1.0),
            MapLandmark("b", "lamp", 6.0, -2.0),
            MapLandmark("c", "garden_table", 3.0, 4.0)]
     true = (2.0, -1.0, 0.5)
     obs = _obs_from_truth(true, lms)
-    wrong_prior = (10.0, 8.0, 1.2)  # far from truth
+    wrong_prior = (6.0, 3.0, 1.2)  # off from truth, but realistically close
     out = solve.solve_pose(obs, lms, prior_xyz=wrong_prior,
                            dist_gate=0.3, residual_gate=0.5)
     assert out is not None

@@ -54,8 +54,10 @@ def rigid_transform_2d(src_xy, dst_xy):
     return float(t[0]), float(t[1]), yaw, rms
 
 
-def solve_pose(observations, gated_landmarks, prior_xyz, dist_gate, residual_gate):
-    pairs = constellation.match(observations, gated_landmarks, prior_xyz, dist_gate)
+def solve_pose(observations, gated_landmarks, prior_xyz, dist_gate, residual_gate,
+                max_prior_dist=5.0):
+    pairs = constellation.match(observations, gated_landmarks, prior_xyz, dist_gate,
+                                 max_prior_dist)
     if len(pairs) < 2:
         return None
     src = np.array([[o.x, o.y] for o, _ in pairs])

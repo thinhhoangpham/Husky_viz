@@ -4,8 +4,17 @@ Each observation is identified by the robot-FRAME-INVARIANT pairwise distances
 between the observed landmarks, matched against the catalog under a type
 constraint. Because a distance between two points does not change when the pose
 prior drifts, identification survives a badly drifted prior -- unlike the
-nearest-neighbor-under-prior association it replaces (solve.associate). The prior
-is consulted only to break ties between equally-good catalog constellations.
+nearest-neighbor-under-prior association it replaces (solve.associate).
+
+The prior is used two ways: first as a PRIMARY FILTER -- any candidate
+constellation whose centroid is farther than max_prior_dist from the prior is
+rejected as physically impossible before size is ever considered, since the
+robot's odom-anchored prior does not drift tens of meters in a single tick.
+Second, among the surviving (near-prior) candidates, the prior still breaks
+ties between equally-good catalog constellations. max_prior_dist defaults to
+5.0 m, comfortably larger than realistic short-term odom drift, so the
+filter preserves drift-immunity for real-world drift while rejecting
+far-away wrong matches that would otherwise win on constellation size alone.
 
 Drop-in for solve.associate: match(observations, gated_landmarks, prior_xyz, tol)
 -> list of (Observation, MapLandmark).
@@ -93,7 +102,7 @@ def _prior_dist(assign, prior_xyz):
     return math.hypot(cx - prior_xyz[0], cy - prior_xyz[1])
 
 
-def match(observations, gated_landmarks, prior_xyz, tol):
+def match(observations, gated_landmarks, prior_xyz, tol, max_prior_dist=5.0):
     if len(observations) < 2 or len(gated_landmarks) < 2:
         return []
     obs_d = _obs_pair_dists(observations)
@@ -112,6 +121,7 @@ def match(observations, gated_landmarks, prior_xyz, tol):
                                    gated_landmarks, tol)
                     candidates.append(assign)
     candidates = [a for a in candidates if len(a) >= 2]
+    candidates = [a for a in candidates if _prior_dist(a, prior_xyz) <= max_prior_dist]
     if not candidates:
         return []
     best_size = max(len(a) for a in candidates)

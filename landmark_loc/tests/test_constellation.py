@@ -28,10 +28,17 @@ def test_clean_three_landmark_match():
     assert len(pairs) == 3
 
 
-def test_drift_immunity_prior_8m_off():
+def test_drift_immunity_prior_off():
+    # The prior must be off by less than max_prior_dist (default 5m) from the
+    # correct constellation's centroid for the match to survive the primary
+    # filter -- that filter is what makes far-away wrong matches physically
+    # impossible in the first place (see the bug this guards against in
+    # test_far_constellation_rejected_by_prior_filter). "Drift immunity" here
+    # means the SHAPE match still succeeds despite a realistically-drifted
+    # prior, not that the prior can be arbitrarily wrong.
     true = (2.0, -1.0, 0.5)
     obs = [_observe_from_true_pose(lm, true) for lm in _LMS]
-    bad_prior = (true[0] + 8.0, true[1] - 8.0, true[2] + 0.4)  # far off
+    bad_prior = (true[0] + 2.0, true[1] - 2.0, true[2] + 0.4)  # realistic drift
     pairs = constellation.match(obs, _LMS, prior_xyz=bad_prior, tol=0.3)
     got = {o.identity: lm.name for o, lm in pairs}
     assert got == {"bench": "bench_1", "lamp": "lamp_1", "garden_table": "table_1"}
@@ -45,7 +52,8 @@ def test_one_observation_returns_empty():
 def test_two_distinct_type_unique_pair_matches():
     two = [_LMS[0], _LMS[1]]  # bench + lamp, distinct types
     obs = [_observe_from_true_pose(lm, (0, 0, 0)) for lm in two]
-    pairs = constellation.match(obs, _LMS, prior_xyz=(0, 0, 0), tol=0.3)
+    # prior must be within max_prior_dist of the bench_1/lamp_1 centroid (5.5, -0.5)
+    pairs = constellation.match(obs, _LMS, prior_xyz=(2.0, 0.0, 0.0), tol=0.3)
     got = {o.identity: lm.name for o, lm in pairs}
     assert got == {"bench": "bench_1", "lamp": "lamp_1"}
 
@@ -88,6 +96,27 @@ def test_ambiguity_resolved_by_prior():
     pairs = constellation.match(obs, cat, prior_xyz=(50.0, 0.0, 0.0), tol=0.3)
     got = {lm.name for _, lm in pairs}
     assert got == {"bench_b", "lamp_b"}
+
+
+def test_far_constellation_rejected_by_prior_filter():
+    # Regression test for the bug where a larger (more landmarks) but far-away
+    # constellation beat a smaller/equal correct one because size was compared
+    # BEFORE the prior was consulted. Two catalog clusters have the exact same
+    # bench/lamp/table shape (so both grow to size 3 and tie on size); one sits
+    # near the true pose/prior, the other ~13m away. The prior filter must
+    # reject the far one outright so only the near one survives.
+    near = [MapLandmark("bench_near", "bench", 0.0, 0.0),
+            MapLandmark("lamp_near", "lamp", 3.0, 0.0),
+            MapLandmark("table_near", "garden_table", 0.0, 4.0)]
+    far = [MapLandmark("bench_far", "bench", 13.0, 0.0),
+           MapLandmark("lamp_far", "lamp", 16.0, 0.0),
+           MapLandmark("table_far", "garden_table", 13.0, 4.0)]
+    cat = near + far
+    true = (0.0, 0.0, 0.0)
+    obs = [_observe_from_true_pose(lm, true) for lm in near]
+    pairs = constellation.match(obs, cat, prior_xyz=true, tol=0.3)
+    got = {lm.name for _, lm in pairs}
+    assert got == {"bench_near", "lamp_near", "table_near"}
 
 
 def test_collinear_triple_still_matches_or_empty():

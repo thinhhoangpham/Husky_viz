@@ -81,6 +81,7 @@ def main():
         min_pts=rospy.get_param("~min_pts", 10),
         max_extent=rospy.get_param("~max_extent", 3.5),
         constellation_tol=rospy.get_param("~constellation_tol", 0.3),
+        max_prior_dist=rospy.get_param("~max_prior_dist", 5.0),
         residual_gate=rospy.get_param("~residual_gate", 1.0),
         fov_halfwidth=rospy.get_param("~fov_halfwidth", math.pi),
         base_var=rospy.get_param("~base_var", 0.5),
@@ -149,7 +150,15 @@ def main():
         clusters = segment.cluster(cropped, p["link_dist"], p["min_pts"], p["max_extent"])
         obs = classify.to_observations(clusters)
         gated = catalog.gate(landmarks, prior, p["max_range"], p["fov_halfwidth"])
-        result = solve.solve_pose(obs, gated, prior, p["constellation_tol"], p["residual_gate"])
+        _pairs = solve.constellation.match(obs, gated, prior, p["constellation_tol"],
+                                            p["max_prior_dist"])
+        result = solve.solve_pose(obs, gated, prior, p["constellation_tol"], p["residual_gate"],
+                                   p["max_prior_dist"])
+        _matched = ",".join(lm.name for _o, lm in _pairs)
+        rospy.loginfo_throttle(0.5,
+            "[diag] obs=%d assoc=%d prior=(%.1f,%.1f) matched=[%s] %s"
+            % (len(obs), len(_pairs), prior[0], prior[1], _matched,
+               ("FIX x=%.2f y=%.2f rms=%.2f n=%d" % result[:4] if result else "STALE")))
         if result is None:
             return
         x, y, yaw, rms, n = result
