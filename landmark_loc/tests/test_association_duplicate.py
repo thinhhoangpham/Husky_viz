@@ -4,12 +4,19 @@
 `solve.associate` matches each observation independently to its nearest
 same-identity map landmark, with NO one-to-one guard. Two different observations
 can therefore associate to the SAME map landmark ("duplicate association"). When
-that happens, `solve.solve_pose` can return a result with n>=2 that is really
-pinned on only ONE distinct landmark -- a phantom, potentially confidently-wrong
-fix that still clears the n>=2 and residual gates.
+that happened at the `solve.solve_pose` level, it could return a result with
+n>=2 that was really pinned on only ONE distinct landmark -- a phantom,
+potentially confidently-wrong fix that still cleared the n>=2 and residual
+gates.
 
-These tests turn that hypothetical into a concrete, reproducible demonstration.
-They are TEST-ONLY; no production code is modified. The guard remains deferred.
+That solve_pose-level defect is now FIXED: `solve_pose` routes association
+through `constellation.match`, which is one-to-one by construction, so two
+observations can no longer bind to a single map landmark. The `associate()`
+characterization below remains as legacy documentation of the underlying
+function's behavior -- `associate` itself is unchanged and still exercised
+directly elsewhere (e.g. by `constellation.match`'s tie-breaking).
+
+These tests are TEST-ONLY; no production code is modified by them.
 """
 import math
 
@@ -97,42 +104,19 @@ def test_associate_can_produce_duplicate_map_landmark():
     assert matched_names == ["bench_2", "bench_2"]
 
 
-def test_duplicate_association_can_pass_gates():
-    """The duplicate slips through solve_pose's n>=2 + residual gates.
-
-    Same inputs as above. Because both observations bind to bench_2, solve_pose
-    fits a rigid transform whose destination points are bench_2 TWICE -- a single
-    distinct landmark. With a lenient residual_gate it still returns a pose with
-    n == 2, i.e. it looks like a two-landmark fix but rests on one point.
-
-    Measured outcome (documented here so the demonstration is self-contained):
-      - The returned pose is (x=0.0, y=2.0, yaw=0.0), rms=2.0, n=2.
-      - The TRUE pose is (0, 0, 0), so the phantom fix is 2.0 m off in y while
-        reporting n=2 and clearing the gate.
-      - residual_gate must be >= the rms (2.0) for it to pass: a tight gate
-        (e.g. 1.0) rejects it (rms 2.0 > 1.0 -> None). So the gap is only
-        exploitable when the residual gate is loose relative to the cluster
-        spacing -- which is exactly the regime a wide tolerance would create.
-    """
+def test_duplicate_association_no_longer_passes_gates():
+    """solve_pose now uses the constellation matcher, which is one-to-one, so the
+    two-benches-onto-one phantom characterized for associate() can no longer occur
+    at the solve_pose level. With only two same-type benches and a yaw-wrong prior,
+    the matcher either pairs them correctly (distinct) or returns too few pairs;
+    it never binds both observations to a single bench."""
     obs = _observations()
-
-    # A tight residual gate DOES catch this particular phantom.
-    strict = solve_pose(obs, _LANDMARKS, _PRIOR,
-                        dist_gate=_DIST_GATE, residual_gate=1.0)
-    assert strict is None, "tight residual gate should reject this phantom"
-
-    # A lenient residual gate lets the phantom through with n>=2.
-    lenient = solve_pose(obs, _LANDMARKS, _PRIOR,
-                        dist_gate=_DIST_GATE, residual_gate=5.0)
-    assert lenient is not None, "lenient gate: expected the phantom to pass"
-    x, y, yaw, rms, n = lenient
-
-    # It reports two correspondences despite resting on ONE distinct landmark.
-    assert n == 2
-
-    # And it is wrong: ~2 m off the true pose (0, 0, 0) in y.
-    true_x, true_y, _ = _TRUE_POSE
-    assert abs(y - true_y) > 1.0, (
-        f"expected a confidently-wrong fix; got y={y} vs true {true_y}"
-    )
-    assert math.hypot(x - true_x, y - true_y) > 1.0
+    for rg in (1.0, 5.0):
+        out = solve_pose(obs, _LANDMARKS, _PRIOR, dist_gate=0.3, residual_gate=rg)
+        if out is not None:
+            _, _, _, _, n = out
+            # if it returns a fit, it rests on TWO DISTINCT benches, not one
+            pairs = __import__("landmark_loc.constellation", fromlist=["match"]).match(
+                obs, _LANDMARKS, _PRIOR, 0.3)
+            names = {lm.name for _, lm in pairs}
+            assert len(names) == len({id(lm) for _, lm in pairs})

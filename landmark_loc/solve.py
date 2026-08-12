@@ -1,6 +1,8 @@
 """Associate observed landmarks to catalog landmarks and solve the robot pose.
 
-Association is identity-consistent nearest-neighbor under the prior. The pose is
+Association is now constellation-based (see `constellation.match`): observations
+are identified by their prior-invariant pairwise geometry rather than by
+nearest-neighbor-under-prior, so it survives a badly drifted prior. The pose is
 the 2D rigid transform (Umeyama/Kabsch) mapping observed (robot-frame) points
 onto their matched (map-frame) points; that transform IS the robot's map pose.
 A fit with < 2 correspondences or RMS residual above the gate is rejected
@@ -8,6 +10,8 @@ A fit with < 2 correspondences or RMS residual above the gate is rejected
 """
 import math
 import numpy as np
+
+from landmark_loc import constellation
 
 
 def _to_map(o, prior_xyz):
@@ -51,7 +55,7 @@ def rigid_transform_2d(src_xy, dst_xy):
 
 
 def solve_pose(observations, gated_landmarks, prior_xyz, dist_gate, residual_gate):
-    pairs = associate(observations, gated_landmarks, prior_xyz, dist_gate)
+    pairs = constellation.match(observations, gated_landmarks, prior_xyz, dist_gate)
     if len(pairs) < 2:
         return None
     src = np.array([[o.x, o.y] for o, _ in pairs])

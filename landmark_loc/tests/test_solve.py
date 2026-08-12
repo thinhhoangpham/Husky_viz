@@ -50,6 +50,21 @@ def test_solve_pose_rejects_high_residual():
     assert out is None  # residual too high
 
 
+def test_solve_pose_matcher_recovers_under_wrong_prior():
+    lms = [MapLandmark("a", "bench", 5.0, 1.0),
+           MapLandmark("b", "lamp", 6.0, -2.0),
+           MapLandmark("c", "garden_table", 3.0, 4.0)]
+    true = (2.0, -1.0, 0.5)
+    obs = _obs_from_truth(true, lms)
+    wrong_prior = (10.0, 8.0, 1.2)  # far from truth
+    out = solve.solve_pose(obs, lms, prior_xyz=wrong_prior,
+                           dist_gate=0.3, residual_gate=0.5)
+    assert out is not None
+    x, y, yaw, rms, n = out
+    assert n == 3 and rms < 1e-6
+    assert abs(x - 2.0) < 1e-6 and abs(y + 1.0) < 1e-6
+
+
 def test_solve_pose_accepts_clean_fit():
     lms = [MapLandmark("a", "bench", 5.0, 1.0),
            MapLandmark("b", "lamp", 6.0, -2.0),
