@@ -140,8 +140,11 @@ def main():
         if (state["anchor_map"] is None or state["anchor_odom"] is None
                 or state["odom_now"] is None):
             return
+        rospy.loginfo_throttle(1.0, "[diag] anchor_map=%s anchor_odom=%s odom_now=%s"
+                               % (state["anchor_map"], state["anchor_odom"], state["odom_now"]))
         prior = compose_prior(state["anchor_map"], state["anchor_odom"],
                               state["odom_now"])
+        rospy.loginfo_throttle(1.0, "[diag] prior=(%.2f,%.2f,%.2f)" % prior)
         pts = cloud_to_array(msg)
         if len(pts) == 0:
             return
@@ -149,9 +152,14 @@ def main():
         clusters = segment.cluster(cropped, p["link_dist"], p["min_pts"], p["max_extent"])
         obs = classify.to_observations(clusters)
         gated = catalog.gate(landmarks, prior, p["max_range"], p["fov_halfwidth"])
+        rospy.loginfo_throttle(1.0, "[diag] obs=%d types=%s gated=%d"
+                               % (len(obs), [o.identity for o in obs], len(gated)))
         result = solve.solve_pose(obs, gated, prior, p["dist_gate"], p["residual_gate"])
         if result is None:
+            rospy.loginfo_throttle(1.0, "[diag] solve=None (no fix this tick)")
             return
+        rospy.loginfo_throttle(1.0, "[diag] FIX x=%.2f y=%.2f rms=%.3f n=%d"
+                               % (result[0], result[1], result[3], result[4]))
         x, y, yaw, rms, n = result
         # RE-ANCHOR: an accepted (gated) fix is a trustworthy landmark-derived
         # absolute position. Reset the dead-reckoning baseline to it so drift
