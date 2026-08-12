@@ -59,14 +59,19 @@ def test_no_match_shape_absent_returns_empty():
 
 
 def test_type_constraint_blocks_geometric_lookalike():
-    # a lamp observation sitting exactly where a catalog BENCH is must NOT pair to
-    # it; only lamp catalog entries are eligible.
+    # Type constraint must forbid swapping landmarks based on position alone.
+    # Create a scenario where the only type-consistent assignment fails distance check.
+    # Observations: lamp and bench are 35 m apart.
+    # Catalog: two clusters with different inter-landmark distances.
+    # The swapped assignment (lamp->bench, bench->lamp) is type-illegal.
+    # The type-consistent assignment (lamp->lamp, bench->bench) exists but with
+    # a different pair distance (40 m), so fails the tolerance check.
     cat = [MapLandmark("bench_x", "bench", 5.0, 0.0),
-           MapLandmark("lamp_far", "lamp", 40.0, 0.0)]
-    obs = [Observation("lamp", 5.0, 0.0), Observation("bench", 40.0, 0.0)]
+           MapLandmark("lamp_y", "lamp", 45.0, 0.0)]  # distance 40 m
+    obs = [Observation("lamp", 5.0, 0.0), Observation("bench", 40.0, 0.0)]  # distance 35 m
     pairs = constellation.match(obs, cat, prior_xyz=(0, 0, 0), tol=0.3)
-    # geometry alone would swap them; type forbids it -> the only type-consistent
-    # assignment (lamp->lamp_far, bench->bench_x) has the wrong distance, so empty.
+    # The only type-consistent assignment (lamp->lamp_y, bench->bench_x) has
+    # catalog distance 40m but observed distance 35m, which exceeds tol=0.3, so rejected.
     assert pairs == []
 
 
