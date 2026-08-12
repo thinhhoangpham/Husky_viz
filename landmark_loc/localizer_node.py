@@ -80,7 +80,7 @@ def main():
         link_dist=rospy.get_param("~link_dist", 0.3),
         min_pts=rospy.get_param("~min_pts", 10),
         max_extent=rospy.get_param("~max_extent", 3.5),
-        dist_gate=rospy.get_param("~dist_gate", 2.0),
+        dist_gate=rospy.get_param("~dist_gate", 4.0),
         residual_gate=rospy.get_param("~residual_gate", 1.0),
         fov_halfwidth=rospy.get_param("~fov_halfwidth", math.pi),
         base_var=rospy.get_param("~base_var", 0.5),
