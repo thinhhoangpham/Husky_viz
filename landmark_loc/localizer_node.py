@@ -75,7 +75,7 @@ def main():
                              "/home/thinh/Documents/Husky_viz/maps/park_places.yaml")
     p = dict(
         z_min=rospy.get_param("~z_min", -0.73),
-        z_max=rospy.get_param("~z_max", 1.2),
+        z_max=rospy.get_param("~z_max", 3.5),
         max_range=rospy.get_param("~max_range", 15.0),
         link_dist=rospy.get_param("~link_dist", 0.3),
         min_pts=rospy.get_param("~min_pts", 10),
