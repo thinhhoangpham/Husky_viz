@@ -161,11 +161,9 @@ def main():
         rospy.loginfo_throttle(1.0, "[diag] FIX x=%.2f y=%.2f rms=%.3f n=%d"
                                % (result[0], result[1], result[3], result[4]))
         x, y, yaw, rms, n = result
-        # RE-ANCHOR: an accepted (gated) fix is a trustworthy landmark-derived
-        # absolute position. Reset the dead-reckoning baseline to it so drift
-        # only accumulates between fixes, never over the whole run.
-        state["anchor_map"] = (x, y, prior[2])   # keep composed yaw (yaw not solved/fused)
-        state["anchor_odom"] = state["odom_now"]
+        # Anchor stays FIXED at the initial spawn pose (no re-anchoring). The
+        # prior is always initial-anchor + odom/compass motion; landmarks
+        # correct the published fix but never move the dead-reckoning baseline.
         od = Odometry()
         od.header.stamp = now
         od.header.frame_id = "map"
