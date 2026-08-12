@@ -82,13 +82,63 @@ def _grow(i, j, cat_i, cat_j, observations, obs_d, gated, tol):
     return assign
 
 
+def _centroid(assign):
+    xs = [lm.x for lm in assign.values()]
+    ys = [lm.y for lm in assign.values()]
+    return (sum(xs) / len(xs), sum(ys) / len(ys))
+
+
+def _prior_dist(assign, prior_xyz):
+    cx, cy = _centroid(assign)
+    return math.hypot(cx - prior_xyz[0], cy - prior_xyz[1])
+
+
+def _implied_heading(observations, assign):
+    """Compute implied robot heading from observations and their assigned landmarks.
+
+    For two or more observations, try to find a consistent heading. Returns the
+    heading implied by the first two assigned observations, or None if inconsistent.
+    """
+    indices = sorted(assign.keys())
+    if len(indices) < 2:
+        return None
+
+    # Use the first two observations to compute heading
+    i, j = indices[0], indices[1]
+    oi, oj = observations[i], observations[j]
+    lm_i, lm_j = assign[i], assign[j]
+
+    # Delta in robot frame
+    delta_rx = oj.x - oi.x
+    delta_ry = oj.y - oi.y
+
+    # Delta in world frame
+    delta_wx = lm_j.x - lm_i.x
+    delta_wy = lm_j.y - lm_i.y
+
+    # If deltas are too small, can't determine heading
+    if math.hypot(delta_rx, delta_ry) < 1e-6:
+        return None
+
+    # Implied heading: angle from robot-frame delta to world-frame delta
+    theta = math.atan2(delta_wy, delta_wx) - math.atan2(delta_ry, delta_rx)
+
+    # Normalize to [-π, π]
+    while theta > math.pi:
+        theta -= 2 * math.pi
+    while theta < -math.pi:
+        theta += 2 * math.pi
+
+    return theta
+
+
 def match(observations, gated_landmarks, prior_xyz, tol):
     if len(observations) < 2 or len(gated_landmarks) < 2:
         return []
     obs_d = _obs_pair_dists(observations)
     cat_idx = _cat_pair_index(gated_landmarks)
     n = len(observations)
-    best = {}
+    candidates = []
     for i in range(n):
         for j in range(i + 1, n):
             oi, oj = observations[i], observations[j]
@@ -99,8 +149,38 @@ def match(observations, gated_landmarks, prior_xyz, tol):
                 for cat_i, cat_j in _seed_orientations(oi, oj, a, b):
                     assign = _grow(i, j, cat_i, cat_j, observations, obs_d,
                                    gated_landmarks, tol)
-                    if len(assign) > len(best):
-                        best = assign
-    if len(best) < 2:
+                    candidates.append(assign)
+    candidates = [a for a in candidates if len(a) >= 2]
+    if not candidates:
         return []
-    return [(observations[k], best[k]) for k in sorted(best)]
+    # Filter out assignments with heading inconsistent with prior (within π/2 threshold)
+    max_heading_diff = math.pi / 2
+    filtered = []
+    for a in candidates:
+        implied = _implied_heading(observations, a)
+        if implied is None:
+            # Can't determine heading (too few/small observations), accept tentatively
+            filtered.append(a)
+        else:
+            # Check heading difference from prior
+            prior_heading = prior_xyz[2]
+            diff = abs(implied - prior_heading)
+            # Normalize difference to [0, π]
+            while diff > math.pi:
+                diff = 2 * math.pi - diff
+            if diff <= max_heading_diff:
+                filtered.append(a)
+    if not filtered:
+        return []
+    candidates = filtered
+    best_size = max(len(a) for a in candidates)
+    top = [a for a in candidates if len(a) == best_size]
+    # dedupe identical assignments (same obj set) so a true single winner isn't
+    # treated as a tie
+    uniq = []
+    for a in top:
+        sig = frozenset((k, id(v)) for k, v in a.items())
+        if sig not in {frozenset((k, id(v)) for k, v in u.items()) for u in uniq}:
+            uniq.append(a)
+    chosen = min(uniq, key=lambda a: _prior_dist(a, prior_xyz))
+    return [(observations[k], chosen[k]) for k in sorted(chosen)]
