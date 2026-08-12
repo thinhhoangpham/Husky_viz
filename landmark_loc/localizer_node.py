@@ -154,6 +154,19 @@ def main():
         gated = catalog.gate(landmarks, prior, p["max_range"], p["fov_halfwidth"])
         rospy.loginfo_throttle(1.0, "[diag] obs=%d types=%s gated=%d"
                                % (len(obs), [o.identity for o in obs], len(gated)))
+        # DIAGNOSTIC: recompute association + RMS exactly as solve_pose does, so a
+        # None result reports the REAL reason (too few pairs, or RMS over gate).
+        _pairs = solve.associate(obs, gated, prior, p["dist_gate"])
+        _rms = None
+        if len(_pairs) >= 2:
+            import numpy as _np
+            _src = _np.array([[o.x, o.y] for o, _ in _pairs])
+            _dst = _np.array([[lm.x, lm.y] for _, lm in _pairs])
+            _, _, _, _rms = solve.rigid_transform_2d(_src, _dst)
+        rospy.loginfo_throttle(1.0, "[diag] associations=%d rms=%s gate=%.2f"
+                               % (len(_pairs),
+                                  ("%.3f" % _rms) if _rms is not None else "n/a",
+                                  p["residual_gate"]))
         result = solve.solve_pose(obs, gated, prior, p["dist_gate"], p["residual_gate"])
         if result is None:
             rospy.loginfo_throttle(1.0, "[diag] solve=None (no fix this tick)")
