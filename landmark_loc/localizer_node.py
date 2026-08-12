@@ -80,7 +80,7 @@ def main():
         link_dist=rospy.get_param("~link_dist", 0.3),
         min_pts=rospy.get_param("~min_pts", 10),
         max_extent=rospy.get_param("~max_extent", 3.5),
-        dist_gate=rospy.get_param("~dist_gate", 4.0),
+        constellation_tol=rospy.get_param("~constellation_tol", 0.3),
         residual_gate=rospy.get_param("~residual_gate", 1.0),
         fov_halfwidth=rospy.get_param("~fov_halfwidth", math.pi),
         base_var=rospy.get_param("~base_var", 0.5),
@@ -140,11 +140,8 @@ def main():
         if (state["anchor_map"] is None or state["anchor_odom"] is None
                 or state["odom_now"] is None):
             return
-        rospy.loginfo_throttle(1.0, "[diag] anchor_map=%s anchor_odom=%s odom_now=%s"
-                               % (state["anchor_map"], state["anchor_odom"], state["odom_now"]))
         prior = compose_prior(state["anchor_map"], state["anchor_odom"],
                               state["odom_now"])
-        rospy.loginfo_throttle(1.0, "[diag] prior=(%.2f,%.2f,%.2f)" % prior)
         pts = cloud_to_array(msg)
         if len(pts) == 0:
             return
@@ -152,27 +149,9 @@ def main():
         clusters = segment.cluster(cropped, p["link_dist"], p["min_pts"], p["max_extent"])
         obs = classify.to_observations(clusters)
         gated = catalog.gate(landmarks, prior, p["max_range"], p["fov_halfwidth"])
-        rospy.loginfo_throttle(1.0, "[diag] obs=%d types=%s gated=%d"
-                               % (len(obs), [o.identity for o in obs], len(gated)))
-        # DIAGNOSTIC: recompute association + RMS exactly as solve_pose does, so a
-        # None result reports the REAL reason (too few pairs, or RMS over gate).
-        _pairs = solve.associate(obs, gated, prior, p["dist_gate"])
-        _rms = None
-        if len(_pairs) >= 2:
-            import numpy as _np
-            _src = _np.array([[o.x, o.y] for o, _ in _pairs])
-            _dst = _np.array([[lm.x, lm.y] for _, lm in _pairs])
-            _, _, _, _rms = solve.rigid_transform_2d(_src, _dst)
-        rospy.loginfo_throttle(1.0, "[diag] associations=%d rms=%s gate=%.2f"
-                               % (len(_pairs),
-                                  ("%.3f" % _rms) if _rms is not None else "n/a",
-                                  p["residual_gate"]))
-        result = solve.solve_pose(obs, gated, prior, p["dist_gate"], p["residual_gate"])
+        result = solve.solve_pose(obs, gated, prior, p["constellation_tol"], p["residual_gate"])
         if result is None:
-            rospy.loginfo_throttle(1.0, "[diag] solve=None (no fix this tick)")
             return
-        rospy.loginfo_throttle(1.0, "[diag] FIX x=%.2f y=%.2f rms=%.3f n=%d"
-                               % (result[0], result[1], result[3], result[4]))
         x, y, yaw, rms, n = result
         # Anchor stays FIXED at the initial spawn pose (no re-anchoring). The
         # prior is always initial-anchor + odom/compass motion; landmarks
