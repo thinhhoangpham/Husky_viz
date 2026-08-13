@@ -114,6 +114,59 @@ def odom_at(buf, t):
     return buf[-1][1], buf[-1][2], buf[-1][3]
 
 
+# RGBA color per classifier identity, for the observed-cluster text labels
+# (helps the operator spot misclassifications and 'unknown' clusters at a
+# glance). Purely a visualization constant; does not affect classification.
+_LABEL_COLOR = {
+    "lamp": (1.0, 1.0, 0.0, 1.0),          # yellow
+    "bench": (0.0, 1.0, 0.0, 1.0),         # green
+    "garden_table": (0.0, 1.0, 1.0, 1.0),  # cyan
+    "trash_bin_1": (1.0, 0.5, 0.0, 1.0),   # orange
+    "tree": (0.0, 0.4, 0.0, 1.0),          # dark green
+    "unknown": (1.0, 0.0, 0.0, 1.0),       # red
+}
+
+
+def build_observed_markers(clusters, frame_id, stamp):
+    """Build a MarkerArray of TEXT_VIEW_FACING labels, one per cluster, showing
+    the classifier's identity string for that cluster (including 'unknown').
+    First element is a DELETEALL so stale labels from a tick with more
+    clusters than the current tick don't linger."""
+    import rospy
+    from visualization_msgs.msg import Marker, MarkerArray
+
+    arr = MarkerArray()
+    delete_all = Marker()
+    delete_all.action = Marker.DELETEALL
+    arr.markers.append(delete_all)
+
+    for i, c in enumerate(clusters):
+        ident = classify.classify_cluster(c)
+        cx, cy = c.centroid_xy
+        if c.points is not None and len(c.points) > 0:
+            z_top = float(c.points[:, 2].max())
+        else:
+            z_top = 0.0
+        m = Marker()
+        m.header.frame_id = frame_id
+        m.header.stamp = stamp
+        m.ns = "observed"
+        m.id = i
+        m.type = Marker.TEXT_VIEW_FACING
+        m.action = Marker.ADD
+        m.pose.position.x = cx
+        m.pose.position.y = cy
+        m.pose.position.z = z_top + 0.5
+        m.pose.orientation.w = 1.0
+        m.scale.z = 0.6
+        r, g, b, a = _LABEL_COLOR.get(ident, _LABEL_COLOR["unknown"])
+        m.color.r, m.color.g, m.color.b, m.color.a = r, g, b, a
+        m.lifetime = rospy.Duration(0.5)
+        m.text = ident
+        arr.markers.append(m)
+    return arr
+
+
 def main():
     import rospy
     from nav_msgs.msg import Odometry
@@ -121,6 +174,7 @@ def main():
     from sensor_msgs.msg import NavSatFix
     from sensor_msgs.msg import Imu
     from std_msgs.msg import String
+    from visualization_msgs.msg import MarkerArray
 
     rospy.init_node("landmark_localizer")
     places = rospy.get_param("~places_path",
@@ -160,6 +214,7 @@ def main():
         "last_pub_odom": None,  # odom pose captured at last published fix
     }
     pub = rospy.Publisher("/odometry/landmark_fix", Odometry, queue_size=5)
+    markers_pub = rospy.Publisher("/landmark_observed_markers", MarkerArray, queue_size=1)
 
     def _yaw(q):
         return math.atan2(2 * (q.w * q.z + q.x * q.y),
@@ -231,6 +286,7 @@ def main():
             return
         cropped = segment.crop(pts, p["z_min"], p["z_max"], p["max_range"])
         clusters = segment.cluster(cropped, p["link_dist"], p["min_pts"], p["max_extent"])
+        markers_pub.publish(build_observed_markers(clusters, msg.header.frame_id, msg.header.stamp))
         obs = classify.to_observations(clusters)
         gated = catalog.gate(landmarks, prior, p["max_range"], p["fov_halfwidth"])
         _pairs = solve.constellation.match(obs, gated, prior, p["constellation_tol"],
