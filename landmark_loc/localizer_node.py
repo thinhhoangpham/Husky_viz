@@ -258,7 +258,8 @@ def main():
     rospy.Subscriber("/navsat/fix", NavSatFix, on_navsat, queue_size=5)
     rospy.Subscriber("/odometry/filtered_map", Odometry, on_map, queue_size=5)
     rospy.Subscriber("/abs_fix_mode", String, on_mode, queue_size=1)
-    rospy.Subscriber("/os0_cloud_node/points", PointCloud2, on_cloud, queue_size=1)
+    rospy.Subscriber("/os0_cloud_node/points", PointCloud2, on_cloud, queue_size=1,
+                     buff_size=2**24)  # 16 MB: large ~1–2 MB OS0 clouds need buffer > default 64 KB to avoid stale-frame fragmentation
     rospy.spin()
 
 
