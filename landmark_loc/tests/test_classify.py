@@ -252,6 +252,42 @@ def _bench_cluster_from_outline():
                    major=L, minor=W, height=0.4)
 
 
+def test_to_observations_falls_back_to_pushout_when_rect_fit_fails(monkeypatch):
+    # Guards the classify.py:151-157 `if ok:` fallback branch in to_observations:
+    # when shapefit.fit_rectangle fails (ok=False) for an identity that IS
+    # rect-fit-eligible (bench/garden_table), the observation must still be
+    # emitted via centroid+pushout, not silently dropped.
+    #
+    # NOTE: under current thresholds this branch is unreachable with real data
+    # -- shapefeat._MIN_SHAPE_PTS and shapefit._MIN_PTS are both exactly 6, so
+    # any cluster with enough points to classify as "bench" also has enough
+    # points to make fit_rectangle return ok=True (verified: fit_rectangle has
+    # no other ok=False exit; even fully degenerate points >= 6 count return
+    # ok=True). This test forces the failure via monkeypatch to guard the
+    # fallback LOGIC against a future change to fit_rectangle (e.g. a real
+    # convergence/residual check) that could start returning ok=False for real
+    # data -- without this test, that change could silently drop observations.
+    c = _pts_cluster(_box(1.78, 0.80, 0.9))
+    c = Cluster(points=c.points, centroid_xy=(3.0, 4.0),
+                major=c.major, minor=c.minor, height=c.height)
+    assert classify.classify_cluster(c) == "bench"
+
+    monkeypatch.setattr(classify.shapefit, "fit_rectangle",
+                         lambda xy, L, W: (0.0, 0.0, 0.0, False))
+
+    obs = classify.to_observations([c])
+    assert len(obs) == 1
+    o = obs[0]
+    assert o.identity == "bench"
+
+    cx, cy = c.centroid_xy
+    r = math.hypot(cx, cy)
+    radius = classify.KNOWN_RADIUS["bench"]
+    ux, uy = cx / r, cy / r
+    assert o.x == pytest.approx(cx + radius * ux)
+    assert o.y == pytest.approx(cy + radius * uy)
+
+
 def test_bench_observation_has_yaw_and_fit_center():
     c = _bench_cluster_from_outline()
     obs = to_observations([c])
