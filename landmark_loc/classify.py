@@ -8,7 +8,7 @@ canopy band above a narrow trunk) and EMITTED as the 'tree' landmark type.
 """
 import math
 from dataclasses import dataclass
-from landmark_loc.signatures import MESH_SIGNATURES, SIGNATURE_FAMILIES
+from landmark_loc.signatures import MESH_SIGNATURES
 from landmark_loc import shapefit
 from landmark_loc import shapefeat
 

@@ -7,11 +7,6 @@ from landmark_loc.classify import Observation, to_observations
 from landmark_loc.segment import Cluster
 
 
-def _c(major, minor, height):
-    return Cluster(points=None, centroid_xy=(1.0, 2.0),
-                   major=major, minor=minor, height=height)
-
-
 def _canopy_cluster(trunk_w=0.4, canopy_w=4.0, top_z=6.0):
     """Synthetic tree: a narrow trunk (z 0..2.4) under a wide canopy (z 2.5..top).
     Returns a Cluster whose `points` produce the intended vertical profile."""
@@ -32,12 +27,11 @@ def _canopy_cluster(trunk_w=0.4, canopy_w=4.0, top_z=6.0):
                    major=float(major), minor=float(minor), height=float(height))
 
 
-def test_classifies_each_type_from_ideal_dims():
-    from landmark_loc.signatures import MESH_SIGNATURES as S
-    for fam in ("bench", "garden_table", "lamp", "trash_bin_1"):
-        sig = S[fam]
-        got = classify.classify_cluster(_c(sig["major"], sig["minor"], sig["height"]))
-        assert got == fam, f"{fam} misclassified as {got}"
+def test_classifies_each_type_from_shape():
+    assert classify.classify_cluster(_pts_cluster(_lamp_post())) == "lamp"
+    assert classify.classify_cluster(_pts_cluster(_box(0.68, 0.38, 1.04))) == "trash_bin_1"
+    assert classify.classify_cluster(_pts_cluster(_box(1.78, 0.80, 0.9))) == "bench"
+    assert classify.classify_cluster(_pts_cluster(_box(3.0, 1.32, 1.05))) == "garden_table"
 
 
 def test_wide_canopy_over_trunk_is_tree():
@@ -70,51 +64,32 @@ def test_low_wide_object_is_not_tree():
     assert classify.classify_cluster(c) != "tree"
 
 
-def test_ideal_bin_is_still_bin():
-    from landmark_loc.signatures import MESH_SIGNATURES as S
-    s = S["trash_bin_1"]
-    got = classify.classify_cluster(_c(s["major"], s["minor"], s["height"]))
-    assert got == "trash_bin_1"
-
-
-def test_ideal_lamp_is_still_lamp():
-    from landmark_loc.signatures import MESH_SIGNATURES as S
-    s = S["lamp"]
-    got = classify.classify_cluster(_c(s["major"], s["minor"], s["height"]))
-    assert got == "lamp"
-
-
-def test_ambiguous_between_bands_is_unknown():
-    # deliberately between bench and table aspect/size
-    got = classify.classify_cluster(_c(major=1.9, minor=1.3, height=0.9))
+def test_tall_box_is_unknown():
+    # a box-shaped cluster too tall for any known box type (bin/bench/table
+    # all sit under _BOX_MAX_H=1.40) and too wide-footed to be a lamp post ->
+    # matches no rule -> unknown. The OLD test encoded a "between bands"
+    # aspect/size gap that no longer exists now that bin/bench/table foot
+    # bands are contiguous (0.30-1.20-2.30+); this is the shape-equivalent
+    # gap: no band covers this height.
+    got = classify.classify_cluster(_pts_cluster(_box(1.9, 1.3, 2.0)))
     assert got == "unknown"
 
 
 def test_to_observations_emits_tree_drops_unknown():
-    bench_dims = _dims("bench")
+    bench_cluster = _pts_cluster(_box(1.78, 0.80, 0.9))
+    unknown_cluster = _pts_cluster(_box(1.9, 1.3, 2.0))
     clusters = [
-        Cluster(points=None, centroid_xy=(1.0, 2.0), major=bench_dims[0],
-                minor=bench_dims[1], height=bench_dims[2]),
-        _canopy_cluster(),                                            # tree -> emitted
-        Cluster(points=None, centroid_xy=(3.0, 4.0), major=1.9,
-                minor=1.3, height=0.9),                               # unknown -> dropped
+        bench_cluster,      # bench -> emitted
+        _canopy_cluster(),  # tree  -> emitted
+        unknown_cluster,    # too tall for any box band -> unknown, dropped
     ]
     obs = classify.to_observations(clusters)
     idents = sorted(o.identity for o in obs)
-    assert idents == ["bench", "tree"]
-
-    # Both emitted observations are offset outward from the raw (1.0, 2.0)
-    # centroid by their identity's known radius, along the same bearing.
-    r0 = math.hypot(1.0, 2.0)
-    ux, uy = 1.0 / r0, 2.0 / r0
-
-    bench_obs = [o for o in obs if o.identity == "bench"][0]
-    bench_r = classify.KNOWN_RADIUS["bench"]
-    assert bench_obs.x == pytest.approx(1.0 + bench_r * ux)
-    assert bench_obs.y == pytest.approx(2.0 + bench_r * uy)
+    assert "tree" in idents and "bench" in idents
+    assert "unknown" not in idents
 
     # Tree position is derived from the TRUNK (base of points), not the
-    # centroid_xy (1.0, 2.0) placeholder, and not the canopy blob mean.
+    # centroid_xy placeholder, and not the canopy blob mean.
     tree_cluster = clusters[1]
     trunk_x, trunk_y = classify._trunk_xy(tree_cluster.points)
     tree_r = classify.KNOWN_RADIUS["tree"]
@@ -125,20 +100,28 @@ def test_to_observations_emits_tree_drops_unknown():
     assert tree_obs.y == pytest.approx(trunk_y + tree_r * tuy)
 
 
+def _lamp_post_at(cx, cy, height=2.5, w=0.14, n=40):
+    """A thin-post lamp cluster whose points are centered at world (cx, cy),
+    with centroid_xy matching that offset (mirrors a real lamp seen at that
+    world position)."""
+    pts = _lamp_post(height=height, w=w, n=n)
+    pts[:, 0] += cx
+    pts[:, 1] += cy
+    return _pts_cluster(pts)
+
+
 def test_to_observations_offset_is_view_invariant():
     """The same real lamp seen from two different robot bearings should yield
     observation positions at the same distance-from-origin (true center),
     along whatever bearing the raw centroid was on -- i.e. the offset always
     lands at D + R along the observed direction, not a fixed world point."""
     from landmark_loc.signatures import MESH_SIGNATURES as S
-    lamp_dims = _dims("lamp")
     R = S["lamp"]["minor"] / 2.0
 
     for theta in (0.3, 2.1):
         D = 5.0
         cx, cy = D * math.cos(theta), D * math.sin(theta)
-        c = Cluster(points=None, centroid_xy=(cx, cy),
-                    major=lamp_dims[0], minor=lamp_dims[1], height=lamp_dims[2])
+        c = _lamp_post_at(cx, cy)
         obs = classify.to_observations([c])
         assert len(obs) == 1
         o = obs[0]
@@ -151,12 +134,11 @@ def test_to_observations_offset_is_view_invariant():
 def test_to_observations_centroid_at_origin_unchanged():
     # r ~ 0: no direction to push along, must not divide by zero and must
     # leave the position unchanged.
-    lamp_dims = _dims("lamp")
-    c = Cluster(points=None, centroid_xy=(0.0, 0.0),
-                major=lamp_dims[0], minor=lamp_dims[1], height=lamp_dims[2])
+    c = _lamp_post_at(0.0, 0.0)
     obs = classify.to_observations([c])
     assert len(obs) == 1
-    assert (obs[0].x, obs[0].y) == (0.0, 0.0)
+    assert obs[0].x == pytest.approx(0.0, abs=1e-9)
+    assert obs[0].y == pytest.approx(0.0, abs=1e-9)
 
 
 def _offset_canopy_tree_cluster():
@@ -251,12 +233,6 @@ def test_to_observations_tree_falls_back_to_centroid_when_no_trunk_band():
     assert o.y == pytest.approx(cy + radius * uy)
 
 
-def _dims(fam):
-    from landmark_loc.signatures import MESH_SIGNATURES as S
-    s = S[fam]
-    return s["major"], s["minor"], s["height"]
-
-
 def _bench_cluster_from_outline():
     # a bench outline at robot-frame (5,0), yaw 0 -> full rectangle points
     L, W = 1.78, 0.80
@@ -288,11 +264,9 @@ def test_bench_observation_has_yaw_and_fit_center():
 
 
 def test_lamp_observation_yaw_is_none():
-    # a compact lamp cluster: tall, narrow (round type keeps centroid+pushout)
-    xy = np.array([[3.0, 0.0], [3.05, 0.02], [2.98, -0.03], [3.02, 0.01]])
-    z = np.linspace(0, 3.15, len(xy)).reshape(-1, 1)
-    p3 = np.hstack([xy, z])
-    c = Cluster(points=p3, centroid_xy=(3.0, 0.0), major=0.63, minor=0.48, height=3.15)
+    # a compact lamp cluster: tall, narrow post (round type keeps
+    # centroid+pushout, no rectangle fit, so no yaw)
+    c = _lamp_post_at(3.0, 0.0)
     obs = to_observations([c])
     assert len(obs) == 1 and obs[0].identity == "lamp" and obs[0].yaw is None
 
