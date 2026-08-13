@@ -32,6 +32,7 @@ from landmark_loc.geom import rigid_transform_2d
 _INLIER_TOL = 0.5       # TIGHT: a correct transform lands obs within this of catalog
 _MIN_INLIERS = 3        # 3 non-collinear correspondences pin pose (no reflection flip)
 _PRIOR_SANITY = 15.0    # WIDE final-only guard; tolerates ~4m drift with margin
+_YAW_TOL = 0.35         # rad (~20deg): pairwise yaw-diff tolerance for seed matching
 
 
 def _dist(ax, ay, bx, by):
@@ -78,6 +79,19 @@ def _seed_orientations(oi, oj, a, b):
     yield (b, a)
 
 
+def _yaw_diff_ok(oi, oj, ci, cj):
+    """True if all four yaws present AND the observed pair yaw-difference matches
+    the catalog pair yaw-difference within _YAW_TOL (modulo pi, rectangle-
+    symmetric). If any yaw is None, returns True (no yaw constraint)."""
+    ys = (oi.yaw, oj.yaw, ci.yaw, cj.yaw)
+    if any(y is None for y in ys):
+        return True
+    d_obs = (oi.yaw - oj.yaw) % math.pi
+    d_cat = (ci.yaw - cj.yaw) % math.pi
+    dd = abs(d_obs - d_cat) % math.pi
+    return min(dd, math.pi - dd) <= _YAW_TOL
+
+
 def _score_transform(tx, ty, yaw, observations, gated):
     """Project every observation through (tx,ty,yaw); assign it to the nearest
     same-type catalog landmark within _INLIER_TOL, one-to-one (a landmark is taken
@@ -92,6 +106,12 @@ def _score_transform(tx, ty, yaw, observations, gated):
         for lm in gated:
             if lm.identity != o.identity:
                 continue
+            if o.yaw is not None and lm.yaw is not None:
+                map_yaw = o.yaw + yaw
+                dd = abs(map_yaw - lm.yaw) % math.pi
+                ang = min(dd, math.pi - dd)
+                if ang > _YAW_TOL:
+                    continue
             d = math.hypot(lm.x - mx, lm.y - my)
             if d <= bd:
                 best, bd = lm, d
@@ -121,6 +141,8 @@ def match(observations, gated_landmarks, prior_xyz, tol, max_prior_dist=5.0):
                 if abs(dab - obs_d[(i, j)]) > tol:       # seed_tol on pair distance
                     continue
                 for cat_i, cat_j in _seed_orientations(oi, oj, a, b):
+                    if not _yaw_diff_ok(oi, oj, cat_i, cat_j):
+                        continue
                     tx, ty, yaw, _ = rigid_transform_2d(
                         [[oi.x, oi.y], [oj.x, oj.y]],
                         [[cat_i.x, cat_i.y], [cat_j.x, cat_j.y]])
