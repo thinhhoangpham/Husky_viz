@@ -36,25 +36,6 @@ def cloud_to_array(cloud_msg):
     return np.array(list(pts), dtype=float)
 
 
-def should_reanchor(n, fix_xy, prior_xy, jump_max):
-    """Decide whether an accepted fix is trustworthy enough to become the new
-    anchor.
-
-    Guards (both required):
-      - n >= 4: matched-landmark count well past the 2-point ambiguity
-        minimum (a wrong 2-point flip was measured with rms=0.07, LOWER than
-        a correct 6-landmark fix at rms=0.60, so rms is not a safe gate here
-        -- count + jump-gate only).
-      - jump-gate: the fix position must be within jump_max metres of the
-        CURRENT prior, so an outlier/teleport fix can't yank the anchor.
-    """
-    if n < 4:
-        return False
-    fx, fy = fix_xy
-    px, py = prior_xy
-    return math.hypot(fx - px, fy - py) <= jump_max
-
-
 def compose_prior(anchor_map, anchor_odom, odom_now):
     """Map-frame prior = anchor_map advanced by the odom-frame displacement of
     odom_now relative to anchor_odom.
@@ -108,7 +89,6 @@ def main():
         rate=rospy.get_param("~rate", 2.0),
         anchor_min_dist=rospy.get_param("~anchor_min_dist", 5.0),
         smooth_window=rospy.get_param("~smooth_window", 5),
-        reanchor_jump_max=rospy.get_param("~reanchor_jump_max", 5.0),
     )
     landmarks = catalog.load(places)
     rospy.loginfo("landmark_localizer: %d catalog landmarks", len(landmarks))
@@ -184,16 +164,9 @@ def main():
                 % (len(obs), len(_pairs), prior[0], prior[1], _matched, "STALE"))
             return
         x, y, yaw, rms, n = result
-        # Re-anchor on high-confidence fixes: reset the map anchor to this
-        # fix's raw solved (x, y) (not the smoothed value -- the >=4-landmark
-        # constellation is what actually computed it) and capture the current
-        # odom pose as the new anchor_odom, wiping accumulated odom drift from
-        # the prior. Guarded by should_reanchor (count + jump-gate; NOT rms).
-        if should_reanchor(n, (x, y), (prior[0], prior[1]), p["reanchor_jump_max"]):
-            state["anchor_map"] = (x, y, yaw)
-            state["anchor_odom"] = state["odom_now"]
-            rospy.loginfo("re-anchored: map=(%.2f,%.2f,%.2f) from n=%d fix",
-                          x, y, yaw, n)
+        # Anchor stays FIXED at the initial spawn pose (no re-anchoring). The
+        # prior is always initial-anchor + odom/compass motion; landmarks
+        # correct the published fix but never move the dead-reckoning baseline.
         state["fix_history"].append((x, y))
         state["fix_history"] = state["fix_history"][-p["smooth_window"]:]
         sx = statistics.median(h[0] for h in state["fix_history"])
