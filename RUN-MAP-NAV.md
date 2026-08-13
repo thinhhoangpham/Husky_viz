@@ -36,7 +36,7 @@ roslaunch launch/move_base_gps_map.launch
 export ROS_IP=172.20.0.1 ROS_MASTER_URI=http://172.20.0.1:11311 ROBOT_HOST_IP=172.20.0.1
 cd ~/Documents/Husky_viz
 source /opt/ros/noetic/setup.bash
-PYTHONPATH=~/Documents/Husky_viz/.worktrees/constellation-matcher:$PYTHONPATH python3 ~/Documents/Husky_viz/.worktrees/constellation-matcher/landmark_loc/localizer_node.py _places_path:=~/Documents/Husky_viz/.worktrees/constellation-matcher/maps/park_places.yaml
+PYTHONPATH=~/Documents/Husky_viz/.worktrees/constellation-matcher:$PYTHONPATH python3 ~/Documents/Husky_viz/.worktrees/constellation-matcher/landmark_loc/localizer_node.py _places_path:=/home/thinh/Documents/Husky_viz/.worktrees/constellation-matcher/maps/park_places.yaml
 ```
 
 **Terminal 4 — pose-source selector** (fills `/odometry/abs_fix`; starts in `gps` mode):
