@@ -295,3 +295,62 @@ def test_lamp_observation_yaw_is_none():
     c = Cluster(points=p3, centroid_xy=(3.0, 0.0), major=0.63, minor=0.48, height=3.15)
     obs = to_observations([c])
     assert len(obs) == 1 and obs[0].identity == "lamp" and obs[0].yaw is None
+
+
+# --- shape-rule tests (Task 2) ---
+import numpy as np
+from landmark_loc.segment import Cluster
+
+
+def _pts_cluster(points):
+    xy = points[:, :2]
+    from landmark_loc.segment import _pca_extents
+    major, minor = _pca_extents(xy)
+    return Cluster(points=points, centroid_xy=(float(xy[:, 0].mean()), float(xy[:, 1].mean())),
+                   major=float(major), minor=float(minor),
+                   height=float(points[:, 2].max() - points[:, 2].min()))
+
+
+def _lamp_post(height=2.5, w=0.14, n=40):
+    pts = []
+    for z in np.linspace(0.0, height, n):
+        for a in np.linspace(0, 2 * np.pi, 6, endpoint=False):
+            pts.append((0.5 * w * np.cos(a), 0.5 * w * np.sin(a), z))
+    return np.array(pts, float)
+
+
+def _box(major, minor, height, n=8):
+    pts = []
+    for z in np.linspace(0.0, height, 4):
+        for x in np.linspace(-major / 2, major / 2, n):
+            for y in (-minor / 2, minor / 2):
+                pts.append((x, y, z))
+    return np.array(pts, float)
+
+
+def test_thin_tall_post_classifies_lamp():
+    assert classify.classify_cluster(_pts_cluster(_lamp_post())) == "lamp"
+
+
+def test_short_oblong_box_classifies_bin():
+    # bin: 0.68 x 0.38 x 1.04, no tall thin post
+    assert classify.classify_cluster(_pts_cluster(_box(0.68, 0.38, 1.04))) == "trash_bin_1"
+
+
+def test_medium_low_box_classifies_bench():
+    assert classify.classify_cluster(_pts_cluster(_box(1.78, 0.80, 0.9))) == "bench"
+
+
+def test_long_low_box_classifies_table():
+    assert classify.classify_cluster(_pts_cluster(_box(3.0, 1.32, 1.05))) == "garden_table"
+
+
+def test_pole_fragment_is_not_bin():
+    # a tiny pole fragment (the OLD phantom) must NOT be trash_bin now
+    frag = _lamp_post(height=0.5, w=0.10, n=8)
+    assert classify.classify_cluster(_pts_cluster(frag)) != "trash_bin_1"
+
+
+def test_no_points_is_unknown():
+    c = Cluster(points=None, centroid_xy=(1, 2), major=0.7, minor=0.4, height=1.0)
+    assert classify.classify_cluster(c) == "unknown"

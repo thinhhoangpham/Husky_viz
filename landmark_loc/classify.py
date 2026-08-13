@@ -10,6 +10,17 @@ import math
 from dataclasses import dataclass
 from landmark_loc.signatures import MESH_SIGNATURES, SIGNATURE_FAMILIES
 from landmark_loc import shapefit
+from landmark_loc import shapefeat
+
+# Shape-signature thresholds (Task 2). Each pinned from measured live/mesh
+# values; see .superpowers/sdd/2026-08-13-shape-classifier/task-2-brief.md.
+_LAMP_POST_MAX = 0.35    # m: lamp post foot_diag ~0.14; captured lamps 0.12-0.51 low
+_BIN_MAX_H = 1.4         # m: bin height 1.04; lamp 3.15 excluded by has_thin_high_band anyway
+_BIN_FOOT_MIN = 0.30     # m: bin foot_major ~0.68; keep off sub-0.3 noise fragments
+_BIN_FOOT_MAX = 1.20     # m: below bench 1.78 major, above bin 0.68 with margin
+_BOX_MAX_H = 1.40        # m: bench 0.94, table 1.09 both under this
+_BENCH_MAJOR_MIN = 1.20  # m: bench major 1.78; near-edge foreshortening floor
+_TABLE_MAJOR_MIN = 2.30  # m: table major 3.00; splits table (>=2.3) from bench (<2.3)
 
 # Tolerances. major/minor in metres, aspect is a ratio, height in metres.
 # Pinned against live lidar (Task 1 in-sim NOTE).
@@ -61,21 +72,6 @@ class Observation:
     yaw: float = None
 
 
-def _matches(cluster, fam, m):
-    sig = MESH_SIGNATURES[fam]
-    if abs(cluster.major - sig["major"]) > m["major"]:
-        return False
-    if abs(cluster.minor - sig["minor"]) > m["minor"]:
-        return False
-    if abs(cluster.height - sig["height"]) > m["height"]:
-        return False
-    aspect = cluster.major / max(cluster.minor, 1e-3)
-    sig_aspect = sig["major"] / max(sig["minor"], 1e-3)
-    elongated = aspect >= m["aspect_split"]
-    sig_elongated = sig_aspect >= m["aspect_split"]
-    return elongated == sig_elongated
-
-
 def _band_width(pts, z0, z1):
     """Horizontal bbox-diagonal width of points whose z is in [z0, z1)."""
     m = (pts[:, 2] >= z0) & (pts[:, 2] < z1)
@@ -122,13 +118,26 @@ def _trunk_xy(points):
 
 
 def classify_cluster(cluster, margins=DEFAULT_MARGINS):
-    # Tree gate first and it wins: a real trunk must be excluded from identity
-    # even when it also satisfies a family band (e.g. the lamp band).
+    # Tree wins first: a real trunk+canopy must be excluded from the other types.
     if _is_tree(cluster, margins):
         return "tree"
-    hits = [fam for fam in SIGNATURE_FAMILIES if _matches(cluster, fam, margins)]
-    if len(hits) == 1:
-        return hits[0]
+    pts = cluster.points
+    if pts is None or len(pts) < shapefeat._MIN_SHAPE_PTS:
+        return "unknown"
+    # lamp: the only object with a thin post rising above HIGH_Z.
+    if shapefeat.has_thin_high_band(pts) and shapefeat.post_width(pts) < _LAMP_POST_MAX:
+        return "lamp"
+    foot_major, _foot_minor = shapefeat.foot_extents(pts)
+    height = cluster.height
+    # trash_bin: short compact oblong box, no tall thin post.
+    if height < _BIN_MAX_H and _BIN_FOOT_MIN <= foot_major < _BIN_FOOT_MAX:
+        return "trash_bin_1"
+    # garden_table: low box, long.
+    if height < _BOX_MAX_H and foot_major >= _TABLE_MAJOR_MIN:
+        return "garden_table"
+    # bench: low box, medium length.
+    if height < _BOX_MAX_H and _BENCH_MAJOR_MIN <= foot_major < _TABLE_MAJOR_MIN:
+        return "bench"
     return "unknown"
 
 
