@@ -105,6 +105,14 @@ Visualization Manager:
       Shape: Arrow
       Topic: /move_base/current_goal
       Value: true
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Marker Topic: /landmark_observed_markers
+      Name: Observed Landmarks
+      Namespaces:
+        {}
+      Queue Size: 100
+      Value: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48

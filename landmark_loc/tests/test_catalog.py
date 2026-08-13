@@ -1,6 +1,9 @@
 # landmark_loc/tests/test_catalog.py
 import math
+import tempfile
+import os
 from landmark_loc import catalog
+from landmark_loc.catalog import load, MapLandmark
 
 
 def test_load_maps_names_to_identities(tmp_path):
@@ -34,3 +37,27 @@ def test_gate_respects_prior_yaw():
     kept = catalog.gate(lm, prior_xyz=(0.0, 0.0, math.pi / 2),
                        max_range=15.0, fov_halfwidth=math.pi / 4)
     assert len(kept) == 1
+
+
+def test_tree8_names_load_as_tree_identity(tmp_path):
+    places = tmp_path / "places.yaml"
+    places.write_text(
+        "bench_1: {x: 1.0, y: 2.0}\n"
+        "tree_8: {x: 10.0, y: 20.0}\n"
+        "tree_8_clone_3: {x: 11.0, y: 21.0}\n")
+    lms = catalog.load(str(places))
+    ids = {lm.name: lm.identity for lm in lms}
+    assert ids["tree_8"] == "tree"
+    assert ids["tree_8_clone_3"] == "tree"
+    assert ids["bench_1"] == "bench"
+
+
+def test_load_reads_yaw_when_present():
+    with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
+        f.write("bench: {x: 1.0, y: 2.0, yaw: 0.5}\n")
+        f.write("lamp_clone: {x: 3.0, y: 4.0}\n")   # no yaw -> None
+        path = f.name
+    lms = {l.name: l for l in load(path)}
+    os.unlink(path)
+    assert abs(lms["bench"].yaw - 0.5) < 1e-9
+    assert lms["lamp_clone"].yaw is None

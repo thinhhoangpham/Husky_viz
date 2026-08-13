@@ -36,7 +36,7 @@ roslaunch launch/move_base_gps_map.launch
 export ROS_IP=172.20.0.1 ROS_MASTER_URI=http://172.20.0.1:11311 ROBOT_HOST_IP=172.20.0.1
 cd ~/Documents/Husky_viz
 source /opt/ros/noetic/setup.bash
-PYTHONPATH=~/Documents/Husky_viz:$PYTHONPATH python3 ~/Documents/Husky_viz/landmark_loc/localizer_node.py
+PYTHONPATH=~/Documents/Husky_viz/.worktrees/constellation-matcher:$PYTHONPATH python3 ~/Documents/Husky_viz/.worktrees/constellation-matcher/landmark_loc/localizer_node.py _places_path:=/home/thinh/Documents/Husky_viz/.worktrees/constellation-matcher/maps/park_places.yaml
 ```
 
 **Terminal 4 — pose-source selector** (fills `/odometry/abs_fix`; starts in `gps` mode):
@@ -59,7 +59,9 @@ docker compose up -d
 docker compose exec operator bash -lc "source /opt/ros/noetic/setup.bash && ./operator/operate.py"
 ```
 
-Watch the robot in a browser: **http://localhost:6080/vnc.html**
+Watch the robot in a browser: **http://localhost:6080/vnc.html**. For the full window (not cut off), use **http://localhost:6080/vnc.html?resize=scale**.
+
+> **Rebuild after editing `operator/entrypoint.sh`:** the operator container bakes `entrypoint.sh` into its image. After changing it (resolution, RViz maximize, etc.), a plain `docker compose up` reuses the old image and your change will NOT apply — you must rebuild: `cd operator && docker compose build && docker compose up -d`.
 
 ## Step 4 — Send a goal (at the `operator>` prompt)
 

@@ -4,12 +4,23 @@
 `solve.associate` matches each observation independently to its nearest
 same-identity map landmark, with NO one-to-one guard. Two different observations
 can therefore associate to the SAME map landmark ("duplicate association"). When
-that happens, `solve.solve_pose` can return a result with n>=2 that is really
-pinned on only ONE distinct landmark -- a phantom, potentially confidently-wrong
-fix that still clears the n>=2 and residual gates.
+that happened at the `solve.solve_pose` level, it could return a result with
+n>=2 that was really pinned on only ONE distinct landmark -- a phantom,
+potentially confidently-wrong fix that still cleared the n>=2 and residual
+gates.
 
-These tests turn that hypothetical into a concrete, reproducible demonstration.
-They are TEST-ONLY; no production code is modified. The guard remains deferred.
+That solve_pose-level defect no longer applies: `solve_pose` now routes
+through `constellation.match` (RANSAC constellation matching), which is
+one-to-one BY CONSTRUCTION -- `_score_transform` keeps, for each candidate map
+landmark, only its closest observation, so two observations can never both
+count as correspondences to the same map landmark. With only two total
+landmarks in this scenario, `constellation.match`'s 3-correspondence floor
+(`_MIN_INLIERS`) also can't be met, so `solve_pose` returns None regardless.
+The `associate()` characterization below remains as documentation of that
+raw (non-deduped) nearest-neighbor function's behavior; it is no longer used
+by `solve_pose`.
+
+These tests are TEST-ONLY; no production code is modified by them.
 """
 import math
 
@@ -97,42 +108,16 @@ def test_associate_can_produce_duplicate_map_landmark():
     assert matched_names == ["bench_2", "bench_2"]
 
 
-def test_duplicate_association_can_pass_gates():
-    """The duplicate slips through solve_pose's n>=2 + residual gates.
-
-    Same inputs as above. Because both observations bind to bench_2, solve_pose
-    fits a rigid transform whose destination points are bench_2 TWICE -- a single
-    distinct landmark. With a lenient residual_gate it still returns a pose with
-    n == 2, i.e. it looks like a two-landmark fix but rests on one point.
-
-    Measured outcome (documented here so the demonstration is self-contained):
-      - The returned pose is (x=0.0, y=2.0, yaw=0.0), rms=2.0, n=2.
-      - The TRUE pose is (0, 0, 0), so the phantom fix is 2.0 m off in y while
-        reporting n=2 and clearing the gate.
-      - residual_gate must be >= the rms (2.0) for it to pass: a tight gate
-        (e.g. 1.0) rejects it (rms 2.0 > 1.0 -> None). So the gap is only
-        exploitable when the residual gate is loose relative to the cluster
-        spacing -- which is exactly the regime a wide tolerance would create.
-    """
+def test_duplicate_association_dropped_by_dedup_not_phantom_fit():
+    """solve_pose now routes through constellation.match, which is one-to-one
+    BY CONSTRUCTION, so the two-benches-onto-one duplicate characterized above
+    (a defect of the raw associate() function) can never reach solve_pose as a
+    phantom fit pinned on one landmark. With only two same-identity benches in
+    this scene, constellation.match also can't clear its own 3-correspondence
+    floor (_MIN_INLIERS), so solve_pose returns None either way."""
     obs = _observations()
-
-    # A tight residual gate DOES catch this particular phantom.
-    strict = solve_pose(obs, _LANDMARKS, _PRIOR,
-                        dist_gate=_DIST_GATE, residual_gate=1.0)
-    assert strict is None, "tight residual gate should reject this phantom"
-
-    # A lenient residual gate lets the phantom through with n>=2.
-    lenient = solve_pose(obs, _LANDMARKS, _PRIOR,
-                        dist_gate=_DIST_GATE, residual_gate=5.0)
-    assert lenient is not None, "lenient gate: expected the phantom to pass"
-    x, y, yaw, rms, n = lenient
-
-    # It reports two correspondences despite resting on ONE distinct landmark.
-    assert n == 2
-
-    # And it is wrong: ~2 m off the true pose (0, 0, 0) in y.
-    true_x, true_y, _ = _TRUE_POSE
-    assert abs(y - true_y) > 1.0, (
-        f"expected a confidently-wrong fix; got y={y} vs true {true_y}"
-    )
-    assert math.hypot(x - true_x, y - true_y) > 1.0
+    for rg in (1.0, 5.0):
+        out = solve_pose(obs, _LANDMARKS, _PRIOR, dist_gate=_DIST_GATE, residual_gate=rg)
+        assert out is None, (
+            f"expected dedup to drop below the 3-correspondence floor, got {out}"
+        )
