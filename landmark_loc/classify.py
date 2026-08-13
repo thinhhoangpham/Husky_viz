@@ -3,8 +3,8 @@
 Bands are centered on the mesh-derived signatures (signatures.MESH_SIGNATURES)
 and widened by DEFAULT_MARGINS to absorb partial views. Deliberately
 CONSERVATIVE: a cluster matching zero or more-than-one type is 'unknown' and is
-dropped downstream. Trees (round, tall, trunk-radius footprint) are recognized
-only to EXCLUDE them from identity; they remain obstacles for the costmap.
+dropped downstream. Trees are recognized by their vertical profile (a wide
+canopy band above a narrow trunk) and EMITTED as the 'tree' landmark type.
 """
 from dataclasses import dataclass
 from landmark_loc.signatures import MESH_SIGNATURES, SIGNATURE_FAMILIES
@@ -19,37 +19,14 @@ DEFAULT_MARGINS = {
     "aspect_split": 1.8,   # major/minor above this = elongated (bench-like)
 }
 
-# Tree exclusion. A tree is a ROUND footprint (aspect < aspect_split) with a
-# trunk-scale minor radius. It is identified by that FOOTPRINT, not by height:
-# the localizer crops points to z in [-0.73, 1.2], so every cluster is <= 1.93 m
-# tall and real trunks appear SHORT. A height floor would make the gate dead
-# (all trees fall through to the bin band, bin height 1.041 +/- 1.0). So there
-# is NO minimum-height requirement for the footprint tells.
-#
-# The gate must catch real trunks (arbolpartes4 radius ~0.30 -> ~0.6 m minor,
-# tree_8 radius ~0.45 -> ~0.9 m minor, stumps down to ~0.4 m minor) WITHOUT
-# swallowing the four landmark families. Real trunk minors (~0.4-0.9) overlap
-# the bin (0.382) and lamp (0.483) footprints, so three independent trunk tells,
-# ANY of which suffices:
-#   1. wide trunk: minor >= _TREE_TRUNK_MINOR (0.50, wider than bin 0.382 AND
-#      lamp 0.483) -> catches tree_8, arbolpartes4, tall trunks. Bin/lamp spared.
-#   2. round stump: clearly round (aspect <= _TREE_STUMP_ASPECT) AND not
-#      lamp-tall (height < _LAMP_BAND_BOTTOM). Catches thin stumps (minor ~0.4)
-#      whose footprint sits in the bin band but whose aspect (~1.25) is far
-#      rounder than the bin (1.79). Spares the bin (aspect 1.79 > 1.5) and the
-#      lamp (genuinely tall: 3.148 >= lamp band bottom; the crop caps trunks at
-#      1.93 m so no trunk can be lamp-tall).
-#   3. tall trunk: height >= _TREE_TALL_HEIGHT (> lamp band top) -> catches thin,
-#      very tall trunks in unclipped views. Lamp (3.148 < 3.95) spared.
-# Bench/table are elongated (aspect >= aspect_split) so tell (1)-(3) never see
-# them.
-_TREE_MIN_MINOR = 0.30       # below this is a lamp pole / noise, not a trunk
-_TREE_MAX_MINOR = 1.0        # above this is not a single trunk
-_TREE_TRUNK_MINOR = 0.50     # > bin 0.382 and lamp 0.483: a definite trunk radius
-_TREE_STUMP_ASPECT = 1.5     # rounder than the bin (aspect 1.79): a round stump
-_LAMP_BAND_BOTTOM = 2.148    # lamp 3.148 - height margin 1.0; a trunk (<=1.93 m
-                             # under the crop) is never this tall, the lamp is
-_TREE_TALL_HEIGHT = 3.95     # > lamp height band top (3.148 + 0.8): a definite tree
+# Tree = a wide canopy band ABOVE a narrow trunk. Keys on the vertical PROFILE
+# (view-robust), not the canopy's absolute size (which varies 3.7-4.75 m in-sim).
+# Thresholds measured live (13 trees, 4 viewpoints): canopy begins by z~2.75
+# (p50 2.25), canopy width 2.9-4.75 m; lamps stay <1 m wide at every height.
+_TREE_CANOPY_MIN_Z = 2.5      # a wide band at/above this height is a canopy
+_TREE_CANOPY_MIN_WIDTH = 2.0  # canopy horizontal width floor (lamp head < 1 m)
+_TREE_BAND = 0.5              # z-band thickness for the profile scan
+_TREE_BAND_MIN_PTS = 3        # a band needs this many points to measure width
 
 
 @dataclass
@@ -74,29 +51,33 @@ def _matches(cluster, fam, m):
     return elongated == sig_elongated
 
 
-def _is_tree(cluster, margins):
-    """A round, trunk-footprint cluster — never a landmark family.
+def _band_width(pts, z0, z1):
+    """Horizontal bbox-diagonal width of points whose z is in [z0, z1)."""
+    m = (pts[:, 2] >= z0) & (pts[:, 2] < z1)
+    if int(m.sum()) < _TREE_BAND_MIN_PTS:
+        return 0.0
+    xy = pts[m][:, :2]
+    return float(((xy[:, 0].max() - xy[:, 0].min()) ** 2
+                  + (xy[:, 1].max() - xy[:, 1].min()) ** 2) ** 0.5)
 
-    Runs BEFORE family matching and wins, so a real trunk that also falls inside
-    a family band (bin or lamp) is still excluded from identity. Identified by
-    the ROUND, trunk-scale FOOTPRINT — NOT by a height floor, because the crop
-    caps clusters at ~1.93 m and real trunks appear short. See the module-level
-    comment for the three tells and why each spares the four families.
-    """
-    aspect = cluster.major / max(cluster.minor, 1e-3)
-    if aspect >= margins["aspect_split"]:
-        return False  # elongated: bench / table
-    if not (_TREE_MIN_MINOR <= cluster.minor <= _TREE_MAX_MINOR):
+
+def _is_tree(cluster, margins):
+    """True when the cluster has a wide canopy band at z >= _TREE_CANOPY_MIN_Z.
+
+    A lamp is narrow (<_TREE_CANOPY_MIN_WIDTH) at every height, a bench/bin has no
+    band that high, so neither can satisfy this. Uses the cluster's raw points
+    (the vertical profile), not its bbox. Synthetic clusters with points=None are
+    never trees (the four rigid-type tests build those)."""
+    pts = cluster.points
+    if pts is None or len(pts) == 0:
         return False
-    # (1) wide trunk radius
-    if cluster.minor >= _TREE_TRUNK_MINOR:
-        return True
-    # (3) thin but clearly taller than any lamp
-    if cluster.height >= _TREE_TALL_HEIGHT:
-        return True
-    # (2) round stump: rounder than a bin and not lamp-tall
-    return (aspect <= _TREE_STUMP_ASPECT
-            and cluster.height < _LAMP_BAND_BOTTOM)
+    top = float(pts[:, 2].max())
+    z = _TREE_CANOPY_MIN_Z
+    while z < top:
+        if _band_width(pts, z, z + _TREE_BAND) >= _TREE_CANOPY_MIN_WIDTH:
+            return True
+        z += _TREE_BAND
+    return False
 
 
 def classify_cluster(cluster, margins=DEFAULT_MARGINS):
@@ -114,7 +95,7 @@ def to_observations(clusters, margins=DEFAULT_MARGINS):
     out = []
     for c in clusters:
         ident = classify_cluster(c, margins)
-        if ident in ("tree", "unknown"):
+        if ident == "unknown":
             continue
         out.append(Observation(identity=ident,
                                x=c.centroid_xy[0], y=c.centroid_xy[1]))

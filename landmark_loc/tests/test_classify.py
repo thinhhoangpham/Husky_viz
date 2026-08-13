@@ -1,4 +1,5 @@
 # landmark_loc/tests/test_classify.py
+import numpy as np
 from landmark_loc import classify
 from landmark_loc.segment import Cluster
 
@@ -6,6 +7,26 @@ from landmark_loc.segment import Cluster
 def _c(major, minor, height):
     return Cluster(points=None, centroid_xy=(1.0, 2.0),
                    major=major, minor=minor, height=height)
+
+
+def _canopy_cluster(trunk_w=0.4, canopy_w=4.0, top_z=6.0):
+    """Synthetic tree: a narrow trunk (z 0..2.4) under a wide canopy (z 2.5..top).
+    Returns a Cluster whose `points` produce the intended vertical profile."""
+    pts = []
+    # trunk: narrow column of points from z=0 to 2.4
+    for z in np.linspace(0.0, 2.4, 12):
+        pts += [(0.0, 0.0, z), (trunk_w, 0.0, z)]
+    # canopy: wide disc of points from z=2.5 to top_z
+    for z in np.linspace(2.5, top_z, 10):
+        for a in np.linspace(0, 2 * np.pi, 12, endpoint=False):
+            r = canopy_w / 2.0
+            pts.append((r * np.cos(a), r * np.sin(a), z))
+    arr = np.array(pts, dtype=float)
+    major = arr[:, 0].max() - arr[:, 0].min()
+    minor = arr[:, 1].max() - arr[:, 1].min()
+    height = arr[:, 2].max() - arr[:, 2].min()
+    return Cluster(points=arr, centroid_xy=(1.0, 2.0),
+                   major=float(major), minor=float(minor), height=float(height))
 
 
 def test_classifies_each_type_from_ideal_dims():
@@ -16,35 +37,34 @@ def test_classifies_each_type_from_ideal_dims():
         assert got == fam, f"{fam} misclassified as {got}"
 
 
-def test_round_tall_trunk_is_tree_not_lamp():
-    # tree trunk: small round footprint but tall with trunk radius > lamp pole
-    got = classify.classify_cluster(_c(major=0.45, minor=0.42, height=4.0))
-    assert got == "tree"
+def test_wide_canopy_over_trunk_is_tree():
+    assert classify.classify_cluster(_canopy_cluster()) == "tree"
 
 
-def test_real_trunks_inside_lamp_height_band_are_tree_not_lamp():
-    # Adversarial: trunks whose height sits INSIDE the lamp height band and whose
-    # footprint falls inside the lamp footprint band. They must be excluded from
-    # identity (tree), never emitted as a phantom lamp landmark.
-    for h in (2.5, 3.0, 3.5):
-        got = classify.classify_cluster(_c(major=0.6, minor=0.5, height=h))
-        assert got == "tree", f"trunk at height {h} misclassified as {got}"
-    # exact reviewer example
-    assert classify.classify_cluster(_c(major=0.6, minor=0.5, height=3.5)) == "tree"
+def test_min_canopy_width_is_tree():
+    # width exactly at the 2.0 m threshold, high band -> tree
+    assert classify.classify_cluster(_canopy_cluster(canopy_w=2.0, top_z=5.0)) == "tree"
 
 
-def test_short_trunks_under_crop_are_tree_not_bin():
-    # The localizer crops z in [-0.73, 1.2] -> clusters <= 1.93 m, so real trees
-    # appear SHORT. These trunk/stump footprints must classify as tree (dropped),
-    # NOT as phantom bins.
-    short_trunks = [
-        (0.9, 0.85, 1.8),   # tree_8 trunk (radius ~0.45 -> dia ~0.9)
-        (0.6, 0.55, 1.6),   # arbolpartes4 trunk (radius ~0.30 -> dia ~0.6)
-        (0.5, 0.4, 1.5),    # stump
-    ]
-    for mj, mn, h in short_trunks:
-        got = classify.classify_cluster(_c(major=mj, minor=mn, height=h))
-        assert got == "tree", f"short trunk {mj}/{mn}/{h} misclassified as {got}"
+def test_thin_tall_pole_is_not_tree():
+    # a lamp-like column: narrow (<2 m) at every height -> NOT tree
+    pts = []
+    for z in np.linspace(0.0, 3.0, 30):
+        pts += [(0.0, 0.0, z), (0.5, 0.0, z)]  # 0.5 m wide the whole way up
+    arr = np.array(pts, dtype=float)
+    c = Cluster(points=arr, centroid_xy=(1.0, 2.0), major=0.5, minor=0.5, height=3.0)
+    assert classify.classify_cluster(c) != "tree"
+
+
+def test_low_wide_object_is_not_tree():
+    # a bench-like object: wide but only low (no band at z >= 2.5) -> NOT tree
+    pts = []
+    for z in np.linspace(0.0, 0.9, 6):
+        for x in np.linspace(0.0, 2.5, 8):
+            pts.append((x, 0.0, z))
+    arr = np.array(pts, dtype=float)
+    c = Cluster(points=arr, centroid_xy=(1.0, 2.0), major=2.5, minor=0.4, height=0.9)
+    assert classify.classify_cluster(c) != "tree"
 
 
 def test_ideal_bin_is_still_bin():
@@ -67,15 +87,20 @@ def test_ambiguous_between_bands_is_unknown():
     assert got == "unknown"
 
 
-def test_to_observations_drops_tree_and_unknown():
+def test_to_observations_emits_tree_drops_unknown():
+    bench_dims = _dims("bench")
     clusters = [
-        _c(*_dims("bench")),
-        _c(major=0.45, minor=0.42, height=4.0),   # tree
-        _c(major=1.9, minor=1.3, height=0.9),     # unknown
+        Cluster(points=None, centroid_xy=(1.0, 2.0), major=bench_dims[0],
+                minor=bench_dims[1], height=bench_dims[2]),
+        _canopy_cluster(),                                            # tree -> emitted
+        Cluster(points=None, centroid_xy=(3.0, 4.0), major=1.9,
+                minor=1.3, height=0.9),                               # unknown -> dropped
     ]
     obs = classify.to_observations(clusters)
-    assert len(obs) == 1 and obs[0].identity == "bench"
-    assert obs[0].x == 1.0 and obs[0].y == 2.0
+    idents = sorted(o.identity for o in obs)
+    assert idents == ["bench", "tree"]
+    tree_obs = [o for o in obs if o.identity == "tree"][0]
+    assert (tree_obs.x, tree_obs.y) == (1.0, 2.0)
 
 
 def _dims(fam):
