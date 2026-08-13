@@ -59,7 +59,9 @@ docker compose up -d
 docker compose exec operator bash -lc "source /opt/ros/noetic/setup.bash && ./operator/operate.py"
 ```
 
-Watch the robot in a browser: **http://localhost:6080/vnc.html**
+Watch the robot in a browser: **http://localhost:6080/vnc.html**. For the full window (not cut off), use **http://localhost:6080/vnc.html?resize=scale**.
+
+> **Rebuild after editing `operator/entrypoint.sh`:** the operator container bakes `entrypoint.sh` into its image. After changing it (resolution, RViz maximize, etc.), a plain `docker compose up` reuses the old image and your change will NOT apply — you must rebuild: `cd operator && docker compose build && docker compose up -d`.
 
 ## Step 4 — Send a goal (at the `operator>` prompt)
 

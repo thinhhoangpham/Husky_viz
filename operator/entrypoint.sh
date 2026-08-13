@@ -3,6 +3,7 @@
 # master hands peers a reachable callback address (the ROS_IP gotcha).
 set -euo pipefail
 source /opt/ros/noetic/setup.bash
+export DISABLE_ROS1_EOL_WARNINGS=1
 
 CONTAINER_IP="$(ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | head -n1)"
 export ROS_IP="${CONTAINER_IP}"
@@ -16,6 +17,7 @@ export ROS_IP="${CONTAINER_IP}"
 cat > /etc/ros_env.sh <<EOF
 source /opt/ros/noetic/setup.bash
 export ROS_IP="${CONTAINER_IP}"
+export DISABLE_ROS1_EOL_WARNINGS=1
 EOF
 
 echo "[operator] ROS_IP=${ROS_IP}"
@@ -25,6 +27,22 @@ if [ "${OPERATOR_RVIZ:-1}" = "1" ]; then
   export DISPLAY=:1
   Xvfb :1 -screen 0 1280x720x24 &
   sleep 1
+
+  # fluxbox has no wmctrl/xdotool in this image, so force RViz maximized via
+  # fluxbox's own apps-config rule instead. Must be written before `fluxbox &`
+  # so fluxbox loads it on startup.
+  mkdir -p /root/.fluxbox
+  cat > /root/.fluxbox/apps <<'EOF'
+[app] (name=rviz)
+  [Maximized] {yes}
+  [Dimensions] {100% 100%}
+[end]
+[app] (class=rviz)
+  [Maximized] {yes}
+  [Dimensions] {100% 100%}
+[end]
+EOF
+
   fluxbox &
   x11vnc -display :1 -forever -nopw -quiet -bg
   websockify --web=/usr/share/novnc 6080 localhost:5900 &
