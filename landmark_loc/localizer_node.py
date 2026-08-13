@@ -110,7 +110,7 @@ def main():
         min_pts=rospy.get_param("~min_pts", 10),
         max_extent=rospy.get_param("~max_extent", 6.0),  # measured per tree-landmark spec: raised so canopies survive clustering
         constellation_tol=rospy.get_param("~constellation_tol", 1.0),
-        dist_gate=rospy.get_param("~dist_gate", 4.0),  # nearest-neighbor match radius (map metres); must exceed odom drift, stay under same-type landmark spacing
+        dist_gate=rospy.get_param("~dist_gate", 6.0),  # nearest-neighbor match radius (map metres); must exceed odom drift, stay under same-type landmark spacing
         max_prior_dist=rospy.get_param("~max_prior_dist", 5.0),
         residual_gate=rospy.get_param("~residual_gate", 1.0),
         fov_halfwidth=rospy.get_param("~fov_halfwidth", math.pi),
