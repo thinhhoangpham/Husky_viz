@@ -153,8 +153,7 @@ def main():
         clusters = segment.cluster(cropped, p["link_dist"], p["min_pts"], p["max_extent"])
         obs = classify.to_observations(clusters)
         gated = catalog.gate(landmarks, prior, p["max_range"], p["fov_halfwidth"])
-        _pairs = solve.constellation.match(obs, gated, prior, p["constellation_tol"],
-                                            p["max_prior_dist"])
+        _pairs = solve.associate(obs, gated, prior, p["constellation_tol"])
         result = solve.solve_pose(obs, gated, prior, p["constellation_tol"], p["residual_gate"],
                                    p["max_prior_dist"])
         if result is None:

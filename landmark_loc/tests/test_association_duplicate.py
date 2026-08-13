@@ -9,12 +9,15 @@ n>=2 that was really pinned on only ONE distinct landmark -- a phantom,
 potentially confidently-wrong fix that still cleared the n>=2 and residual
 gates.
 
-That solve_pose-level defect is now FIXED: `solve_pose` routes association
-through `constellation.match`, which is one-to-one by construction, so two
-observations can no longer bind to a single map landmark. The `associate()`
-characterization below remains as legacy documentation of the underlying
-function's behavior -- `associate` itself is unchanged, now unused in
-production, and exercised only by the characterization tests in this file.
+That solve_pose-level defect is now handled by a one-to-one DEDUP GUARD
+(EXPERIMENTAL): `solve_pose` routes association through `associate` (plain
+nearest-neighbor under the prior), then `_dedupe_one_to_one` keeps only the
+closer of any two observations that claim the same map landmark, discarding
+the other. So two observations can no longer both COUNT as correspondences to
+a single map landmark -- but with only two total landmarks in this scenario,
+dropping the duplicate leaves too few pairs (<3) for solve_pose to return a
+fit at all. The `associate()` characterization below remains as documentation
+of the underlying function's raw (non-deduped) behavior.
 
 These tests are TEST-ONLY; no production code is modified by them.
 """
@@ -23,7 +26,6 @@ import math
 from landmark_loc.solve import associate, solve_pose
 from landmark_loc.classify import Observation
 from landmark_loc.catalog import MapLandmark
-from landmark_loc import constellation
 
 
 # ---------------------------------------------------------------------------
@@ -105,18 +107,17 @@ def test_associate_can_produce_duplicate_map_landmark():
     assert matched_names == ["bench_2", "bench_2"]
 
 
-def test_duplicate_association_no_longer_passes_gates():
-    """solve_pose now uses the constellation matcher, which is one-to-one, so the
-    two-benches-onto-one phantom characterized for associate() can no longer occur
-    at the solve_pose level. With only two same-type benches and a yaw-wrong prior,
-    the matcher either pairs them correctly (distinct) or returns too few pairs;
-    it never binds both observations to a single bench."""
+def test_duplicate_association_dropped_by_dedup_not_phantom_fit():
+    """solve_pose now routes through associate() + a one-to-one dedup guard
+    (_dedupe_one_to_one), so the two-benches-onto-one duplicate characterized
+    above can no longer masquerade as a 2-correspondence fit: the dedup keeps
+    only the closer of the two observations, discarding the other. With only
+    two same-identity benches in this scene, that leaves a single surviving
+    pair -- below the 3-correspondence floor -- so solve_pose must return
+    None. It never returns a phantom fit pinned on one landmark."""
     obs = _observations()
     for rg in (1.0, 5.0):
-        out = solve_pose(obs, _LANDMARKS, _PRIOR, dist_gate=0.3, residual_gate=rg)
-        if out is not None:
-            _, _, _, _, n = out
-            # if it returns a fit, it rests on TWO DISTINCT benches, not one
-            pairs = constellation.match(obs, _LANDMARKS, _PRIOR, 0.3)
-            names = {lm.name for _, lm in pairs}
-            assert len(names) == len({id(lm) for _, lm in pairs})
+        out = solve_pose(obs, _LANDMARKS, _PRIOR, dist_gate=_DIST_GATE, residual_gate=rg)
+        assert out is None, (
+            f"expected dedup to drop below the 3-correspondence floor, got {out}"
+        )

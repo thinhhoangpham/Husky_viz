@@ -1,15 +1,18 @@
 """Associate observed landmarks to catalog landmarks and solve the robot pose.
 
-Association is now constellation-based (see `constellation.match`): observations
-are identified by their prior-invariant pairwise geometry rather than by
-nearest-neighbor-under-prior, so it survives a badly drifted prior. The pose is
-the 2D rigid transform (Umeyama/Kabsch) mapping observed (robot-frame) points
-onto their matched (map-frame) points; that transform IS the robot's map pose.
-A fit with < 3 correspondences or RMS residual above the gate is rejected
-(returns None) so a bad scan cannot corrupt the downstream EKF. Fewer than 3
-correspondences is geometrically ambiguous under reflection (a 2-point fit can
-yield a confidently-wrong, flipped pose with low residual), so 3 is the floor
-that removes that ambiguity.
+EXPERIMENTAL: `solve_pose` currently uses odom-guess nearest-neighbor
+association (`associate`) with a one-to-one dedup guard, not constellation
+matching. The odom-based prior is assumed to be only a few metres off, so each
+observed landmark's correct map landmark is simply the nearest same-type
+landmark under the prior; `constellation.match` is left intact (and still
+covered by its own tests) so this can be flipped back or combined later. The
+pose is the 2D rigid transform (Umeyama/Kabsch) mapping observed (robot-frame)
+points onto their matched (map-frame) points; that transform IS the robot's
+map pose. A fit with < 3 correspondences or RMS residual above the gate is
+rejected (returns None) so a bad scan cannot corrupt the downstream EKF. Fewer
+than 3 correspondences is geometrically ambiguous under reflection (a 2-point
+fit can yield a confidently-wrong, flipped pose with low residual), so 3 is
+the floor that removes that ambiguity.
 """
 import math
 import numpy as np
@@ -57,10 +60,23 @@ def rigid_transform_2d(src_xy, dst_xy):
     return float(t[0]), float(t[1]), yaw, rms
 
 
+def _dedupe_one_to_one(pairs, observations, prior_xyz):
+    """If two observations claim the same map landmark, keep only the closer one
+    (smaller obs->landmark distance in the map frame). Returns filtered pairs."""
+    best_for_lm = {}   # id(landmark) -> (dist, (obs, lm))
+    for o, lm in pairs:
+        mx, my = _to_map(o, prior_xyz)
+        d = math.hypot(lm.x - mx, lm.y - my)
+        key = id(lm)
+        if key not in best_for_lm or d < best_for_lm[key][0]:
+            best_for_lm[key] = (d, (o, lm))
+    return [v[1] for v in best_for_lm.values()]
+
+
 def solve_pose(observations, gated_landmarks, prior_xyz, dist_gate, residual_gate,
                 max_prior_dist=5.0):
-    pairs = constellation.match(observations, gated_landmarks, prior_xyz, dist_gate,
-                                 max_prior_dist)
+    pairs = associate(observations, gated_landmarks, prior_xyz, dist_gate)
+    pairs = _dedupe_one_to_one(pairs, observations, prior_xyz)
     if len(pairs) < 3:
         return None
     src = np.array([[o.x, o.y] for o, _ in pairs])

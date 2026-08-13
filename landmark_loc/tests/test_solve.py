@@ -50,24 +50,41 @@ def test_solve_pose_rejects_high_residual():
     assert out is None  # residual too high
 
 
-def test_solve_pose_matcher_recovers_under_wrong_prior():
-    # "wrong" but within realistic short-term odom drift of the true
-    # constellation centroid (~4.67, 1.0) -- i.e. within max_prior_dist
-    # (default 5m) of the correct constellation, per the primary prior
-    # filter in constellation.match. See test_far_constellation_rejected_by_prior_filter
-    # for the case where the prior is farther than max_prior_dist.
+def test_solve_pose_recovers_under_small_prior_error():
+    # The nearest-neighbor matcher (associate) relies on the prior being only a
+    # few metres off, so each observation's map-frame projection still lands
+    # closest to its OWN true landmark. Here the prior is off by (0.3, 0.2, 0.05)
+    # from truth -- realistic short-term odom drift -- and the fit should still
+    # recover the true pose exactly once the rigid transform is solved.
     lms = [MapLandmark("a", "bench", 5.0, 1.0),
            MapLandmark("b", "lamp", 6.0, -2.0),
            MapLandmark("c", "garden_table", 3.0, 4.0)]
     true = (2.0, -1.0, 0.5)
     obs = _obs_from_truth(true, lms)
-    wrong_prior = (6.0, 3.0, 1.2)  # off from truth, but realistically close
-    out = solve.solve_pose(obs, lms, prior_xyz=wrong_prior,
-                           dist_gate=0.3, residual_gate=0.5)
+    small_wrong_prior = (2.3, -0.8, 0.55)  # a few decimeters/radians off
+    out = solve.solve_pose(obs, lms, prior_xyz=small_wrong_prior,
+                           dist_gate=1.0, residual_gate=0.5)
     assert out is not None
     x, y, yaw, rms, n = out
     assert n == 3 and rms < 1e-6
     assert abs(x - 2.0) < 1e-6 and abs(y + 1.0) < 1e-6
+
+
+def test_solve_pose_fails_under_large_prior_error():
+    # With a badly wrong prior (large odom drift), nearest-neighbor association
+    # under the prior projects observations far from their true landmarks, so
+    # the tight dist_gate rejects them and solve_pose returns None. This is the
+    # tradeoff versus constellation matching: association now depends on the
+    # prior being accurate to within dist_gate, not just within max_prior_dist.
+    lms = [MapLandmark("a", "bench", 5.0, 1.0),
+           MapLandmark("b", "lamp", 6.0, -2.0),
+           MapLandmark("c", "garden_table", 3.0, 4.0)]
+    true = (2.0, -1.0, 0.5)
+    obs = _obs_from_truth(true, lms)
+    wrong_prior = (6.0, 3.0, 1.2)  # far off from truth
+    out = solve.solve_pose(obs, lms, prior_xyz=wrong_prior,
+                           dist_gate=0.3, residual_gate=0.5)
+    assert out is None
 
 
 def test_solve_pose_accepts_clean_fit():
