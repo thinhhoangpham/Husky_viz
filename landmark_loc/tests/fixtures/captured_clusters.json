@@ -1,0 +1,167 @@
+[
+ {
+  "i": 0,
+  "old_ident": "unknown",
+  "n": 16,
+  "major": 0.457,
+  "minor": 0.25,
+  "height": 2.514,
+  "cx": -7.85,
+  "cy": -4.74,
+  "range": 9.2
+ },
+ {
+  "i": 1,
+  "old_ident": "unknown",
+  "n": 12,
+  "major": 0.74,
+  "minor": 0.307,
+  "height": 0.435,
+  "cx": -3.43,
+  "cy": -2.61,
+  "range": 4.3
+ },
+ {
+  "i": 2,
+  "old_ident": "unknown",
+  "n": 57,
+  "major": 2.097,
+  "minor": 1.292,
+  "height": 3.096,
+  "cx": -8.76,
+  "cy": -11.14,
+  "range": 14.2
+ },
+ {
+  "i": 3,
+  "old_ident": "unknown",
+  "n": 17,
+  "major": 0.621,
+  "minor": 0.261,
+  "height": 0.354,
+  "cx": -1.89,
+  "cy": -6.54,
+  "range": 6.8
+ },
+ {
+  "i": 4,
+  "old_ident": "unknown",
+  "n": 13,
+  "major": 0.435,
+  "minor": 0.119,
+  "height": 2.533,
+  "cx": 2.57,
+  "cy": -10.94,
+  "range": 11.2
+ },
+ {
+  "i": 5,
+  "old_ident": "unknown",
+  "n": 11,
+  "major": 0.983,
+  "minor": 0.475,
+  "height": 3.04,
+  "cx": 3.25,
+  "cy": -7.45,
+  "range": 8.1
+ },
+ {
+  "i": 6,
+  "old_ident": "unknown",
+  "n": 18,
+  "major": 1.104,
+  "minor": 0.716,
+  "height": 4.393,
+  "cx": 5.09,
+  "cy": -6.45,
+  "range": 8.2
+ },
+ {
+  "i": 7,
+  "old_ident": "unknown",
+  "n": 17,
+  "major": 1.36,
+  "minor": 0.592,
+  "height": 2.692,
+  "cx": 6.17,
+  "cy": -4.93,
+  "range": 7.9
+ },
+ {
+  "i": 8,
+  "old_ident": "unknown",
+  "n": 49,
+  "major": 1.521,
+  "minor": 1.502,
+  "height": 3.327,
+  "cx": 14.0,
+  "cy": 1.72,
+  "range": 14.1
+ },
+ {
+  "i": 9,
+  "old_ident": "unknown",
+  "n": 16,
+  "major": 0.2,
+  "minor": 0.08,
+  "height": 0.484,
+  "cx": 4.35,
+  "cy": 2.01,
+  "range": 4.8
+ },
+ {
+  "i": 10,
+  "old_ident": "unknown",
+  "n": 238,
+  "major": 0.119,
+  "minor": 0.064,
+  "height": 2.089,
+  "cx": 1.39,
+  "cy": 0.73,
+  "range": 1.6
+ },
+ {
+  "i": 11,
+  "old_ident": "unknown",
+  "n": 14,
+  "major": 0.511,
+  "minor": 0.238,
+  "height": 2.505,
+  "cx": 7.19,
+  "cy": 8.4,
+  "range": 11.1
+ },
+ {
+  "i": 12,
+  "old_ident": "bench",
+  "n": 100,
+  "major": 1.769,
+  "minor": 0.692,
+  "height": 0.44,
+  "cx": -0.37,
+  "cy": 4.61,
+  "range": 4.6
+ },
+ {
+  "i": 13,
+  "old_ident": "trash_bin_1",
+  "n": 16,
+  "major": 0.537,
+  "minor": 0.404,
+  "height": 1.679,
+  "cx": -0.94,
+  "cy": 7.24,
+  "range": 7.3
+ },
+ {
+  "i": 14,
+  "old_ident": "lamp",
+  "n": 23,
+  "major": 0.703,
+  "minor": 0.398,
+  "height": 2.458,
+  "cx": -7.58,
+  "cy": 0.52,
+  "range": 7.6
+ }
+]
