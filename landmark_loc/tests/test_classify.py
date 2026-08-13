@@ -112,10 +112,16 @@ def test_to_observations_emits_tree_drops_unknown():
     assert bench_obs.x == pytest.approx(1.0 + bench_r * ux)
     assert bench_obs.y == pytest.approx(2.0 + bench_r * uy)
 
-    tree_obs = [o for o in obs if o.identity == "tree"][0]
+    # Tree position is derived from the TRUNK (base of points), not the
+    # centroid_xy (1.0, 2.0) placeholder, and not the canopy blob mean.
+    tree_cluster = clusters[1]
+    trunk_x, trunk_y = classify._trunk_xy(tree_cluster.points)
     tree_r = classify.KNOWN_RADIUS["tree"]
-    assert tree_obs.x == pytest.approx(1.0 + tree_r * ux)
-    assert tree_obs.y == pytest.approx(2.0 + tree_r * uy)
+    tr = math.hypot(trunk_x, trunk_y)
+    tux, tuy = trunk_x / tr, trunk_y / tr
+    tree_obs = [o for o in obs if o.identity == "tree"][0]
+    assert tree_obs.x == pytest.approx(trunk_x + tree_r * tux)
+    assert tree_obs.y == pytest.approx(trunk_y + tree_r * tuy)
 
 
 def test_to_observations_offset_is_view_invariant():
@@ -150,6 +156,98 @@ def test_to_observations_centroid_at_origin_unchanged():
     obs = classify.to_observations([c])
     assert len(obs) == 1
     assert (obs[0].x, obs[0].y) == (0.0, 0.0)
+
+
+def _offset_canopy_tree_cluster():
+    """Synthetic tree: a narrow trunk column at (5.0, 2.0) plus a wide canopy
+    blob offset to (7.0, 4.0). The naive centroid (mean of all points) is
+    pulled toward the canopy (~6, 3); the trunk xy should stay at (5, 2)."""
+    pts = []
+    for z in np.linspace(0.0, 2.0, 12):
+        pts += [(5.0, 2.0, z), (5.0 + 0.1, 2.0, z)]
+    for z in np.linspace(2.5, 4.0, 10):
+        for a in np.linspace(0, 2 * np.pi, 24, endpoint=False):
+            r = 3.8 / 2.0
+            pts.append((7.0 + r * np.cos(a), 4.0 + r * np.sin(a), z))
+    arr = np.array(pts, dtype=float)
+    major = arr[:, 0].max() - arr[:, 0].min()
+    minor = arr[:, 1].max() - arr[:, 1].min()
+    height = arr[:, 2].max() - arr[:, 2].min()
+    return Cluster(points=arr, centroid_xy=(float(arr[:, 0].mean()), float(arr[:, 1].mean())),
+                   major=float(major), minor=float(minor), height=float(height))
+
+
+def test_trunk_xy_returns_trunk_not_blended_mean():
+    c = _offset_canopy_tree_cluster()
+    trunk_x, trunk_y = classify._trunk_xy(c.points)
+    assert trunk_x == pytest.approx(5.0, abs=0.2)
+    assert trunk_y == pytest.approx(2.0, abs=0.2)
+    # NOT anywhere near the blended centroid (~6, 3)
+    assert math.hypot(trunk_x - 6.0, trunk_y - 3.0) > 0.5
+
+
+def test_trunk_xy_none_for_missing_points():
+    assert classify._trunk_xy(None) is None
+    assert classify._trunk_xy(np.zeros((0, 3))) is None
+
+
+def test_trunk_xy_falls_back_when_too_few_low_points():
+    # Only 2 points in the low band (< _TRUNK_BAND_MIN of 3) -> fallback signal.
+    pts = np.array([
+        (5.0, 2.0, 0.0),
+        (5.0, 2.0, 0.5),
+        (7.0, 4.0, 3.0),
+        (7.0, 4.0, 3.5),
+    ])
+    assert classify._trunk_xy(pts) is None
+
+
+def test_to_observations_tree_position_near_trunk_not_canopy():
+    c = _offset_canopy_tree_cluster()
+    assert classify.classify_cluster(c) == "tree"
+    obs = classify.to_observations([c])
+    assert len(obs) == 1
+    o = obs[0]
+    assert o.identity == "tree"
+    dist_to_trunk = math.hypot(o.x - 5.0, o.y - 2.0)
+    dist_to_canopy = math.hypot(o.x - 7.0, o.y - 4.0)
+    assert dist_to_trunk < dist_to_canopy
+    assert dist_to_trunk < 1.0  # trunk (5,2) pushed out by 0.45m radius
+
+
+def test_to_observations_tree_falls_back_to_centroid_when_no_trunk_band():
+    # Force a cluster classified as tree (via monkeypatch-free trick: build
+    # points with a valid canopy profile) but with too few low-band points by
+    # starting the base high with only 2 points below base+_TRUNK_BAND.
+    pts = []
+    # 2 low points only, at the very base
+    pts += [(5.0, 2.0, 0.0), (5.0, 2.0, 0.05)]
+    # wide canopy so it's classified as tree
+    for z in np.linspace(2.5, 4.0, 10):
+        for a in np.linspace(0, 2 * np.pi, 24, endpoint=False):
+            r = 3.8 / 2.0
+            pts.append((7.0 + r * np.cos(a), 4.0 + r * np.sin(a), z))
+    arr = np.array(pts, dtype=float)
+    major = arr[:, 0].max() - arr[:, 0].min()
+    minor = arr[:, 1].max() - arr[:, 1].min()
+    height = arr[:, 2].max() - arr[:, 2].min()
+    centroid = (float(arr[:, 0].mean()), float(arr[:, 1].mean()))
+    c = Cluster(points=arr, centroid_xy=centroid, major=float(major),
+                minor=float(minor), height=float(height))
+    assert classify.classify_cluster(c) == "tree"
+    assert classify._trunk_xy(c.points) is None  # confirms fallback path taken
+
+    obs = classify.to_observations([c])
+    assert len(obs) == 1
+    o = obs[0]
+    # Falls back to centroid_xy + push-out; must not crash and must not equal
+    # the (never-computed) trunk-based position.
+    cx, cy = centroid
+    r = math.hypot(cx, cy)
+    radius = classify.KNOWN_RADIUS["tree"]
+    ux, uy = cx / r, cy / r
+    assert o.x == pytest.approx(cx + radius * ux)
+    assert o.y == pytest.approx(cy + radius * uy)
 
 
 def _dims(fam):

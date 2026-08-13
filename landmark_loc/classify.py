@@ -28,6 +28,9 @@ _TREE_CANOPY_MIN_Z = 2.5      # a wide band at/above this height is a canopy
 _TREE_CANOPY_MIN_WIDTH = 2.0  # canopy horizontal width floor (lamp head < 1 m)
 _TREE_BAND = 0.5              # z-band thickness for the profile scan
 _TREE_BAND_MIN_PTS = 3        # a band needs this many points to measure width
+_TRUNK_BAND = 1.0             # trunk region height above cluster base, used to
+                               # estimate a tree's stable position from the base
+                               # (trunk) rather than the wandering canopy mean
 
 # Known object radius by identity, metres. The lidar only sees the near face of
 # an object, so a cluster's raw centroid sits ~one radius TOWARD the robot from
@@ -96,6 +99,22 @@ def _is_tree(cluster, margins):
     return False
 
 
+def _trunk_xy(points):
+    """Horizontal mean of a tree cluster's low (trunk) band, near its base.
+
+    The canopy centroid wanders by metres depending on which portion the
+    lidar sees; the trunk base is a stable, precise point that matches the
+    catalog. Returns None if points is missing/empty; returns None if the
+    low band has too few points (caller falls back to centroid_xy)."""
+    if points is None or len(points) == 0:
+        return None
+    z0 = float(points[:, 2].min())
+    band = points[(points[:, 2] >= z0) & (points[:, 2] < z0 + _TRUNK_BAND)]
+    if len(band) < 3:
+        return None
+    return float(band[:, 0].mean()), float(band[:, 1].mean())
+
+
 def classify_cluster(cluster, margins=DEFAULT_MARGINS):
     # Tree gate first and it wins: a real trunk must be excluded from identity
     # even when it also satisfies a family band (e.g. the lamp band).
@@ -117,7 +136,11 @@ def to_observations(clusters, margins=DEFAULT_MARGINS):
         # radius toward the robot from the true center. Push it back out along
         # the robot->object direction (robot is at the origin in this frame)
         # to estimate the view-invariant true center.
-        cx, cy = c.centroid_xy
+        if ident == "tree":
+            trunk = _trunk_xy(c.points)
+            cx, cy = trunk if trunk is not None else c.centroid_xy
+        else:
+            cx, cy = c.centroid_xy
         r = math.hypot(cx, cy)
         radius = KNOWN_RADIUS.get(ident, 0.0)
         if r > 1e-6 and radius > 0.0:
