@@ -114,8 +114,7 @@ publishing anywhere else reaches zero subscribers and the robot silently never m
 `drive-park.sh` all navigate in the drifting odom frame. They are the source of the 13.5 m
 divergence above. `drive_to_point.py` was deleted for using ground truth.
 
-Also note: `/os0_cloud_node/points` does **not** publish on this machine (only
-`/os0_cloud_node/imu` does), so the move_base costmaps stay empty and obstacle avoidance is inert.
+Also note: `/os0_cloud_node/points` publishes **only when `gzclient` is up on `:0`** (the GPU-ray sensor needs a live GL context — see the environment note above). When it is up, the cloud is live and the landmark localizer gets clusters; when it is not, `/points` has zero publishers, the move_base costmaps stay empty, and obstacle avoidance is inert. If you see no clusters, check `gzclient`/DISPLAY first — it is not a code problem.
 
 ---
 
