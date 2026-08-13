@@ -166,6 +166,26 @@ Success =
 - the robot **reaches the goal marker in Gazebo** in landmark mode after a GPS
   spoof + switch (judged by the Gazebo view, never by move_base SUCCEEDED/dist).
 
+### In-sim pinning (main runs, requires user go-ahead)
+
+The thresholds in `classify.py` are seed values from object meshes plus one
+session's captured clusters — PROVISIONAL, not yet pinned against a live run.
+Pinning is main-conversation work, gated on explicit user consent, and is not
+performed by an implementer subagent:
+
+- Run RUN-MAP-NAV Steps 0–3 **verbatim**, from a **clean kill** (no reused or
+  stacked processes).
+- Capture the stale-diag `unknown` fraction during the landmark drive.
+- Confirm **no phantom labels** are admitted (pole fragments / ground blobs
+  classified as a real object type).
+- Confirm the robot **reaches the goal marker in Gazebo** after the GPS spoof
+  + landmark-mode switch, judged by the Gazebo view only — never by move_base
+  SUCCEEDED/dist and never by fused pose.
+- If a real object is dropped as `unknown`, or a phantom is admitted, adjust
+  the relevant seed threshold(s) in `classify.py` and record the newly
+  measured value (and the cluster/run it came from) in the constant's comment,
+  the same way the Task 2/4 measurements are recorded there now.
+
 ## Risks / honest caveats
 
 1. **lamp head vs post visibility.** The rule keys on the thin post above 1.3 m.

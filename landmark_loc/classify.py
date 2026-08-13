@@ -1,10 +1,33 @@
 """Rule-based classification of a lidar cluster into a park landmark type.
 
-Bands are centered on the mesh-derived signatures (signatures.MESH_SIGNATURES)
-and widened by DEFAULT_MARGINS to absorb partial views. Deliberately
-CONSERVATIVE: a cluster matching zero or more-than-one type is 'unknown' and is
-dropped downstream. Trees are recognized by their vertical profile (a wide
-canopy band above a narrow trunk) and EMITTED as the 'tree' landmark type.
+Classification is by viewpoint-stable SHAPE features (landmark_loc.shapefeat:
+footprint extents, aspect, and thin-high-band detection), not absolute
+bounding-box size bands. Deliberately CONSERVATIVE: a cluster that matches
+none of the known shapes is 'unknown' and is dropped downstream.
+
+classify_cluster applies an ORDERED sequence of gates, returning on the first
+match:
+  1. tree      - a wide canopy band at/above _TREE_CANOPY_MIN_Z sitting over a
+                 narrower trunk (vertical profile, not size; see _is_tree).
+  2. unknown   - too few raw points (< shapefeat._MIN_SHAPE_PTS) to measure a
+                 shape at all.
+  3. lamp      - a thin post rising above shapefeat.HIGH_Z
+                 (shapefeat.has_thin_high_band) with post width < _LAMP_POST_MAX.
+  4. trash_bin_1 - short (height < _BIN_MAX_H), compact oblong footprint
+                 (_BIN_FOOT_MIN <= foot_major < _BIN_FOOT_MAX) with aspect
+                 < _BIN_ASPECT_MAX to exclude flat elongated fragments.
+  5. garden_table - low box (height < _BOX_MAX_H), long footprint
+                 (foot_major >= _TABLE_MAJOR_MIN).
+  6. bench     - low box (height < _BOX_MAX_H), medium-length footprint
+                 (_BENCH_MAJOR_MIN <= foot_major < _TABLE_MAJOR_MIN).
+  7. unknown   - none of the above.
+
+Thresholds (_LAMP_POST_MAX, _BIN_MAX_H, _BIN_FOOT_MIN/MAX, _BIN_ASPECT_MAX,
+_BOX_MAX_H, _BENCH_MAJOR_MIN, _TABLE_MAJOR_MIN, plus shapefeat.HIGH_Z,
+THIN_DIAG, LOW_BAND) are measured from object meshes and live captured
+clusters. They are PROVISIONAL seed values pending pinning against a clean
+in-sim run; see the per-constant comments below for the measurements behind
+each one.
 """
 import math
 from dataclasses import dataclass
