@@ -27,6 +27,7 @@ class MapLandmark:
     identity: str
     x: float
     y: float
+    yaw: float = None
 
 
 def load(places_path):
@@ -37,7 +38,8 @@ def load(places_path):
         fam = _identity_of(name)
         if fam not in _IDENTITY_FAMILIES:
             continue
-        out.append(MapLandmark(name, fam, float(xy["x"]), float(xy["y"])))
+        out.append(MapLandmark(name, fam, float(xy["x"]), float(xy["y"]),
+                               float(xy["yaw"]) if "yaw" in xy else None))
     return out
 
 

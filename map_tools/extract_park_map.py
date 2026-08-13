@@ -91,7 +91,8 @@ def build_places(models):
     places = {}
     for m in models:
         if m.family in PLACE_FAMILIES:
-            places[m.name] = {"x": round(m.world_x, 3), "y": round(m.world_y, 3)}
+            places[m.name] = {"x": round(m.world_x, 3), "y": round(m.world_y, 3),
+                              "yaw": round(m.yaw, 4)}
     return places
 
 
@@ -101,7 +102,8 @@ def _write_places_yaml(places, path):
                  "extract_park_map.py.\n")
         for name in sorted(places):  # sorted only for stable file diffs (not display)
             p = places[name]
-            fh.write("%s: {x: %.3f, y: %.3f}\n" % (name, p["x"], p["y"]))
+            fh.write("%s: {x: %.3f, y: %.3f, yaw: %.4f}\n"
+                     % (name, p["x"], p["y"], p["yaw"]))
 
 
 def main(argv=None):
