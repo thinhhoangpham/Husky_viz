@@ -3,6 +3,7 @@ import math
 import numpy as np
 import pytest
 from landmark_loc import classify
+from landmark_loc.classify import Observation, to_observations
 from landmark_loc.segment import Cluster
 
 
@@ -254,3 +255,43 @@ def _dims(fam):
     from landmark_loc.signatures import MESH_SIGNATURES as S
     s = S[fam]
     return s["major"], s["minor"], s["height"]
+
+
+def _bench_cluster_from_outline():
+    # a bench outline at robot-frame (5,0), yaw 0 -> full rectangle points
+    L, W = 1.78, 0.80
+    hl, hw = L / 2, W / 2
+    corners = [(-hl, -hw), (hl, -hw), (hl, hw), (-hl, hw)]
+    edges = [(0, 1), (1, 2), (2, 3), (3, 0)]
+    pts = []
+    for a, b in edges:
+        for t in np.linspace(0, 1, 15):
+            lx = corners[a][0] + t * (corners[b][0] - corners[a][0])
+            ly = corners[a][1] + t * (corners[b][1] - corners[a][1])
+            pts.append((5.0 + lx, 0.0 + ly))
+    xy = np.array(pts)
+    z = np.full((len(xy), 1), 0.4)
+    p3 = np.hstack([xy, z])
+    return Cluster(points=p3, centroid_xy=(float(xy[:, 0].mean()), float(xy[:, 1].mean())),
+                   major=L, minor=W, height=0.4)
+
+
+def test_bench_observation_has_yaw_and_fit_center():
+    c = _bench_cluster_from_outline()
+    obs = to_observations([c])
+    assert len(obs) == 1
+    o = obs[0]
+    assert o.identity == "bench"
+    assert o.yaw is not None
+    # fit center near the true (5,0), not just the centroid
+    assert abs(o.x - 5.0) < 0.2 and abs(o.y - 0.0) < 0.2
+
+
+def test_lamp_observation_yaw_is_none():
+    # a compact lamp cluster: tall, narrow (round type keeps centroid+pushout)
+    xy = np.array([[3.0, 0.0], [3.05, 0.02], [2.98, -0.03], [3.02, 0.01]])
+    z = np.linspace(0, 3.15, len(xy)).reshape(-1, 1)
+    p3 = np.hstack([xy, z])
+    c = Cluster(points=p3, centroid_xy=(3.0, 0.0), major=0.63, minor=0.48, height=3.15)
+    obs = to_observations([c])
+    assert len(obs) == 1 and obs[0].identity == "lamp" and obs[0].yaw is None

@@ -9,6 +9,7 @@ canopy band above a narrow trunk) and EMITTED as the 'tree' landmark type.
 import math
 from dataclasses import dataclass
 from landmark_loc.signatures import MESH_SIGNATURES, SIGNATURE_FAMILIES
+from landmark_loc import shapefit
 
 # Tolerances. major/minor in metres, aspect is a ratio, height in metres.
 # Pinned against live lidar (Task 1 in-sim NOTE).
@@ -47,12 +48,17 @@ KNOWN_RADIUS = {
     "tree": 0.45,  # tree_8 trunk radius (extractor RADII); arbolpartes4 not separately modeled here
 }
 
+# Real rectangle footprints (length, width) in metres, from the mesh signatures.
+# Only elongated types get the ICP shape fit; round types keep centroid+pushout.
+_RECT_FOOTPRINT = {"bench": (1.78, 0.80), "garden_table": (3.00, 1.32)}
+
 
 @dataclass
 class Observation:
     identity: str
     x: float
     y: float
+    yaw: float = None
 
 
 def _matches(cluster, fam, m):
@@ -132,6 +138,14 @@ def to_observations(clusters, margins=DEFAULT_MARGINS):
         ident = classify_cluster(c, margins)
         if ident == "unknown":
             continue
+        yaw = None
+        if ident in _RECT_FOOTPRINT and c.points is not None and len(c.points) > 0:
+            L, W = _RECT_FOOTPRINT[ident]
+            fx, fy, fyaw, ok = shapefit.fit_rectangle(c.points[:, :2], L, W)
+            if ok:
+                out.append(Observation(identity=ident, x=fx, y=fy, yaw=fyaw))
+                continue
+            # fall through to centroid+pushout on a failed fit
         # The lidar only sees the near surface, so the raw centroid sits one
         # radius toward the robot from the true center. Push it back out along
         # the robot->object direction (robot is at the origin in this frame)
@@ -148,5 +162,5 @@ def to_observations(clusters, margins=DEFAULT_MARGINS):
             ox, oy = cx + radius * ux, cy + radius * uy
         else:
             ox, oy = cx, cy
-        out.append(Observation(identity=ident, x=ox, y=oy))
+        out.append(Observation(identity=ident, x=ox, y=oy, yaw=yaw))
     return out
