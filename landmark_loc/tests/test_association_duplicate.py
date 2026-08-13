@@ -9,15 +9,16 @@ n>=2 that was really pinned on only ONE distinct landmark -- a phantom,
 potentially confidently-wrong fix that still cleared the n>=2 and residual
 gates.
 
-That solve_pose-level defect is now handled by a one-to-one DEDUP GUARD
-(EXPERIMENTAL): `solve_pose` routes association through `associate` (plain
-nearest-neighbor under the prior), then `_dedupe_one_to_one` keeps only the
-closer of any two observations that claim the same map landmark, discarding
-the other. So two observations can no longer both COUNT as correspondences to
-a single map landmark -- but with only two total landmarks in this scenario,
-dropping the duplicate leaves too few pairs (<3) for solve_pose to return a
-fit at all. The `associate()` characterization below remains as documentation
-of the underlying function's raw (non-deduped) behavior.
+That solve_pose-level defect no longer applies: `solve_pose` now routes
+through `constellation.match` (RANSAC constellation matching), which is
+one-to-one BY CONSTRUCTION -- `_score_transform` keeps, for each candidate map
+landmark, only its closest observation, so two observations can never both
+count as correspondences to the same map landmark. With only two total
+landmarks in this scenario, `constellation.match`'s 3-correspondence floor
+(`_MIN_INLIERS`) also can't be met, so `solve_pose` returns None regardless.
+The `associate()` characterization below remains as documentation of that
+raw (non-deduped) nearest-neighbor function's behavior; it is no longer used
+by `solve_pose`.
 
 These tests are TEST-ONLY; no production code is modified by them.
 """
@@ -108,13 +109,12 @@ def test_associate_can_produce_duplicate_map_landmark():
 
 
 def test_duplicate_association_dropped_by_dedup_not_phantom_fit():
-    """solve_pose now routes through associate() + a one-to-one dedup guard
-    (_dedupe_one_to_one), so the two-benches-onto-one duplicate characterized
-    above can no longer masquerade as a 2-correspondence fit: the dedup keeps
-    only the closer of the two observations, discarding the other. With only
-    two same-identity benches in this scene, that leaves a single surviving
-    pair -- below the 3-correspondence floor -- so solve_pose must return
-    None. It never returns a phantom fit pinned on one landmark."""
+    """solve_pose now routes through constellation.match, which is one-to-one
+    BY CONSTRUCTION, so the two-benches-onto-one duplicate characterized above
+    (a defect of the raw associate() function) can never reach solve_pose as a
+    phantom fit pinned on one landmark. With only two same-identity benches in
+    this scene, constellation.match also can't clear its own 3-correspondence
+    floor (_MIN_INLIERS), so solve_pose returns None either way."""
     obs = _observations()
     for rg in (1.0, 5.0):
         out = solve_pose(obs, _LANDMARKS, _PRIOR, dist_gate=_DIST_GATE, residual_gate=rg)

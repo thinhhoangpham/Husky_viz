@@ -70,12 +70,12 @@ def test_solve_pose_recovers_under_small_prior_error():
     assert abs(x - 2.0) < 1e-6 and abs(y + 1.0) < 1e-6
 
 
-def test_solve_pose_fails_under_large_prior_error():
-    # With a badly wrong prior (large odom drift), nearest-neighbor association
-    # under the prior projects observations far from their true landmarks, so
-    # the tight dist_gate rejects them and solve_pose returns None. This is the
-    # tradeoff versus constellation matching: association now depends on the
-    # prior being accurate to within dist_gate, not just within max_prior_dist.
+def test_solve_pose_recovers_under_large_prior_error():
+    # solve_pose now identifies landmarks via RANSAC constellation matching
+    # (frame-invariant pairwise distances), not nearest-neighbor under the
+    # prior. A badly wrong prior -- within the wide final prior-sanity check
+    # inside constellation.match -- no longer prevents correct identification;
+    # the true pose is still recovered exactly.
     lms = [MapLandmark("a", "bench", 5.0, 1.0),
            MapLandmark("b", "lamp", 6.0, -2.0),
            MapLandmark("c", "garden_table", 3.0, 4.0)]
@@ -84,7 +84,26 @@ def test_solve_pose_fails_under_large_prior_error():
     wrong_prior = (6.0, 3.0, 1.2)  # far off from truth
     out = solve.solve_pose(obs, lms, prior_xyz=wrong_prior,
                            dist_gate=0.3, residual_gate=0.5)
-    assert out is None
+    assert out is not None
+    x, y, yaw, rms, n = out
+    assert n == 3 and rms < 1e-6
+    assert abs(x - 2.0) < 1e-6 and abs(y + 1.0) < 1e-6
+
+
+def test_solve_pose_recovers_under_4m_drift():
+    from landmark_loc.solve import solve_pose
+    # 3 distinct-type landmarks, robot truly at origin, prior 4m off
+    from landmark_loc.classify import Observation
+    from landmark_loc.catalog import MapLandmark
+    import math
+    cat = [MapLandmark("lampA", "lamp", 10.0, 0.0),
+           MapLandmark("benchB", "bench", 13.0, 4.0),
+           MapLandmark("binC", "trash_bin_1", 8.0, 5.0)]
+    obs = [Observation(lm.identity, lm.x, lm.y) for lm in cat]  # true pose (0,0,0)
+    out = solve_pose(obs, cat, (4.0, -3.0, 0.0), 1.0, 1.0)
+    assert out is not None
+    x, y, yaw, rms, n = out
+    assert abs(x) < 0.5 and abs(y) < 0.5 and n >= 3 and rms < 0.5
 
 
 def test_solve_pose_accepts_clean_fit():

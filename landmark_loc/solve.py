@@ -1,18 +1,20 @@
 """Associate observed landmarks to catalog landmarks and solve the robot pose.
 
-EXPERIMENTAL: `solve_pose` currently uses odom-guess nearest-neighbor
-association (`associate`) with a one-to-one dedup guard, not constellation
-matching. The odom-based prior is assumed to be only a few metres off, so each
-observed landmark's correct map landmark is simply the nearest same-type
-landmark under the prior; `constellation.match` is left intact (and still
-covered by its own tests) so this can be flipped back or combined later. The
-pose is the 2D rigid transform (Umeyama/Kabsch) mapping observed (robot-frame)
-points onto their matched (map-frame) points; that transform IS the robot's
-map pose. A fit with < 3 correspondences or RMS residual above the gate is
-rejected (returns None) so a bad scan cannot corrupt the downstream EKF. Fewer
-than 3 correspondences is geometrically ambiguous under reflection (a 2-point
-fit can yield a confidently-wrong, flipped pose with low residual), so 3 is
-the floor that removes that ambiguity.
+`solve_pose` identifies observed landmarks via RANSAC constellation (shape)
+matching (`constellation.match`), which uses frame-invariant pairwise
+distances between observed landmarks rather than a nearest-neighbor search
+under the pose prior. This makes identification robust to several metres of
+prior/odom drift -- the prior is only used as a wide final sanity check inside
+`constellation.match`. `associate` (plain nearest-neighbor under the prior)
+is kept for legacy/characterization tests but is no longer used by
+`solve_pose`. The pose is the 2D rigid transform (Umeyama/Kabsch) mapping
+observed (robot-frame) points onto their matched (map-frame) points; that
+transform IS the robot's map pose. A fit with < 3 correspondences or RMS
+residual above the gate is rejected (returns None) so a bad scan cannot
+corrupt the downstream EKF. Fewer than 3 correspondences is geometrically
+ambiguous under reflection (a 2-point fit can yield a confidently-wrong,
+flipped pose with low residual), so 3 is the floor that removes that
+ambiguity.
 """
 import math
 import numpy as np
@@ -58,8 +60,8 @@ def _dedupe_one_to_one(pairs, observations, prior_xyz):
 
 def solve_pose(observations, gated_landmarks, prior_xyz, dist_gate, residual_gate,
                 max_prior_dist=5.0):
-    pairs = associate(observations, gated_landmarks, prior_xyz, dist_gate)
-    pairs = _dedupe_one_to_one(pairs, observations, prior_xyz)
+    pairs = constellation.match(observations, gated_landmarks, prior_xyz, dist_gate,
+                                 max_prior_dist)
     if len(pairs) < 3:
         return None
     src = np.array([[o.x, o.y] for o, _ in pairs])
