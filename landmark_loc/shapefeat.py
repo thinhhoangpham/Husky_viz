@@ -10,7 +10,11 @@ import numpy as np
 LOW_BAND = 0.8      # m: height of the near-base band used to measure the post/base
 HIGH_Z = 1.3        # m: a thin band ABOVE this height is the lamp-post signature
                     # (lamp post rises past 1.3 m; bin/bench/table do not)
-THIN_DIAG = 0.4     # m: footprint diagonal below this is "thin" (lamp post ~0.14 m)
+# 0.4 -> 0.6 (Task 4): captured far-range lamps [0],[4],[11] (9.2-11.2 m) are too
+# sparse to sample their post at the z=1.3 band (1-2 pts); the only high band
+# with enough points (>=3) lands on the wider luminaire head, foot_diag up to
+# 0.563. Captured trash_bin [13]'s only high band is 0.706 -- stays excluded.
+THIN_DIAG = 0.6     # m: footprint diagonal below this is "thin" (lamp post ~0.14 m; captured lamp heads up to 0.563)
 _BAND = 0.5         # m: z-band thickness for the high-band scan
 _BAND_MIN_PTS = 3   # a band needs this many points to measure its width
 _MIN_SHAPE_PTS = 6  # fewer points than this: shape is unmeasurable

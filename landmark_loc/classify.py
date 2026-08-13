@@ -15,9 +15,18 @@ from landmark_loc import shapefeat
 # Shape-signature thresholds (Task 2). Each pinned from measured live/mesh
 # values; see .superpowers/sdd/2026-08-13-shape-classifier/task-2-brief.md.
 _LAMP_POST_MAX = 0.35    # m: lamp post foot_diag ~0.14; captured lamps 0.12-0.51 low
-_BIN_MAX_H = 1.4         # m: bin height 1.04; lamp 3.15 excluded by has_thin_high_band anyway
+# 1.4 -> 1.7 (Task 4): captured trash_bin [13] height 1.679 -- its cluster fuses
+# a bit of overhanging foliage above the bin body (segmenter-level, out of
+# scope here); mesh bin is 1.04 m so this only widens the ceiling, doesn't
+# touch the floor.
+_BIN_MAX_H = 1.7         # m: bin height 1.04, captured bin [13] 1.679; lamp 3.15 excluded by has_thin_high_band anyway
 _BIN_FOOT_MIN = 0.30     # m: bin foot_major ~0.68; keep off sub-0.3 noise fragments
 _BIN_FOOT_MAX = 1.20     # m: below bench 1.78 major, above bin 0.68 with margin
+# Task 4: captured bin [13] foot aspect 1.33 (mesh aspect 1.79); captured
+# ground fragments [1],[3] have aspect 2.41/2.38 despite matching the foot
+# band -- they are flat elongated scatter, not a compact box. 2.0 sits
+# between the bin's measured/mesh aspect and the fragments' aspect.
+_BIN_ASPECT_MAX = 2.0
 _BOX_MAX_H = 1.40        # m: bench 0.94, table 1.09 both under this
 _BENCH_MAJOR_MIN = 1.20  # m: bench major 1.78; near-edge foreshortening floor
 _TABLE_MAJOR_MIN = 2.30  # m: table major 3.00; splits table (>=2.3) from bench (<2.3)
@@ -127,10 +136,14 @@ def classify_cluster(cluster, margins=DEFAULT_MARGINS):
     # lamp: the only object with a thin post rising above HIGH_Z.
     if shapefeat.has_thin_high_band(pts) and shapefeat.post_width(pts) < _LAMP_POST_MAX:
         return "lamp"
-    foot_major, _foot_minor = shapefeat.foot_extents(pts)
+    foot_major, foot_minor = shapefeat.foot_extents(pts)
     height = cluster.height
-    # trash_bin: short compact oblong box, no tall thin post.
-    if height < _BIN_MAX_H and _BIN_FOOT_MIN <= foot_major < _BIN_FOOT_MAX:
+    aspect = foot_major / max(foot_minor, 1e-6)
+    # trash_bin: short compact oblong box, no tall thin post. The aspect cap
+    # keeps flat elongated ground fragments (aspect >2) out of the footprint
+    # band a real bin also occupies (see _BIN_ASPECT_MAX comment above).
+    if (height < _BIN_MAX_H and _BIN_FOOT_MIN <= foot_major < _BIN_FOOT_MAX
+            and aspect < _BIN_ASPECT_MAX):
         return "trash_bin_1"
     # garden_table: low box, long.
     if height < _BOX_MAX_H and foot_major >= _TABLE_MAJOR_MIN:
