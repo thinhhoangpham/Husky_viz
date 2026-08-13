@@ -18,6 +18,7 @@ import math
 import numpy as np
 
 from landmark_loc import constellation
+from landmark_loc.geom import rigid_transform_2d
 
 
 def _to_map(o, prior_xyz):
@@ -40,24 +41,6 @@ def associate(observations, gated_landmarks, prior_xyz, dist_gate):
         if best is not None:
             pairs.append((o, best))
     return pairs
-
-
-def rigid_transform_2d(src_xy, dst_xy):
-    src = np.asarray(src_xy, float)
-    dst = np.asarray(dst_xy, float)
-    cs, cd = src.mean(axis=0), dst.mean(axis=0)
-    s0, d0 = src - cs, dst - cd
-    H = s0.T @ d0
-    U, _, Vt = np.linalg.svd(H)
-    R = Vt.T @ U.T
-    if np.linalg.det(R) < 0:      # reflection guard
-        Vt[-1, :] *= -1
-        R = Vt.T @ U.T
-    yaw = math.atan2(R[1, 0], R[0, 0])
-    t = cd - R @ cs
-    resid = (R @ s0.T).T + cd - dst
-    rms = float(np.sqrt(np.mean(np.sum(resid ** 2, axis=1)))) if len(dst) else 0.0
-    return float(t[0]), float(t[1]), yaw, rms
 
 
 def _dedupe_one_to_one(pairs, observations, prior_xyz):
