@@ -33,7 +33,16 @@ _BIN_FOOT_MAX = 1.20     # m: below bench 1.78 major, above bin 0.68 with margin
 # cleanly between the two groups; independently load-bearing (not merely a
 # side effect of any particular _BIN_MAX_H value).
 _BIN_ASPECT_MAX = 2.0
-_BOX_MAX_H = 1.40        # m: bench 0.94, table 1.09 both under this
+# 1.4 -> 1.2 (Task 4): the taller of the two box objects is garden_table at
+# mesh height 1.085 m (bench is 0.942 m). Box height is view-STABLE (the
+# lidar sees the tabletop/seat surface of a solid low object), so
+# 1.085 + ~0.12 m slop = 1.2 is a tighter, mesh-grounded ceiling than the old
+# 1.40 -- closes the 1.09-1.40 m window where tall fragments could slip into
+# the bench/table classes. Same logic as _BIN_MAX_H above.
+# PROVISIONAL: pin against clean captures in-sim -- no bench/table cluster
+# near this ceiling was captured this session (captured bench [12] is 0.44 m,
+# far under both 1.2 and 1.4).
+_BOX_MAX_H = 1.20        # m: table mesh height 1.085 + ~0.12 view-stability slop; bench mesh 0.942 also under this
 _BENCH_MAJOR_MIN = 1.20  # m: bench major 1.78; near-edge foreshortening floor
 _TABLE_MAJOR_MIN = 2.30  # m: table major 3.00; splits table (>=2.3) from bench (<2.3)
 
