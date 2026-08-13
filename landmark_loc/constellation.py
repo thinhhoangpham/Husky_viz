@@ -71,7 +71,9 @@ def _grow(i, j, cat_i, cat_j, observations, obs_d, gated, tol):
     observation to the UNIQUE same-type catalog landmark whose distance to both
     seed landmarks matches the observed distances within tol. Observations with
     zero or more than one candidate are skipped (a partial constellation is valid
-    as long as >=2 correspondences remain). Returns dict obs_index -> MapLandmark.
+    as long as >=3 correspondences remain -- fewer than 3 is geometrically
+    ambiguous under reflection and is rejected by the caller). Returns dict
+    obs_index -> MapLandmark.
     """
     assign = {i: cat_i, j: cat_j}
     used = {id(cat_i), id(cat_j)}
@@ -103,7 +105,7 @@ def _prior_dist(assign, prior_xyz):
 
 
 def match(observations, gated_landmarks, prior_xyz, tol, max_prior_dist=5.0):
-    if len(observations) < 2 or len(gated_landmarks) < 2:
+    if len(observations) < 3 or len(gated_landmarks) < 3:
         return []
     obs_d = _obs_pair_dists(observations)
     cat_idx = _cat_pair_index(gated_landmarks)
@@ -120,7 +122,7 @@ def match(observations, gated_landmarks, prior_xyz, tol, max_prior_dist=5.0):
                     assign = _grow(i, j, cat_i, cat_j, observations, obs_d,
                                    gated_landmarks, tol)
                     candidates.append(assign)
-    candidates = [a for a in candidates if len(a) >= 2]
+    candidates = [a for a in candidates if len(a) >= 3]
     candidates = [a for a in candidates if _prior_dist(a, prior_xyz) <= max_prior_dist]
     if not candidates:
         return []

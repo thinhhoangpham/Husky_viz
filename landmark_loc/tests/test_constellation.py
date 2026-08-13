@@ -49,13 +49,22 @@ def test_one_observation_returns_empty():
     assert constellation.match(obs, _LMS, prior_xyz=(0, 0, 0), tol=0.3) == []
 
 
-def test_two_distinct_type_unique_pair_matches():
+def test_two_landmark_observation_returns_empty():
+    # Only 2 observed landmarks: below the >=3 minimum needed to remove the
+    # 2-point reflection ambiguity, so the matcher must return nothing rather
+    # than risk a confidently-wrong (possibly flipped) pose.
     two = [_LMS[0], _LMS[1]]  # bench + lamp, distinct types
     obs = [_observe_from_true_pose(lm, (0, 0, 0)) for lm in two]
-    # prior must be within max_prior_dist of the bench_1/lamp_1 centroid (5.5, -0.5)
+    pairs = constellation.match(obs, _LMS, prior_xyz=(2.0, 0.0, 0.0), tol=0.3)
+    assert pairs == []
+
+
+def test_three_distinct_type_unique_triple_matches():
+    obs = [_observe_from_true_pose(lm, (0, 0, 0)) for lm in _LMS]
+    # prior must be within max_prior_dist of the constellation centroid
     pairs = constellation.match(obs, _LMS, prior_xyz=(2.0, 0.0, 0.0), tol=0.3)
     got = {o.identity: lm.name for o, lm in pairs}
-    assert got == {"bench": "bench_1", "lamp": "lamp_1"}
+    assert got == {"bench": "bench_1", "lamp": "lamp_1", "garden_table": "table_1"}
 
 
 def test_no_match_shape_absent_returns_empty():
@@ -84,18 +93,23 @@ def test_type_constraint_blocks_geometric_lookalike():
 
 
 def test_ambiguity_resolved_by_prior():
-    # two identical bench+lamp constellations, 50 m apart; prior sits next to the
-    # SECOND one -> matcher must pick the second.
+    # two identical bench+lamp+table constellations, 50 m apart; prior sits next
+    # to the SECOND one -> matcher must pick the second. Three landmarks per
+    # cluster (not two) so the match clears the >=3 minimum.
     cat = [MapLandmark("bench_a", "bench", 0.0, 0.0),
            MapLandmark("lamp_a", "lamp", 3.0, 0.0),
+           MapLandmark("table_a", "garden_table", 0.0, 4.0),
            MapLandmark("bench_b", "bench", 50.0, 0.0),
-           MapLandmark("lamp_b", "lamp", 53.0, 0.0)]
-    # robot at second cluster, observing bench_b + lamp_b from true pose (50,0,0)
-    obs = [_observe_from_true_pose(cat[2], (50.0, 0.0, 0.0)),
-           _observe_from_true_pose(cat[3], (50.0, 0.0, 0.0))]
+           MapLandmark("lamp_b", "lamp", 53.0, 0.0),
+           MapLandmark("table_b", "garden_table", 50.0, 4.0)]
+    # robot at second cluster, observing bench_b + lamp_b + table_b from true
+    # pose (50,0,0)
+    obs = [_observe_from_true_pose(cat[3], (50.0, 0.0, 0.0)),
+           _observe_from_true_pose(cat[4], (50.0, 0.0, 0.0)),
+           _observe_from_true_pose(cat[5], (50.0, 0.0, 0.0))]
     pairs = constellation.match(obs, cat, prior_xyz=(50.0, 0.0, 0.0), tol=0.3)
     got = {lm.name for _, lm in pairs}
-    assert got == {"bench_b", "lamp_b"}
+    assert got == {"bench_b", "lamp_b", "table_b"}
 
 
 def test_far_constellation_rejected_by_prior_filter():

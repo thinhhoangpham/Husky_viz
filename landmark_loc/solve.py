@@ -5,8 +5,11 @@ are identified by their prior-invariant pairwise geometry rather than by
 nearest-neighbor-under-prior, so it survives a badly drifted prior. The pose is
 the 2D rigid transform (Umeyama/Kabsch) mapping observed (robot-frame) points
 onto their matched (map-frame) points; that transform IS the robot's map pose.
-A fit with < 2 correspondences or RMS residual above the gate is rejected
-(returns None) so a bad scan cannot corrupt the downstream EKF.
+A fit with < 3 correspondences or RMS residual above the gate is rejected
+(returns None) so a bad scan cannot corrupt the downstream EKF. Fewer than 3
+correspondences is geometrically ambiguous under reflection (a 2-point fit can
+yield a confidently-wrong, flipped pose with low residual), so 3 is the floor
+that removes that ambiguity.
 """
 import math
 import numpy as np
@@ -58,7 +61,7 @@ def solve_pose(observations, gated_landmarks, prior_xyz, dist_gate, residual_gat
                 max_prior_dist=5.0):
     pairs = constellation.match(observations, gated_landmarks, prior_xyz, dist_gate,
                                  max_prior_dist)
-    if len(pairs) < 2:
+    if len(pairs) < 3:
         return None
     src = np.array([[o.x, o.y] for o, _ in pairs])
     dst = np.array([[lm.x, lm.y] for _, lm in pairs])

@@ -81,7 +81,7 @@ def main():
         link_dist=rospy.get_param("~link_dist", 0.3),
         min_pts=rospy.get_param("~min_pts", 10),
         max_extent=rospy.get_param("~max_extent", 6.0),  # measured per tree-landmark spec: raised so canopies survive clustering
-        constellation_tol=rospy.get_param("~constellation_tol", 0.3),
+        constellation_tol=rospy.get_param("~constellation_tol", 1.0),
         max_prior_dist=rospy.get_param("~max_prior_dist", 5.0),
         residual_gate=rospy.get_param("~residual_gate", 1.0),
         fov_halfwidth=rospy.get_param("~fov_halfwidth", math.pi),
