@@ -17,6 +17,12 @@ import numpy as np
 from landmark_loc import segment, classify, catalog, solve
 
 
+def _is_landmark_mode(mode_str):
+    """True when mode_str is "landmark" or "landmark:stale" (the localizer
+    should run its pipeline); False for "gps", None, or empty (dormant)."""
+    return str(mode_str or "").startswith("landmark")
+
+
 def covariance_for(n_matches, base_var):
     cov = [0.0] * 36
     pos_var = base_var / max(n_matches, 1)
@@ -98,6 +104,7 @@ def main():
     from nav_msgs.msg import Odometry
     from sensor_msgs.msg import PointCloud2
     from sensor_msgs.msg import NavSatFix
+    from std_msgs.msg import String
 
     rospy.init_node("landmark_localizer")
     places = rospy.get_param("~places_path",
@@ -130,6 +137,7 @@ def main():
         "gps_valid": False,    # /navsat/fix status.status >= 0 seen
         "last_pub": rospy.Time(0),
         "fix_history": [],   # last N accepted (x, y) fixes for median smoothing
+        "abs_fix_mode": "gps",  # dormant until /abs_fix_mode says otherwise
     }
     pub = rospy.Publisher("/odometry/landmark_fix", Odometry, queue_size=5)
 
@@ -176,7 +184,12 @@ def main():
                       state["anchor_map"][0], state["anchor_map"][1], state["anchor_map"][2],
                       state["anchor_odom"][0], state["anchor_odom"][1], state["anchor_odom"][2])
 
+    def on_mode(msg):
+        state["abs_fix_mode"] = msg.data
+
     def on_cloud(msg):
+        if not _is_landmark_mode(state["abs_fix_mode"]):
+            return
         now = rospy.Time.now()
         if (now - state["last_pub"]).to_sec() < 1.0 / p["rate"]:
             return
@@ -232,6 +245,7 @@ def main():
     rospy.Subscriber("/odometry/filtered_odom", Odometry, on_odom, queue_size=5)
     rospy.Subscriber("/navsat/fix", NavSatFix, on_navsat, queue_size=5)
     rospy.Subscriber("/odometry/filtered_map", Odometry, on_map, queue_size=5)
+    rospy.Subscriber("/abs_fix_mode", String, on_mode, queue_size=1)
     rospy.Subscriber("/os0_cloud_node/points", PointCloud2, on_cloud, queue_size=1)
     rospy.spin()
 
