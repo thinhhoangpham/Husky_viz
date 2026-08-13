@@ -1,5 +1,7 @@
 # landmark_loc/tests/test_classify.py
+import math
 import numpy as np
+import pytest
 from landmark_loc import classify
 from landmark_loc.segment import Cluster
 
@@ -99,8 +101,55 @@ def test_to_observations_emits_tree_drops_unknown():
     obs = classify.to_observations(clusters)
     idents = sorted(o.identity for o in obs)
     assert idents == ["bench", "tree"]
+
+    # Both emitted observations are offset outward from the raw (1.0, 2.0)
+    # centroid by their identity's known radius, along the same bearing.
+    r0 = math.hypot(1.0, 2.0)
+    ux, uy = 1.0 / r0, 2.0 / r0
+
+    bench_obs = [o for o in obs if o.identity == "bench"][0]
+    bench_r = classify.KNOWN_RADIUS["bench"]
+    assert bench_obs.x == pytest.approx(1.0 + bench_r * ux)
+    assert bench_obs.y == pytest.approx(2.0 + bench_r * uy)
+
     tree_obs = [o for o in obs if o.identity == "tree"][0]
-    assert (tree_obs.x, tree_obs.y) == (1.0, 2.0)
+    tree_r = classify.KNOWN_RADIUS["tree"]
+    assert tree_obs.x == pytest.approx(1.0 + tree_r * ux)
+    assert tree_obs.y == pytest.approx(2.0 + tree_r * uy)
+
+
+def test_to_observations_offset_is_view_invariant():
+    """The same real lamp seen from two different robot bearings should yield
+    observation positions at the same distance-from-origin (true center),
+    along whatever bearing the raw centroid was on -- i.e. the offset always
+    lands at D + R along the observed direction, not a fixed world point."""
+    from landmark_loc.signatures import MESH_SIGNATURES as S
+    lamp_dims = _dims("lamp")
+    R = S["lamp"]["minor"] / 2.0
+
+    for theta in (0.3, 2.1):
+        D = 5.0
+        cx, cy = D * math.cos(theta), D * math.sin(theta)
+        c = Cluster(points=None, centroid_xy=(cx, cy),
+                    major=lamp_dims[0], minor=lamp_dims[1], height=lamp_dims[2])
+        obs = classify.to_observations([c])
+        assert len(obs) == 1
+        o = obs[0]
+        assert o.identity == "lamp"
+        assert math.hypot(o.x, o.y) == pytest.approx(D + R)
+        # bearing unchanged
+        assert math.atan2(o.y, o.x) == pytest.approx(theta)
+
+
+def test_to_observations_centroid_at_origin_unchanged():
+    # r ~ 0: no direction to push along, must not divide by zero and must
+    # leave the position unchanged.
+    lamp_dims = _dims("lamp")
+    c = Cluster(points=None, centroid_xy=(0.0, 0.0),
+                major=lamp_dims[0], minor=lamp_dims[1], height=lamp_dims[2])
+    obs = classify.to_observations([c])
+    assert len(obs) == 1
+    assert (obs[0].x, obs[0].y) == (0.0, 0.0)
 
 
 def _dims(fam):

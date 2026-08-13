@@ -6,6 +6,7 @@ CONSERVATIVE: a cluster matching zero or more-than-one type is 'unknown' and is
 dropped downstream. Trees are recognized by their vertical profile (a wide
 canopy band above a narrow trunk) and EMITTED as the 'tree' landmark type.
 """
+import math
 from dataclasses import dataclass
 from landmark_loc.signatures import MESH_SIGNATURES, SIGNATURE_FAMILIES
 
@@ -27,6 +28,21 @@ _TREE_CANOPY_MIN_Z = 2.5      # a wide band at/above this height is a canopy
 _TREE_CANOPY_MIN_WIDTH = 2.0  # canopy horizontal width floor (lamp head < 1 m)
 _TREE_BAND = 0.5              # z-band thickness for the profile scan
 _TREE_BAND_MIN_PTS = 3        # a band needs this many points to measure width
+
+# Known object radius by identity, metres. The lidar only sees the near face of
+# an object, so a cluster's raw centroid sits ~one radius TOWARD the robot from
+# the object's true center (used in to_observations to push the observation
+# back out to the true center). Round/near-round types: half the minor
+# horizontal extent from the mesh signature. Trees are not in MESH_SIGNATURES
+# (they're identified by vertical profile, not a size band), so the trunk
+# radius is hardcoded from the extractor's RADII table (tree_8 = 0.45 m).
+KNOWN_RADIUS = {
+    "lamp": MESH_SIGNATURES["lamp"]["minor"] / 2.0,
+    "trash_bin_1": MESH_SIGNATURES["trash_bin_1"]["minor"] / 2.0,
+    "bench": MESH_SIGNATURES["bench"]["minor"] / 2.0,
+    "garden_table": MESH_SIGNATURES["garden_table"]["minor"] / 2.0,
+    "tree": 0.45,  # tree_8 trunk radius (extractor RADII); arbolpartes4 not separately modeled here
+}
 
 
 @dataclass
@@ -97,6 +113,17 @@ def to_observations(clusters, margins=DEFAULT_MARGINS):
         ident = classify_cluster(c, margins)
         if ident == "unknown":
             continue
-        out.append(Observation(identity=ident,
-                               x=c.centroid_xy[0], y=c.centroid_xy[1]))
+        # The lidar only sees the near surface, so the raw centroid sits one
+        # radius toward the robot from the true center. Push it back out along
+        # the robot->object direction (robot is at the origin in this frame)
+        # to estimate the view-invariant true center.
+        cx, cy = c.centroid_xy
+        r = math.hypot(cx, cy)
+        radius = KNOWN_RADIUS.get(ident, 0.0)
+        if r > 1e-6 and radius > 0.0:
+            ux, uy = cx / r, cy / r
+            ox, oy = cx + radius * ux, cy + radius * uy
+        else:
+            ox, oy = cx, cy
+        out.append(Observation(identity=ident, x=ox, y=oy))
     return out
