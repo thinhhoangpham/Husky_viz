@@ -65,6 +65,34 @@ def compose_prior(anchor_map, anchor_odom, odom_now):
     return (px, py, pyaw)
 
 
+def odom_at(buf, t):
+    """Interpolated (x, y, yaw) odom pose at time t from buf, a list of
+    (t, x, y, yaw) sorted ascending by t. Returns None if buf is empty.
+    Clamps to the oldest/newest sample if t falls outside the buffer's span.
+    Yaw is interpolated via shortest-angle wrap.
+    """
+    if not buf:
+        return None
+    if t <= buf[0][0]:
+        return buf[0][1], buf[0][2], buf[0][3]
+    if t >= buf[-1][0]:
+        return buf[-1][1], buf[-1][2], buf[-1][3]
+    for i in range(len(buf) - 1):
+        t_i, x_i, y_i, yaw_i = buf[i]
+        t_j, x_j, y_j, yaw_j = buf[i + 1]
+        if t_i <= t <= t_j:
+            if t_j == t_i:
+                return x_i, y_i, yaw_i
+            frac = (t - t_i) / (t_j - t_i)
+            x = x_i + frac * (x_j - x_i)
+            y = y_i + frac * (y_j - y_i)
+            dyaw = math.atan2(math.sin(yaw_j - yaw_i), math.cos(yaw_j - yaw_i))
+            yaw = yaw_i + frac * dyaw
+            return x, y, yaw
+    # unreachable given the clamps above, but keep a safe fallback
+    return buf[-1][1], buf[-1][2], buf[-1][3]
+
+
 def main():
     import rospy
     from nav_msgs.msg import Odometry
@@ -98,6 +126,7 @@ def main():
         "anchor_map": None,    # (ax, ay, ayaw) immutable-ish map anchor
         "anchor_odom": None,   # (ox0, oy0, oyaw0) odom pose captured with anchor
         "odom_now": None,      # (ox, oy, oyaw) latest odom-frame pose
+        "odom_buf": [],        # [(t, ox, oy, oyaw)] last ~2.0s, for cloud-stamp sync
         "gps_valid": False,    # /navsat/fix status.status >= 0 seen
         "last_pub": rospy.Time(0),
         "fix_history": [],   # last N accepted (x, y) fixes for median smoothing
@@ -111,6 +140,15 @@ def main():
     def on_odom(msg):
         p_ = msg.pose.pose.position
         state["odom_now"] = (p_.x, p_.y, _yaw(msg.pose.pose.orientation))
+        t = msg.header.stamp.to_sec()
+        state["odom_buf"].append((t, p_.x, p_.y, state["odom_now"][2]))
+        cutoff = t - 2.0
+        buf = state["odom_buf"]
+        i = 0
+        while i < len(buf) and buf[i][0] < cutoff:
+            i += 1
+        if i:
+            state["odom_buf"] = buf[i:]
 
     def on_navsat(msg):
         if msg.status.status >= 0:
@@ -145,8 +183,11 @@ def main():
         if (state["anchor_map"] is None or state["anchor_odom"] is None
                 or state["odom_now"] is None):
             return
+        odom_synced = odom_at(state["odom_buf"], msg.header.stamp.to_sec())
+        if odom_synced is None:
+            return
         prior = compose_prior(state["anchor_map"], state["anchor_odom"],
-                              state["odom_now"])
+                              odom_synced)
         pts = cloud_to_array(msg)
         if len(pts) == 0:
             return
