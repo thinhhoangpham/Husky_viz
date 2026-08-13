@@ -23,6 +23,17 @@ def _is_landmark_mode(mode_str):
     return str(mode_str or "").startswith("landmark")
 
 
+def _jump_ok(fix_xy, last_pub_xy, odom_disp, max_jump):
+    """Physical-motion gate: a fix must land within max_jump of where the robot
+    can be (last published pose advanced by odom displacement). Bootstrap
+    (no last_pub_xy) always accepts. Pure output filter; never re-anchors."""
+    if last_pub_xy is None:
+        return True
+    ex = last_pub_xy[0] + odom_disp[0]
+    ey = last_pub_xy[1] + odom_disp[1]
+    return math.hypot(fix_xy[0] - ex, fix_xy[1] - ey) <= max_jump
+
+
 def covariance_for(n_matches, base_var):
     cov = [0.0] * 36
     pos_var = base_var / max(n_matches, 1)
@@ -130,6 +141,7 @@ def main():
         rate=rospy.get_param("~rate", 2.0),
         anchor_min_dist=rospy.get_param("~anchor_min_dist", 5.0),
         smooth_window=rospy.get_param("~smooth_window", 5),
+        max_jump=rospy.get_param("~max_jump", 3.0),
     )
     landmarks = catalog.load(places)
     rospy.loginfo("landmark_localizer: %d catalog landmarks", len(landmarks))
@@ -144,6 +156,8 @@ def main():
         "last_pub": rospy.Time(0),
         "fix_history": [],   # last N accepted (x, y) fixes for median smoothing
         "abs_fix_mode": "gps",  # dormant until /abs_fix_mode says otherwise
+        "last_pub_xy": None,    # (x, y) of last accepted/published fix
+        "last_pub_odom": None,  # odom pose captured at last published fix
     }
     pub = rospy.Publisher("/odometry/landmark_fix", Odometry, queue_size=5)
 
@@ -251,6 +265,17 @@ def main():
 
             return
         x, y, yaw, rms, n = result
+        # Physical-motion gate: reject a fix that teleports beyond reachable.
+        if state["last_pub_odom"] is not None:
+            odom_disp = (odom_synced[0] - state["last_pub_odom"][0],
+                         odom_synced[1] - state["last_pub_odom"][1])
+        else:
+            odom_disp = (0.0, 0.0)
+        if not _jump_ok((x, y), state["last_pub_xy"], odom_disp, p["max_jump"]):
+            rospy.loginfo_throttle(0.5,
+                "[diag] obs=%d assoc=%d prior=(%.1f,%.1f) REJECT-JUMP fix=(%.2f,%.2f)"
+                % (len(obs), len(_pairs), prior[0], prior[1], x, y))
+            return
         # Anchor stays FIXED at the initial spawn pose (no re-anchoring). The
         # prior is always initial-anchor + odom/compass motion; landmarks
         # correct the published fix but never move the dead-reckoning baseline.
@@ -273,6 +298,8 @@ def main():
         od.pose.covariance = covariance_for(n, p["base_var"])
         pub.publish(od)
         state["last_pub"] = now
+        state["last_pub_xy"] = (x, y)
+        state["last_pub_odom"] = odom_synced
 
     rospy.Subscriber("/odometry/filtered_odom", Odometry, on_odom, queue_size=5)
     rospy.Subscriber("/compass/data", Imu, on_compass, queue_size=5)
