@@ -75,12 +75,12 @@ def main():
     places = rospy.get_param("~places_path",
                              "/home/thinh/Documents/Husky_viz/maps/park_places.yaml")
     p = dict(
-        z_min=rospy.get_param("~z_min", -0.73),
-        z_max=rospy.get_param("~z_max", 3.5),
+        z_min=rospy.get_param("~z_min", -0.5),  # measured per tree-landmark spec: raised to drop ground blob
+        z_max=rospy.get_param("~z_max", 7.0),  # measured per tree-landmark spec: raised to include tree canopies
         max_range=rospy.get_param("~max_range", 15.0),
         link_dist=rospy.get_param("~link_dist", 0.3),
         min_pts=rospy.get_param("~min_pts", 10),
-        max_extent=rospy.get_param("~max_extent", 3.5),
+        max_extent=rospy.get_param("~max_extent", 6.0),  # measured per tree-landmark spec: raised so canopies survive clustering
         constellation_tol=rospy.get_param("~constellation_tol", 0.3),
         max_prior_dist=rospy.get_param("~max_prior_dist", 5.0),
         residual_gate=rospy.get_param("~residual_gate", 1.0),
