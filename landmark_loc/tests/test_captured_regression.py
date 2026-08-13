@@ -57,7 +57,16 @@ def test_unknown_rate_dropped():
     clusters, _ = _load()
     labels = [classify.classify_cluster(c) for c in clusters.values()]
     unknown = sum(1 for l in labels if l == "unknown")
-    # OLD: 12/15 unknown. New rule recovers 5 lamps + 1 bench; [13] (would-be
-    # bin) stays unknown due to foliage contamination (see _MUST comment
-    # above), not a classifier gap. Measured exact count: 7/15.
-    assert unknown == 7, f"{unknown}/15 still unknown (expected exactly 7)"
+    # OLD baseline (pre-shape-classifier): 12/15 unknown.
+    # Shape-classifier alone (no ground-anchor gate): recovers 5 lamps + 1
+    # bench -> 7/15 unknown. But 2 of those 5 "lamps" ([5] z_min=3.44, [6]
+    # z_min=2.45) were floating tree-canopy fragments, not real lamps --
+    # false positives the aspect/height rules alone couldn't see, because
+    # they have no notion of height off the ground.
+    # Ground-anchoring gate (_GROUND_Z_MAX): rejects any cluster whose base
+    # isn't near the ground, correctly flipping [5] and [6] back to unknown.
+    # Net result: 9/15 unknown -- higher than the naive 7, but with FEWER
+    # phantoms (0 vs 2), which is the intended improvement, not a regression.
+    # [13] (would-be bin) stays unknown due to foliage contamination (see
+    # _MUST comment above), not a classifier gap.
+    assert unknown == 9, f"{unknown}/15 still unknown (expected exactly 9)"

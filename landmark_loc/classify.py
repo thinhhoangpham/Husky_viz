@@ -52,10 +52,11 @@ _BIN_FOOT_MAX = 1.20     # m: below bench 1.78 major, above bin 0.68 with margin
 # Genuine footprint-shape discriminator (Task 4): a real bin's footprint is
 # close to square/oblong (captured bin [13] aspect 1.33; mesh aspect 1.79),
 # while flat elongated ground-scatter fragments [1]/[3] measure aspect
-# 2.38-2.41 despite sitting inside the same major/height band. 2.0 sits
-# cleanly between the two groups; independently load-bearing (not merely a
-# side effect of any particular _BIN_MAX_H value).
-_BIN_ASPECT_MAX = 2.0
+# 2.38-2.41 despite sitting inside the same major/height band. 2.0->2.2:
+# a real partial-view bin measured in-sim at aspect 2.14 was being dropped to
+# unknown by the 2.0 cap; 2.2 admits it (2.14) while still excluding the
+# elongated fragments (2.38-2.41, a 0.18 margin remains). Mesh bin aspect 1.79.
+_BIN_ASPECT_MAX = 2.2
 # 1.4 -> 1.2 (Task 4): the taller of the two box objects is garden_table at
 # mesh height 1.085 m (bench is 0.942 m). Box height is view-STABLE (the
 # lidar sees the tabletop/seat surface of a solid low object), so
@@ -68,6 +69,15 @@ _BIN_ASPECT_MAX = 2.0
 _BOX_MAX_H = 1.20        # m: table mesh height 1.085 + ~0.12 view-stability slop; bench mesh 0.942 also under this
 _BENCH_MAJOR_MIN = 1.20  # m: bench major 1.78; near-edge foreshortening floor
 _TABLE_MAJOR_MIN = 2.30  # m: table major 3.00; splits table (>=2.3) from bench (<2.3)
+
+# Ground-anchoring gate (Task 5): the classifier had no notion of height off
+# the ground, so a floating tree-canopy fragment (thin vertical slice, wide
+# footprint) could be dimensionally identical to a ground trash_bin/lamp and
+# get misclassified. Measured live in-sim: every REAL ground object's lowest
+# point (cluster.points[:,2].min()) sits at z_min -0.48..-0.35 (they rest on
+# the ground; crop floor is z_min=-0.5). Every FLOATING canopy phantom sits at
+# z_min 3.67..4.54. Huge margin -> 0.5 cleanly separates the two groups.
+_GROUND_Z_MAX = 0.5  # m: a real ground object's lowest point sits near the crop floor (-0.5); measured real objects z_min -0.48..-0.35, floating canopy fragments z_min 3.7..4.5
 
 # Tolerances. major/minor in metres, aspect is a ratio, height in metres.
 # Pinned against live lidar (Task 1 in-sim NOTE).
@@ -170,6 +180,15 @@ def classify_cluster(cluster, margins=DEFAULT_MARGINS):
         return "tree"
     pts = cluster.points
     if pts is None or len(pts) < shapefeat._MIN_SHAPE_PTS:
+        return "unknown"
+    # Ground-anchoring gate: lamp/trash_bin_1/garden_table/bench are all
+    # GROUND objects (base resting on the ground). A cluster whose base is
+    # not near the ground (e.g. a floating tree-canopy fragment) cannot be
+    # any of them, even if its dimensions happen to match one of the rules
+    # below -- see _GROUND_Z_MAX comment for the measured z_min separation.
+    # Does NOT apply to the tree gate above, which already ran and passed.
+    z_min = float(pts[:, 2].min())
+    if z_min >= _GROUND_Z_MAX:
         return "unknown"
     # lamp: the only object with a thin post rising above HIGH_Z.
     if shapefeat.has_thin_high_band(pts) and shapefeat.post_width(pts) < _LAMP_POST_MAX:
