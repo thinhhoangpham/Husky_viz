@@ -15,17 +15,23 @@ from landmark_loc import shapefeat
 # Shape-signature thresholds (Task 2). Each pinned from measured live/mesh
 # values; see .superpowers/sdd/2026-08-13-shape-classifier/task-2-brief.md.
 _LAMP_POST_MAX = 0.35    # m: lamp post foot_diag ~0.14; captured lamps 0.12-0.51 low
-# 1.4 -> 1.7 (Task 4): captured trash_bin [13] height 1.679 -- its cluster fuses
-# a bit of overhanging foliage above the bin body (segmenter-level, out of
-# scope here); mesh bin is 1.04 m so this only widens the ceiling, doesn't
-# touch the floor.
-_BIN_MAX_H = 1.7         # m: bin height 1.04, captured bin [13] 1.679; lamp 3.15 excluded by has_thin_high_band anyway
+# 1.4 -> 1.2 (Task 4): mesh bin height is 1.041 m (mesh_bounds.bounds3d). A
+# lidar sees the TOP of a short solid object, so a bin's apparent height is
+# view-stable and won't shrink much below the mesh value -- 1.041 + ~0.15 m
+# slop = 1.2 is a tighter, better-justified ceiling than the old 1.4, and it
+# shrinks the tall-fragment phantom window before the lamps start (~2.0-2.5 m).
+# PROVISIONAL: pin against a CLEAN in-sim bin capture -- captured cluster [13]
+# (h=1.679) is foliage-contaminated (segmenter fused overhanging tree canopy
+# onto the bin body), so no clean bin height was captured this session.
+_BIN_MAX_H = 1.2         # m: mesh bin height 1.041 + ~0.15 view-stability slop
 _BIN_FOOT_MIN = 0.30     # m: bin foot_major ~0.68; keep off sub-0.3 noise fragments
 _BIN_FOOT_MAX = 1.20     # m: below bench 1.78 major, above bin 0.68 with margin
-# Task 4: captured bin [13] foot aspect 1.33 (mesh aspect 1.79); captured
-# ground fragments [1],[3] have aspect 2.41/2.38 despite matching the foot
-# band -- they are flat elongated scatter, not a compact box. 2.0 sits
-# between the bin's measured/mesh aspect and the fragments' aspect.
+# Genuine footprint-shape discriminator (Task 4): a real bin's footprint is
+# close to square/oblong (captured bin [13] aspect 1.33; mesh aspect 1.79),
+# while flat elongated ground-scatter fragments [1]/[3] measure aspect
+# 2.38-2.41 despite sitting inside the same major/height band. 2.0 sits
+# cleanly between the two groups; independently load-bearing (not merely a
+# side effect of any particular _BIN_MAX_H value).
 _BIN_ASPECT_MAX = 2.0
 _BOX_MAX_H = 1.40        # m: bench 0.94, table 1.09 both under this
 _BENCH_MAJOR_MIN = 1.20  # m: bench major 1.78; near-edge foreshortening floor
