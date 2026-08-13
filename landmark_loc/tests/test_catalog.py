@@ -34,3 +34,16 @@ def test_gate_respects_prior_yaw():
     kept = catalog.gate(lm, prior_xyz=(0.0, 0.0, math.pi / 2),
                        max_range=15.0, fov_halfwidth=math.pi / 4)
     assert len(kept) == 1
+
+
+def test_tree8_names_load_as_tree_identity(tmp_path):
+    places = tmp_path / "places.yaml"
+    places.write_text(
+        "bench_1: {x: 1.0, y: 2.0}\n"
+        "tree_8: {x: 10.0, y: 20.0}\n"
+        "tree_8_clone_3: {x: 11.0, y: 21.0}\n")
+    lms = catalog.load(str(places))
+    ids = {lm.name: lm.identity for lm in lms}
+    assert ids["tree_8"] == "tree"
+    assert ids["tree_8_clone_3"] == "tree"
+    assert ids["bench_1"] == "bench"

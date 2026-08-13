@@ -65,7 +65,7 @@ def _box_extents(family):
     return _footprint_cache[family]
 
 # Families that become named goal destinations (not trees).
-PLACE_FAMILIES = ("bench", "garden_table", "lamp", "trash_bin_1")
+PLACE_FAMILIES = ("bench", "garden_table", "lamp", "trash_bin_1", "tree_8")
 
 
 def build_grid(models, resolution=0.15, margin=5.0):

@@ -10,7 +10,15 @@ from dataclasses import dataclass
 import yaml
 from map_tools.sdf_parse import classify as _family_of
 
-_IDENTITY_FAMILIES = {"bench", "garden_table", "lamp", "trash_bin_1"}
+_IDENTITY_FAMILIES = {"bench", "garden_table", "lamp", "trash_bin_1", "tree"}
+
+# map raw world-file family -> matcher identity (tree_8 model -> generic 'tree')
+_FAMILY_TO_IDENTITY = {"tree_8": "tree"}
+
+
+def _identity_of(name):
+    fam = _family_of(name)
+    return _FAMILY_TO_IDENTITY.get(fam, fam)
 
 
 @dataclass
@@ -26,7 +34,7 @@ def load(places_path):
         data = yaml.safe_load(fh)
     out = []
     for name, xy in data.items():
-        fam = _family_of(name)
+        fam = _identity_of(name)
         if fam not in _IDENTITY_FAMILIES:
             continue
         out.append(MapLandmark(name, fam, float(xy["x"]), float(xy["y"])))
