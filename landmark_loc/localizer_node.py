@@ -42,22 +42,26 @@ def cloud_to_array(cloud_msg):
     return np.array(list(pts), dtype=float)
 
 
-def compose_prior(anchor_map, anchor_odom, odom_now):
+def compose_prior(anchor_map, anchor_odom, odom_now, heading_yaw):
     """Map-frame prior = anchor_map advanced by the odom-frame displacement of
-    odom_now relative to anchor_odom.
+    odom_now relative to anchor_odom, with heading taken from the ABSOLUTE
+    compass yaw (never from odom/fused yaw).
 
     anchor_map  = (ax, ay, ayaw)   immutable map-frame anchor (pre-attack GPS,
                                    or the last accepted landmark fix)
     anchor_odom = (ox0, oy0, oyaw0) odom-frame pose captured with the anchor
     odom_now    = (ox, oy, oyaw)    current odom-frame pose (attack-independent)
+    heading_yaw = current absolute compass yaw (/compass/data), drift-free
 
     The odom frame drifts but its relative motion is trustworthy, so the
     displacement since the anchor, applied from the anchor, tracks the robot's
-    true pose without ever reading the (spoofable) map pose.
+    true position without ever reading the (spoofable) map pose. Odom yaw is
+    NOT trustworthy while turning (skid-steer wheel scrub under-reports
+    rotation), so the prior's heading comes from the compass instead.
     """
     ax, ay, ayaw = anchor_map
     ox0, oy0, oyaw0 = anchor_odom
-    ox, oy, oyaw = odom_now
+    ox, oy, _oyaw = odom_now
     # displacement in the odom frame, rotated into the anchor-odom body frame
     dx_o, dy_o = ox - ox0, oy - oy0
     c0, s0 = math.cos(-oyaw0), math.sin(-oyaw0)
@@ -67,7 +71,7 @@ def compose_prior(anchor_map, anchor_odom, odom_now):
     ca, sa = math.cos(ayaw), math.sin(ayaw)
     px = ax + ca * rx - sa * ry
     py = ay + sa * rx + ca * ry
-    pyaw = ayaw + (oyaw - oyaw0)
+    pyaw = heading_yaw
     return (px, py, pyaw)
 
 
@@ -104,6 +108,7 @@ def main():
     from nav_msgs.msg import Odometry
     from sensor_msgs.msg import PointCloud2
     from sensor_msgs.msg import NavSatFix
+    from sensor_msgs.msg import Imu
     from std_msgs.msg import String
 
     rospy.init_node("landmark_localizer")
@@ -134,6 +139,7 @@ def main():
         "anchor_odom": None,   # (ox0, oy0, oyaw0) odom pose captured with anchor
         "odom_now": None,      # (ox, oy, oyaw) latest odom-frame pose
         "odom_buf": [],        # [(t, ox, oy, oyaw)] last ~2.0s, for cloud-stamp sync
+        "compass_yaw": None,   # latest absolute yaw from /compass/data
         "gps_valid": False,    # /navsat/fix status.status >= 0 seen
         "last_pub": rospy.Time(0),
         "fix_history": [],   # last N accepted (x, y) fixes for median smoothing
@@ -157,6 +163,9 @@ def main():
             i += 1
         if i:
             state["odom_buf"] = buf[i:]
+
+    def on_compass(msg):
+        state["compass_yaw"] = _yaw(msg.orientation)
 
     def on_navsat(msg):
         if msg.status.status >= 0:
@@ -196,11 +205,13 @@ def main():
         if (state["anchor_map"] is None or state["anchor_odom"] is None
                 or state["odom_now"] is None):
             return
+        if state["compass_yaw"] is None:
+            return
         odom_synced = odom_at(state["odom_buf"], msg.header.stamp.to_sec())
         if odom_synced is None:
             return
         prior = compose_prior(state["anchor_map"], state["anchor_odom"],
-                              odom_synced)
+                              odom_synced, state["compass_yaw"])
         pts = cloud_to_array(msg)
         if len(pts) == 0:
             return
@@ -243,6 +254,7 @@ def main():
         state["last_pub"] = now
 
     rospy.Subscriber("/odometry/filtered_odom", Odometry, on_odom, queue_size=5)
+    rospy.Subscriber("/compass/data", Imu, on_compass, queue_size=5)
     rospy.Subscriber("/navsat/fix", NavSatFix, on_navsat, queue_size=5)
     rospy.Subscriber("/odometry/filtered_map", Odometry, on_map, queue_size=5)
     rospy.Subscriber("/abs_fix_mode", String, on_mode, queue_size=1)
