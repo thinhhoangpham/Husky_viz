@@ -242,27 +242,6 @@ def main():
             rospy.loginfo_throttle(0.5,
                 "[diag] obs=%d assoc=%d prior=(%.1f,%.1f) matched=[%s] %s"
                 % (len(obs), len(_pairs), prior[0], prior[1], _matched, "STALE"))
-
-            # TEMP STALE DIAGNOSTIC — remove after root-cause
-            _lines = ["[stale-diag] prior=(%.1f,%.1f) obs=%d:" % (prior[0], prior[1], len(obs))]
-            _gated_names = {lm.name for lm in gated}
-            for _i, _o in enumerate(obs):
-                _mx, _my = solve._to_map(_o, prior)
-                _same_type = [lm for lm in landmarks if lm.identity == _o.identity]
-                if not _same_type:
-                    _lines.append("  obs%d type=%s map=(%.2f,%.2f) no same-type in catalog"
-                                  % (_i, _o.identity, _mx, _my))
-                    continue
-                _nearest = min(_same_type,
-                               key=lambda lm: math.hypot(lm.x - _mx, lm.y - _my))
-                _dist = math.hypot(_nearest.x - _mx, _nearest.y - _my)
-                _in_gated = "YES" if _nearest.name in _gated_names else "NO"
-                _lines.append(
-                    "  obs%d type=%s map=(%.2f,%.2f) nearest_same=%s d=%.2fm gated=%s"
-                    % (_i, _o.identity, _mx, _my, _nearest.name, _dist, _in_gated))
-            rospy.loginfo_throttle(1.0, "\n".join(_lines))
-            # END TEMP STALE DIAGNOSTIC
-
             return
         x, y, yaw, rms, n = result
         # Physical-motion gate: reject a fix that teleports beyond reachable.
