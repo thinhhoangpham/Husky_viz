@@ -174,3 +174,44 @@ report "identity and geometry are equivalent here" honestly and pivot the framin
 3. **Fairness:** both arms must get identical inputs and identical non-identity
    parameters (tol, inlier-tol, prior-sanity, yaw per decision A). Any asymmetry
    invalidates the comparison — the A/B harness must enforce it.
+
+---
+
+## Implemented (2026-08-13)
+
+Built on branch `feat/typeless-matcher-control`:
+
+- **`landmark_loc/constellation_typeless.py`** (commit `dae615e`) — the type-stripped
+  matcher. Reviewed function-by-function against the typed matcher: identity removed
+  at exactly the 4 coupling points, everything non-identity (yaw, prior-sanity,
+  constants, inlier scoring, seed solve) byte-identical. The typed matcher is
+  untouched. 6/6 typeless tests + 9/9 typed tests pass.
+- **`experiments/ab_matcher.py`** (commit `3737762`) — the A/B harness.
+  `compare(observations, gated, prior, tol)` runs both matchers on identical inputs
+  and returns `{typed, typeless, agree}`. Reviewed FAIR (same inputs, no mutation).
+  Entry point: `PYTHONPATH=. python3 experiments/ab_matcher.py`.
+- Full suite green (107 passed; the 1 failure is the pre-existing unrelated
+  `test_launch.py::test_runbook_offers_both_modes`).
+
+### Early result (honest, and it matters)
+
+The first synthetic self-similarity probe in the harness `__main__` came out
+**AGREE** — typed and typeless returned identical matches even on the "self-similar
+row of lamps" scene. This is almost certainly a **weak-scene artifact**, not the
+research answer: the demo scene includes a unique **bench** alongside the lamps, and
+a single unique landmark anchors the whole constellation, so the lamps get pinned
+correctly even WITHOUT types. A genuinely ambiguous scene must have the OBSERVED set
+be all-same-type (no unique anchor) for identity to matter.
+
+**Implication for the experiment:** the decisive divergence test needs a scene the
+typeless matcher genuinely can't disambiguate — all-same-type observations in a
+symmetric/repeated arrangement — before any conclusion about identity-vs-geometry
+can be drawn. This is an experiment-DESIGN step, not a code fix.
+
+### Next (separate work, user-gated)
+
+- Construct a genuinely-ambiguous divergence scene (all-same-type observed set) and
+  confirm typeless diverges where typed holds — the minimal proof identity matters.
+- The real study: spoof-sweep (`attack_navsat.py`) + self-similarity probe against
+  the live sim, logging detection-latency vs. false-alarm for both arms. Requires a
+  sim run (main-conversation, user-gated).
