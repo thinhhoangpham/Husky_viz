@@ -1,13 +1,83 @@
 """Rule-based classification of a lidar cluster into a park landmark type.
 
-Bands are centered on the mesh-derived signatures (signatures.MESH_SIGNATURES)
-and widened by DEFAULT_MARGINS to absorb partial views. Deliberately
-CONSERVATIVE: a cluster matching zero or more-than-one type is 'unknown' and is
-dropped downstream. Trees (round, tall, trunk-radius footprint) are recognized
-only to EXCLUDE them from identity; they remain obstacles for the costmap.
+Classification is by viewpoint-stable SHAPE features (landmark_loc.shapefeat:
+footprint extents, aspect, and thin-high-band detection), not absolute
+bounding-box size bands. Deliberately CONSERVATIVE: a cluster that matches
+none of the known shapes is 'unknown' and is dropped downstream.
+
+classify_cluster applies an ORDERED sequence of gates, returning on the first
+match:
+  1. tree      - a wide canopy band at/above _TREE_CANOPY_MIN_Z sitting over a
+                 narrower trunk (vertical profile, not size; see _is_tree).
+  2. unknown   - too few raw points (< shapefeat._MIN_SHAPE_PTS) to measure a
+                 shape at all.
+  3. lamp      - a thin post rising above shapefeat.HIGH_Z
+                 (shapefeat.has_thin_high_band) with post width < _LAMP_POST_MAX.
+  4. trash_bin_1 - short (height < _BIN_MAX_H), compact oblong footprint
+                 (_BIN_FOOT_MIN <= foot_major < _BIN_FOOT_MAX) with aspect
+                 < _BIN_ASPECT_MAX to exclude flat elongated fragments.
+  5. garden_table - low box (height < _BOX_MAX_H), long footprint
+                 (foot_major >= _TABLE_MAJOR_MIN).
+  6. bench     - low box (height < _BOX_MAX_H), medium-length footprint
+                 (_BENCH_MAJOR_MIN <= foot_major < _TABLE_MAJOR_MIN).
+  7. unknown   - none of the above.
+
+Thresholds (_LAMP_POST_MAX, _BIN_MAX_H, _BIN_FOOT_MIN/MAX, _BIN_ASPECT_MAX,
+_BOX_MAX_H, _BENCH_MAJOR_MIN, _TABLE_MAJOR_MIN, plus shapefeat.HIGH_Z,
+THIN_DIAG, LOW_BAND) are measured from object meshes and live captured
+clusters. They are PROVISIONAL seed values pending pinning against a clean
+in-sim run; see the per-constant comments below for the measurements behind
+each one.
 """
+import math
 from dataclasses import dataclass
-from landmark_loc.signatures import MESH_SIGNATURES, SIGNATURE_FAMILIES
+from landmark_loc.signatures import MESH_SIGNATURES
+from landmark_loc import shapefit
+from landmark_loc import shapefeat
+
+# Shape-signature thresholds (Task 2). Each pinned from measured live/mesh
+# values; see .superpowers/sdd/2026-08-13-shape-classifier/task-2-brief.md.
+_LAMP_POST_MAX = 0.35    # m: lamp post foot_diag ~0.14; captured lamps 0.12-0.51 low
+# 1.4 -> 1.2 (Task 4): mesh bin height is 1.041 m (mesh_bounds.bounds3d). A
+# lidar sees the TOP of a short solid object, so a bin's apparent height is
+# view-stable and won't shrink much below the mesh value -- 1.041 + ~0.15 m
+# slop = 1.2 is a tighter, better-justified ceiling than the old 1.4, and it
+# shrinks the tall-fragment phantom window before the lamps start (~2.0-2.5 m).
+# PROVISIONAL: pin against a CLEAN in-sim bin capture -- captured cluster [13]
+# (h=1.679) is foliage-contaminated (segmenter fused overhanging tree canopy
+# onto the bin body), so no clean bin height was captured this session.
+_BIN_MAX_H = 1.2         # m: mesh bin height 1.041 + ~0.15 view-stability slop
+_BIN_FOOT_MIN = 0.30     # m: bin foot_major ~0.68; keep off sub-0.3 noise fragments
+_BIN_FOOT_MAX = 1.20     # m: below bench 1.78 major, above bin 0.68 with margin
+# Genuine footprint-shape discriminator (Task 4): a real bin's footprint is
+# close to square/oblong (captured bin [13] aspect 1.33; mesh aspect 1.79),
+# while flat elongated ground-scatter fragments [1]/[3] measure aspect
+# 2.38-2.41 despite sitting inside the same major/height band. 2.0->2.2:
+# a real partial-view bin measured in-sim at aspect 2.14 was being dropped to
+# unknown by the 2.0 cap; 2.2 admits it (2.14) while still excluding the
+# elongated fragments (2.38-2.41, a 0.18 margin remains). Mesh bin aspect 1.79.
+_BIN_ASPECT_MAX = 2.2
+# 1.4 -> 1.2 (Task 4): the taller of the two box objects is garden_table at
+# mesh height 1.085 m (bench is 0.942 m). Box height is view-STABLE (the
+# lidar sees the tabletop/seat surface of a solid low object), so
+# 1.085 + ~0.12 m slop = 1.2 is a tighter, mesh-grounded ceiling than the old
+# 1.40 -- closes the 1.09-1.40 m window where tall fragments could slip into
+# the bench/table classes. Same logic as _BIN_MAX_H above.
+# PROVISIONAL: pin against clean captures in-sim -- no bench/table cluster
+# near this ceiling was captured this session (captured bench [12] is 0.44 m,
+# far under both 1.2 and 1.4).
+_BOX_MAX_H = 1.20        # m: table mesh height 1.085 + ~0.12 view-stability slop; bench mesh 0.942 also under this
+_BENCH_MAJOR_MIN = 1.20  # m: bench major 1.78; near-edge foreshortening floor
+_TABLE_MAJOR_MIN = 2.30  # m: table major 3.00; splits table (>=2.3) from bench (<2.3)
+
+# Ground-anchoring gate (Task 5): the classifier had no notion of height off
+# the ground, so a floating tree-canopy fragment (thin vertical slice, wide
+# footprint) could be dimensionally identical to a ground trash_bin/lamp and
+# get misclassified. Measured live in-sim: every REAL ground object's lowest
+# point (cluster.points[:,2].min()) sits at z_min -0.48..-0.35 (they rest on
+# the ground; crop floor is z_min=-0.5). Every FLOATING canopy phantom sits at
+# z_min 3.67..4.54. Huge margin -> 0.5 cleanly separates the two groups.
+_GROUND_Z_MAX = 0.5  # m: a real ground object's lowest point sits near the crop floor (-0.5); measured real objects z_min -0.48..-0.35, floating canopy fragments z_min 3.7..4.5
 
 # Tolerances. major/minor in metres, aspect is a ratio, height in metres.
 # Pinned against live lidar (Task 1 in-sim NOTE).
@@ -19,37 +89,36 @@ DEFAULT_MARGINS = {
     "aspect_split": 1.8,   # major/minor above this = elongated (bench-like)
 }
 
-# Tree exclusion. A tree is a ROUND footprint (aspect < aspect_split) with a
-# trunk-scale minor radius. It is identified by that FOOTPRINT, not by height:
-# the localizer crops points to z in [-0.73, 1.2], so every cluster is <= 1.93 m
-# tall and real trunks appear SHORT. A height floor would make the gate dead
-# (all trees fall through to the bin band, bin height 1.041 +/- 1.0). So there
-# is NO minimum-height requirement for the footprint tells.
-#
-# The gate must catch real trunks (arbolpartes4 radius ~0.30 -> ~0.6 m minor,
-# tree_8 radius ~0.45 -> ~0.9 m minor, stumps down to ~0.4 m minor) WITHOUT
-# swallowing the four landmark families. Real trunk minors (~0.4-0.9) overlap
-# the bin (0.382) and lamp (0.483) footprints, so three independent trunk tells,
-# ANY of which suffices:
-#   1. wide trunk: minor >= _TREE_TRUNK_MINOR (0.50, wider than bin 0.382 AND
-#      lamp 0.483) -> catches tree_8, arbolpartes4, tall trunks. Bin/lamp spared.
-#   2. round stump: clearly round (aspect <= _TREE_STUMP_ASPECT) AND not
-#      lamp-tall (height < _LAMP_BAND_BOTTOM). Catches thin stumps (minor ~0.4)
-#      whose footprint sits in the bin band but whose aspect (~1.25) is far
-#      rounder than the bin (1.79). Spares the bin (aspect 1.79 > 1.5) and the
-#      lamp (genuinely tall: 3.148 >= lamp band bottom; the crop caps trunks at
-#      1.93 m so no trunk can be lamp-tall).
-#   3. tall trunk: height >= _TREE_TALL_HEIGHT (> lamp band top) -> catches thin,
-#      very tall trunks in unclipped views. Lamp (3.148 < 3.95) spared.
-# Bench/table are elongated (aspect >= aspect_split) so tell (1)-(3) never see
-# them.
-_TREE_MIN_MINOR = 0.30       # below this is a lamp pole / noise, not a trunk
-_TREE_MAX_MINOR = 1.0        # above this is not a single trunk
-_TREE_TRUNK_MINOR = 0.50     # > bin 0.382 and lamp 0.483: a definite trunk radius
-_TREE_STUMP_ASPECT = 1.5     # rounder than the bin (aspect 1.79): a round stump
-_LAMP_BAND_BOTTOM = 2.148    # lamp 3.148 - height margin 1.0; a trunk (<=1.93 m
-                             # under the crop) is never this tall, the lamp is
-_TREE_TALL_HEIGHT = 3.95     # > lamp height band top (3.148 + 0.8): a definite tree
+# Tree = a wide canopy band ABOVE a narrow trunk. Keys on the vertical PROFILE
+# (view-robust), not the canopy's absolute size (which varies 3.7-4.75 m in-sim).
+# Thresholds measured live (13 trees, 4 viewpoints): canopy begins by z~2.75
+# (p50 2.25), canopy width 2.9-4.75 m; lamps stay <1 m wide at every height.
+_TREE_CANOPY_MIN_Z = 2.5      # a wide band at/above this height is a canopy
+_TREE_CANOPY_MIN_WIDTH = 2.0  # canopy horizontal width floor (lamp head < 1 m)
+_TREE_BAND = 0.5              # z-band thickness for the profile scan
+_TREE_BAND_MIN_PTS = 3        # a band needs this many points to measure width
+_TRUNK_BAND = 1.0             # trunk region height above cluster base, used to
+                               # estimate a tree's stable position from the base
+                               # (trunk) rather than the wandering canopy mean
+
+# Known object radius by identity, metres. The lidar only sees the near face of
+# an object, so a cluster's raw centroid sits ~one radius TOWARD the robot from
+# the object's true center (used in to_observations to push the observation
+# back out to the true center). Round/near-round types: half the minor
+# horizontal extent from the mesh signature. Trees are not in MESH_SIGNATURES
+# (they're identified by vertical profile, not a size band), so the trunk
+# radius is hardcoded from the extractor's RADII table (tree_8 = 0.45 m).
+KNOWN_RADIUS = {
+    "lamp": MESH_SIGNATURES["lamp"]["minor"] / 2.0,
+    "trash_bin_1": MESH_SIGNATURES["trash_bin_1"]["minor"] / 2.0,
+    "bench": MESH_SIGNATURES["bench"]["minor"] / 2.0,
+    "garden_table": MESH_SIGNATURES["garden_table"]["minor"] / 2.0,
+    "tree": 0.45,  # tree_8 trunk radius (extractor RADII); arbolpartes4 not separately modeled here
+}
+
+# Real rectangle footprints (length, width) in metres, from the mesh signatures.
+# Only elongated types get the ICP shape fit; round types keep centroid+pushout.
+_RECT_FOOTPRINT = {"bench": (1.78, 0.80), "garden_table": (3.00, 1.32)}
 
 
 @dataclass
@@ -57,56 +126,88 @@ class Observation:
     identity: str
     x: float
     y: float
+    yaw: float = None
 
 
-def _matches(cluster, fam, m):
-    sig = MESH_SIGNATURES[fam]
-    if abs(cluster.major - sig["major"]) > m["major"]:
-        return False
-    if abs(cluster.minor - sig["minor"]) > m["minor"]:
-        return False
-    if abs(cluster.height - sig["height"]) > m["height"]:
-        return False
-    aspect = cluster.major / max(cluster.minor, 1e-3)
-    sig_aspect = sig["major"] / max(sig["minor"], 1e-3)
-    elongated = aspect >= m["aspect_split"]
-    sig_elongated = sig_aspect >= m["aspect_split"]
-    return elongated == sig_elongated
+def _band_width(pts, z0, z1):
+    """Horizontal bbox-diagonal width of points whose z is in [z0, z1)."""
+    m = (pts[:, 2] >= z0) & (pts[:, 2] < z1)
+    if int(m.sum()) < _TREE_BAND_MIN_PTS:
+        return 0.0
+    xy = pts[m][:, :2]
+    return float(((xy[:, 0].max() - xy[:, 0].min()) ** 2
+                  + (xy[:, 1].max() - xy[:, 1].min()) ** 2) ** 0.5)
 
 
 def _is_tree(cluster, margins):
-    """A round, trunk-footprint cluster — never a landmark family.
+    """True when the cluster has a wide canopy band at z >= _TREE_CANOPY_MIN_Z.
 
-    Runs BEFORE family matching and wins, so a real trunk that also falls inside
-    a family band (bin or lamp) is still excluded from identity. Identified by
-    the ROUND, trunk-scale FOOTPRINT — NOT by a height floor, because the crop
-    caps clusters at ~1.93 m and real trunks appear short. See the module-level
-    comment for the three tells and why each spares the four families.
-    """
-    aspect = cluster.major / max(cluster.minor, 1e-3)
-    if aspect >= margins["aspect_split"]:
-        return False  # elongated: bench / table
-    if not (_TREE_MIN_MINOR <= cluster.minor <= _TREE_MAX_MINOR):
+    A lamp is narrow (<_TREE_CANOPY_MIN_WIDTH) at every height, a bench/bin has no
+    band that high, so neither can satisfy this. Uses the cluster's raw points
+    (the vertical profile), not its bbox. Synthetic clusters with points=None are
+    never trees (the four rigid-type tests build those)."""
+    pts = cluster.points
+    if pts is None or len(pts) == 0:
         return False
-    # (1) wide trunk radius
-    if cluster.minor >= _TREE_TRUNK_MINOR:
-        return True
-    # (3) thin but clearly taller than any lamp
-    if cluster.height >= _TREE_TALL_HEIGHT:
-        return True
-    # (2) round stump: rounder than a bin and not lamp-tall
-    return (aspect <= _TREE_STUMP_ASPECT
-            and cluster.height < _LAMP_BAND_BOTTOM)
+    top = float(pts[:, 2].max())
+    z = _TREE_CANOPY_MIN_Z
+    while z < top:
+        if _band_width(pts, z, z + _TREE_BAND) >= _TREE_CANOPY_MIN_WIDTH:
+            return True
+        z += _TREE_BAND
+    return False
+
+
+def _trunk_xy(points):
+    """Horizontal mean of a tree cluster's low (trunk) band, near its base.
+
+    The canopy centroid wanders by metres depending on which portion the
+    lidar sees; the trunk base is a stable, precise point that matches the
+    catalog. Returns None if points is missing/empty; returns None if the
+    low band has too few points (caller falls back to centroid_xy)."""
+    if points is None or len(points) == 0:
+        return None
+    z0 = float(points[:, 2].min())
+    band = points[(points[:, 2] >= z0) & (points[:, 2] < z0 + _TRUNK_BAND)]
+    if len(band) < 3:
+        return None
+    return float(band[:, 0].mean()), float(band[:, 1].mean())
 
 
 def classify_cluster(cluster, margins=DEFAULT_MARGINS):
-    # Tree gate first and it wins: a real trunk must be excluded from identity
-    # even when it also satisfies a family band (e.g. the lamp band).
+    # Tree wins first: a real trunk+canopy must be excluded from the other types.
     if _is_tree(cluster, margins):
         return "tree"
-    hits = [fam for fam in SIGNATURE_FAMILIES if _matches(cluster, fam, margins)]
-    if len(hits) == 1:
-        return hits[0]
+    pts = cluster.points
+    if pts is None or len(pts) < shapefeat._MIN_SHAPE_PTS:
+        return "unknown"
+    # Ground-anchoring gate: lamp/trash_bin_1/garden_table/bench are all
+    # GROUND objects (base resting on the ground). A cluster whose base is
+    # not near the ground (e.g. a floating tree-canopy fragment) cannot be
+    # any of them, even if its dimensions happen to match one of the rules
+    # below -- see _GROUND_Z_MAX comment for the measured z_min separation.
+    # Does NOT apply to the tree gate above, which already ran and passed.
+    z_min = float(pts[:, 2].min())
+    if z_min >= _GROUND_Z_MAX:
+        return "unknown"
+    # lamp: the only object with a thin post rising above HIGH_Z.
+    if shapefeat.has_thin_high_band(pts) and shapefeat.post_width(pts) < _LAMP_POST_MAX:
+        return "lamp"
+    foot_major, foot_minor = shapefeat.foot_extents(pts)
+    height = cluster.height
+    aspect = foot_major / max(foot_minor, 1e-6)
+    # trash_bin: short compact oblong box, no tall thin post. The aspect cap
+    # keeps flat elongated ground fragments (aspect >2) out of the footprint
+    # band a real bin also occupies (see _BIN_ASPECT_MAX comment above).
+    if (height < _BIN_MAX_H and _BIN_FOOT_MIN <= foot_major < _BIN_FOOT_MAX
+            and aspect < _BIN_ASPECT_MAX):
+        return "trash_bin_1"
+    # garden_table: low box, long.
+    if height < _BOX_MAX_H and foot_major >= _TABLE_MAJOR_MIN:
+        return "garden_table"
+    # bench: low box, medium length.
+    if height < _BOX_MAX_H and _BENCH_MAJOR_MIN <= foot_major < _TABLE_MAJOR_MIN:
+        return "bench"
     return "unknown"
 
 
@@ -114,8 +215,31 @@ def to_observations(clusters, margins=DEFAULT_MARGINS):
     out = []
     for c in clusters:
         ident = classify_cluster(c, margins)
-        if ident in ("tree", "unknown"):
+        if ident == "unknown":
             continue
-        out.append(Observation(identity=ident,
-                               x=c.centroid_xy[0], y=c.centroid_xy[1]))
+        yaw = None
+        if ident in _RECT_FOOTPRINT and c.points is not None and len(c.points) > 0:
+            L, W = _RECT_FOOTPRINT[ident]
+            fx, fy, fyaw, ok = shapefit.fit_rectangle(c.points[:, :2], L, W)
+            if ok:
+                out.append(Observation(identity=ident, x=fx, y=fy, yaw=fyaw))
+                continue
+            # fall through to centroid+pushout on a failed fit
+        # The lidar only sees the near surface, so the raw centroid sits one
+        # radius toward the robot from the true center. Push it back out along
+        # the robot->object direction (robot is at the origin in this frame)
+        # to estimate the view-invariant true center.
+        if ident == "tree":
+            trunk = _trunk_xy(c.points)
+            cx, cy = trunk if trunk is not None else c.centroid_xy
+        else:
+            cx, cy = c.centroid_xy
+        r = math.hypot(cx, cy)
+        radius = KNOWN_RADIUS.get(ident, 0.0)
+        if r > 1e-6 and radius > 0.0:
+            ux, uy = cx / r, cy / r
+            ox, oy = cx + radius * ux, cy + radius * uy
+        else:
+            ox, oy = cx, cy
+        out.append(Observation(identity=ident, x=ox, y=oy, yaw=yaw))
     return out

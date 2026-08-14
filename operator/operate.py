@@ -33,7 +33,7 @@ from actionlib_msgs.msg import GoalStatus, GoalStatusArray
 from geometry_msgs.msg import Twist
 from move_base_msgs.msg import MoveBaseAction, MoveBaseActionGoal, MoveBaseGoal
 from nav_msgs.msg import Odometry, OccupancyGrid
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, String
 from tf.transformations import quaternion_from_euler, euler_from_quaternion
 
 from gcs_state import GcsState
@@ -70,6 +70,14 @@ RADIUS_EAST = (EQUATORIAL_RADIUS / math.sqrt(1.0 - E2 * _SIN2_REF_LAT)
 DEG_LAT_PER_METRE = math.degrees(1.0 / RADIUS_NORTH)
 DEG_LON_PER_METRE = math.degrees(1.0 / RADIUS_EAST)
 FROMLL_WAIT_S = 3.0   # short wait for /fromLL before falling back to geodesy
+
+# Mirror of landmark_loc/abs_fix_selector.SOURCES (kept in sync by hand; the
+# selector owns the authoritative copy). Operator sends the INPUT TOPIC NAME to
+# the topic_tools/MuxSelect service.
+ABS_FIX_SOURCES = {"gps": "/odometry/gps_fix",
+                   "landmark": "/odometry/landmark_fix"}
+ABS_FIX_SOURCES_INV = {v: k for k, v in ABS_FIX_SOURCES.items()}
+SET_ABS_FIX_MODE_SRV = "/set_abs_fix_mode"
 STATUS_TEXT = {
     GoalStatus.PENDING: "PENDING", GoalStatus.ACTIVE: "ACTIVE",
     GoalStatus.SUCCEEDED: "SUCCEEDED", GoalStatus.ABORTED: "ABORTED",
@@ -188,11 +196,14 @@ class Operator(object):
         self._costmap = None       # latest global costmap (OccupancyGrid)
         self._planner_cmd = (0.0, 0.0)  # (linear.x, angular.z) from /cmd_vel
         self._ctrl_cmd = (0.0, 0.0)     # from controller cmd_vel
+        self._abs_fix_mode = None       # latest /abs_fix_mode string (latched)
         rospy.Subscriber(ODOM_TOPIC, Odometry, self._on_odom, queue_size=1)
         rospy.Subscriber(PLANNER_CMD_TOPIC, Twist, self._on_planner, queue_size=1)
         rospy.Subscriber(CTRL_CMD_TOPIC, Twist, self._on_ctrl, queue_size=1)
         rospy.Subscriber("/move_base/global_costmap/costmap", OccupancyGrid,
                           self._on_costmap, queue_size=1)
+        rospy.Subscriber("/abs_fix_mode", String, self._on_abs_fix_mode,
+                          queue_size=1)
 
         self.state = GcsState()
         self._active_goal = None      # (x,y) from /move_base/goal
@@ -241,6 +252,10 @@ class Operator(object):
     def _on_ctrl(self, msg):
         with self._lock:
             self._ctrl_cmd = (msg.linear.x, msg.angular.z)
+
+    def _on_abs_fix_mode(self, msg):
+        with self._lock:
+            self._abs_fix_mode = msg.data
 
     def _on_active_goal(self, msg):
         p = msg.goal.target_pose.pose.position
@@ -356,6 +371,8 @@ class Operator(object):
             self.state.set_mode("AUTO"); rospy.loginfo("AUTO mode")
         elif cmd == "status":
             self._print_status()
+        elif cmd == "mode":
+            self._do_mode(args[0])
         elif cmd in ("help", "unknown", "error"):
             self._print_help() if cmd == "help" else rospy.logwarn(" ".join(args) or "?")
 
@@ -428,6 +445,30 @@ class Operator(object):
         self.client.send_goal(goal)
         self.state.set_mode("AUTO")
         rospy.loginfo("SENT map goal (%.2f, %.2f)", gx, gy)
+
+    def _do_mode(self, name):
+        from topic_tools.srv import MuxSelect
+        topic = ABS_FIX_SOURCES.get(name)
+        if topic is None:
+            rospy.logwarn("mode: unknown source '%s'", name)
+            return
+        try:
+            rospy.wait_for_service(SET_ABS_FIX_MODE_SRV, timeout=3.0)
+        except rospy.ROSException:
+            rospy.logwarn("mode: %s not available (is abs_fix_selector "
+                          "running?)", SET_ABS_FIX_MODE_SRV)
+            return
+        try:
+            select = rospy.ServiceProxy(SET_ABS_FIX_MODE_SRV, MuxSelect)
+            resp = select(topic)
+        except rospy.ServiceException as exc:
+            rospy.logwarn("mode: service call failed: %s", exc)
+            return
+        if not resp.prev_topic:
+            rospy.logwarn("mode: selector rejected '%s'", name)
+            return
+        rospy.loginfo("abs_fix source now '%s' (was '%s')", name,
+                      ABS_FIX_SOURCES_INV.get(resp.prev_topic, resp.prev_topic))
 
     def _teleop_repl(self):
         """Raw-key teleop: i/,=fwd/back, j/l=turn, k=stop, x/Esc=exit.
@@ -509,9 +550,13 @@ class Operator(object):
                                        self.state.sent_goal[1] - py)
         age = self._heartbeat_age()
         age_str = "n/a" if math.isnan(age) else "%.1fs" % age
-        print("state=%s | sent=%s | active=%s | dist=%s | mode=%s | estop=%s | link_age=%s" % (
+        with self._lock:
+            abs_mode = self._abs_fix_mode
+        abs_mode_str = abs_mode if abs_mode is not None else "n/a"
+        print("state=%s | sent=%s | active=%s | dist=%s | mode=%s | estop=%s | "
+              "link_age=%s | abs_fix=%s" % (
             self.state.nav_status, sx_sy, ax_ay, dist, self.state.mode,
-            self.state.estop_engaged, age_str))
+            self.state.estop_engaged, age_str, abs_mode_str))
 
     def _print_help(self):
         print(
@@ -519,6 +564,7 @@ class Operator(object):
             "  goal <lat> <lon>  send a GPS goal (map-frame, via /fromLL)\n"
             "  goal xy <x> <y>   send a map-frame goal (metres) directly\n"
             "  goal <name>       send a goal by name (maps/park_places.yaml)\n"
+            "  mode <gps|landmark>  switch the absolute-position source live\n"
             "  cancel            cancel the active move_base goal\n"
             "  teleop            enter raw-key teleop (i/,/j/l/k, x or Esc to exit)\n"
             "  stop              zero velocity, mode=STOPPED\n"

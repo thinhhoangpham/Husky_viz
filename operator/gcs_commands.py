@@ -26,6 +26,14 @@ def parse_command(line):
         if len(rest) == 1:
             return ("goal_name", [rest[0]])
         return ("error", ["goal needs <lat> <lon>, xy <x> <y>, or <name>"])
+    if verb == "mode":
+        rest = parts[1:]
+        if len(rest) != 1:
+            return ("error", ["mode needs <gps|landmark>"])
+        val = rest[0].lower()
+        if val not in ("gps", "landmark"):
+            return ("error", ["mode must be gps or landmark"])
+        return ("mode", [val])
     if verb in SIMPLE:
         return (verb, [])
     return ("unknown", [verb])
