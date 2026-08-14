@@ -36,8 +36,10 @@ roslaunch launch/move_base_gps_map.launch
 export ROS_IP=172.20.0.1 ROS_MASTER_URI=http://172.20.0.1:11311 ROBOT_HOST_IP=172.20.0.1
 cd ~/Documents/Husky_viz
 source /opt/ros/noetic/setup.bash
-PYTHONPATH=~/Documents/Husky_viz:$PYTHONPATH python3 ~/Documents/Husky_viz/landmark_loc/localizer_node.py _places_path:=/home/thinh/Documents/Husky_viz/maps/park_places.yaml
+PYTHONPATH=~/Documents/Husky_viz:$PYTHONPATH python3 ~/Documents/Husky_viz/landmark_loc/localizer_node.py _places_path:=/home/thinh/Documents/Husky_viz/maps/park_places.yaml _matcher:=typed
 ```
+
+> `_matcher:=typed` (default) runs the identity-aware RANSAC constellation matcher. `_matcher:=typeless` runs the geometry-only control matcher (ignores landmark identity; matches on pairwise-distance shape alone) — used to compare identity-vs-geometry. To demo the other mode, relaunch Terminal 3 with `_matcher:=typeless`; the localizer logs `[localizer] matcher mode: <mode>` at startup so you can confirm which is active.
 
 **Terminal 4 — pose-source selector** (fills `/odometry/abs_fix`; starts in `gps` mode):
 
