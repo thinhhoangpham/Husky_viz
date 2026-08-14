@@ -196,9 +196,15 @@ def main():
         anchor_min_dist=rospy.get_param("~anchor_min_dist", 5.0),
         smooth_window=rospy.get_param("~smooth_window", 5),
         max_jump=rospy.get_param("~max_jump", 3.0),
+        matcher=rospy.get_param("~matcher", "typed"),
     )
+    if p["matcher"] not in ("typed", "typeless"):
+        rospy.logwarn("landmark_localizer: unknown ~matcher %r, defaulting to 'typed'",
+                      p["matcher"])
+        p["matcher"] = "typed"
     landmarks = catalog.load(places)
     rospy.loginfo("landmark_localizer: %d catalog landmarks", len(landmarks))
+    rospy.loginfo("[localizer] matcher mode: %s", p["matcher"])
 
     state = {
         "anchor_map": None,    # (ax, ay, ayaw) immutable-ish map anchor
@@ -289,10 +295,12 @@ def main():
         markers_pub.publish(build_observed_markers(clusters, msg.header.frame_id, msg.header.stamp))
         obs = classify.to_observations(clusters)
         gated = catalog.gate(landmarks, prior, p["max_range"], p["fov_halfwidth"])
-        _pairs = solve.constellation.match(obs, gated, prior, p["constellation_tol"],
-                                            p["max_prior_dist"])
-        result = solve.solve_pose(obs, gated, prior, p["constellation_tol"], p["residual_gate"],
+        _match_mod = (solve.constellation_typeless if p["matcher"] == "typeless"
+                      else solve.constellation)
+        _pairs = _match_mod.match(obs, gated, prior, p["constellation_tol"],
                                    p["max_prior_dist"])
+        result = solve.solve_pose(obs, gated, prior, p["constellation_tol"], p["residual_gate"],
+                                   p["max_prior_dist"], matcher=p["matcher"])
         if result is None:
             _matched = ",".join(lm.name for _o, lm in _pairs)
             rospy.loginfo_throttle(0.5,

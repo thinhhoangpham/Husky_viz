@@ -20,6 +20,7 @@ import math
 import numpy as np
 
 from landmark_loc import constellation
+from landmark_loc import constellation_typeless
 from landmark_loc.geom import rigid_transform_2d
 
 
@@ -59,9 +60,14 @@ def _dedupe_one_to_one(pairs, observations, prior_xyz):
 
 
 def solve_pose(observations, gated_landmarks, prior_xyz, dist_gate, residual_gate,
-                max_prior_dist=5.0):
-    pairs = constellation.match(observations, gated_landmarks, prior_xyz, dist_gate,
-                                 max_prior_dist)
+                max_prior_dist=5.0, matcher="typed"):
+    if matcher not in ("typed", "typeless"):
+        import warnings
+        warnings.warn("solve_pose: unknown matcher %r, defaulting to 'typed'" % (matcher,))
+        matcher = "typed"
+    mod = constellation_typeless if matcher == "typeless" else constellation
+    pairs = mod.match(observations, gated_landmarks, prior_xyz, dist_gate,
+                       max_prior_dist)
     if len(pairs) < 3:
         return None
     src = np.array([[o.x, o.y] for o, _ in pairs])

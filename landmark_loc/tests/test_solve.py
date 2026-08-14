@@ -116,3 +116,44 @@ def test_solve_pose_accepts_clean_fit():
     assert out is not None
     x, y, yaw, rms, n = out
     assert abs(x - 2.0) < 0.05 and abs(y + 1.0) < 0.05 and n == 3
+
+
+def test_matcher_default_is_typed():
+    # A wrong-type landmark co-located with an observation's geometric slot:
+    # typed must refuse to match it (n < 3 -> None), typeless must accept it.
+    cat = [MapLandmark("lampA", "lamp", 10.0, 0.0),
+           MapLandmark("benchB", "bench", 13.0, 4.0),
+           MapLandmark("binC", "trash_bin_1", 8.0, 5.0),
+           MapLandmark("lampD", "lamp", 8.0, 5.0)]  # wrong type at binC's spot
+    obs = _obs_from_truth((0.0, 0.0, 0.0), cat[:3])  # robot sees lamp, bench, bin
+
+    out_default = solve.solve_pose(obs, cat, prior_xyz=(0.0, 0.0, 0.0),
+                                    dist_gate=1.0, residual_gate=0.3)
+    out_typed = solve.solve_pose(obs, cat, prior_xyz=(0.0, 0.0, 0.0),
+                                  dist_gate=1.0, residual_gate=0.3, matcher="typed")
+    out_typeless = solve.solve_pose(obs, cat, prior_xyz=(0.0, 0.0, 0.0),
+                                     dist_gate=1.0, residual_gate=0.3, matcher="typeless")
+
+    assert out_typed is not None and out_typeless is not None
+    # default (omitted matcher) must equal explicit "typed"
+    assert (out_default is None) == (out_typed is None)
+    matched_typed = sorted(lm.name for _, lm in
+                            solve.constellation.match(obs, cat, (0.0, 0.0, 0.0), 1.0, 5.0))
+    matched_typeless = sorted(lm.name for _, lm in
+                               solve.constellation_typeless.match(obs, cat, (0.0, 0.0, 0.0), 1.0, 5.0))
+    assert "lampD" not in matched_typed  # typed refuses the wrong-type landmark
+    assert "lampD" in matched_typeless   # typeless admits it
+    assert matched_typed != matched_typeless
+
+
+def test_matcher_invalid_value_falls_back_to_typed():
+    lms = [MapLandmark("a", "bench", 5.0, 1.0),
+           MapLandmark("b", "lamp", 6.0, -2.0),
+           MapLandmark("c", "garden_table", 3.0, 4.0)]
+    obs = _obs_from_truth((2.0, -1.0, 0.5), lms)
+    out_bad = solve.solve_pose(obs, lms, prior_xyz=(2.0, -1.0, 0.5),
+                                dist_gate=1.0, residual_gate=0.3, matcher="bogus")
+    out_typed = solve.solve_pose(obs, lms, prior_xyz=(2.0, -1.0, 0.5),
+                                  dist_gate=1.0, residual_gate=0.3, matcher="typed")
+    assert out_bad is not None and out_typed is not None
+    assert out_bad[:2] == out_typed[:2]
