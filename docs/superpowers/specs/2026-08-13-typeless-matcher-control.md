@@ -215,3 +215,37 @@ can be drawn. This is an experiment-DESIGN step, not a code fix.
 - The real study: spoof-sweep (`attack_navsat.py`) + self-similarity probe against
   the live sim, logging detection-latency vs. false-alarm for both arms. Requires a
   sim run (main-conversation, user-gated).
+
+---
+
+## Important caveat — the typeless matcher is NOT a pure geometry-only baseline
+
+Traced through the live pipeline (`localizer_node.py:290`): classification happens
+BEFORE the matcher. `classify.to_observations(clusters)` classifies every cluster
+and DROPS the `unknown` ones (`classify.py:218-219: if ident == "unknown": continue`)
+BEFORE either matcher runs. So the observation set handed to the matcher is already:
+
+- **noise-filtered** — clusters the classifier can't categorize are gone, and
+- **type-restricted** — only the ~5 known landmark types survive; everything else the
+  lidar sees is discarded.
+
+The typeless matcher receives that SAME categorized, filtered set — it only ignores
+the `identity` field inside its own seed-lookup and inlier-scoring. It does NOT run
+on raw geometry.
+
+**Consequence for the experiment's claim.** The correct reading of the "typeless
+works as well as typed" result is:
+
+> Given the same **categorized-and-filtered** observation set, using landmark
+> identity IN THE MATCHING STEP vs. not using it makes no localization-accuracy
+> difference.
+
+It is NOT "semantics-free geometry localizes fine" — because the classifier (which
+is itself identity/semantic) still did load-bearing front-end work (noise rejection
++ landmark selection) that BOTH matchers depend on. The negative result is therefore
+narrower than "identity doesn't help": identity does not help the **matching** step,
+but the **classification** step is still semantic and still essential upstream.
+
+A genuinely geometry-only baseline (ICP/NDT on all points, no classifier) would test
+the broader claim and could give a different picture. That baseline remains out of
+scope for this branch (noted earlier); this caveat records why it would matter.
