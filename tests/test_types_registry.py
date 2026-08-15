@@ -17,8 +17,8 @@ def test_arbolpartes4_is_obstacle_only():
     # Has a footprint radius + world prefix (it IS stamped as an obstacle)...
     assert t.disc_radius > 0
     assert t.world_prefix == "arbolpartes4"
-    # ...but is never a place, never in the catalog, and has no mesh signature.
-    assert t.is_place is False
+    # ...but is never an object, never in the catalog, and has no mesh signature.
+    assert t.is_object is False
     assert t.is_catalog is False
     assert t.mesh is None
     assert t.signature is None
@@ -28,7 +28,7 @@ def test_arbolpartes4_is_obstacle_only():
 def test_tree_has_no_signature_but_hardcoded_detect_radius():
     t = BY_PREFIX["tree_8"]
     assert t.identity == "tree"          # tree_8 model -> generic 'tree'
-    assert t.is_place is True
+    assert t.is_object is True
     assert t.is_catalog is True
     assert t.mesh is None                # identified by vertical profile
     assert t.signature is None
@@ -41,7 +41,7 @@ def test_lamp_and_bin_are_disc_not_box():
         t = BY_PREFIX[prefix]
         assert t.mesh is not None            # have a mesh signature
         assert t.signature is not None
-        assert t.is_place is True
+        assert t.is_object is True
         assert t.box_stamped is False        # stamped as a disc, not a box
 
 

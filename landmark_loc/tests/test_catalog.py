@@ -7,7 +7,7 @@ from landmark_loc.catalog import load, MapLandmark
 
 
 def test_load_maps_names_to_identities(tmp_path):
-    p = tmp_path / "places.yaml"
+    p = tmp_path / "objects.yaml"
     p.write_text(
         "bench: {x: 1.0, y: 2.0}\n"
         "bench_clone_1: {x: 3.0, y: 4.0}\n"
@@ -40,12 +40,12 @@ def test_gate_respects_prior_yaw():
 
 
 def test_tree8_names_load_as_tree_identity(tmp_path):
-    places = tmp_path / "places.yaml"
-    places.write_text(
+    objects = tmp_path / "objects.yaml"
+    objects.write_text(
         "bench_1: {x: 1.0, y: 2.0}\n"
         "tree_8: {x: 10.0, y: 20.0}\n"
         "tree_8_clone_3: {x: 11.0, y: 21.0}\n")
-    lms = catalog.load(str(places))
+    lms = catalog.load(str(objects))
     ids = {lm.name: lm.identity for lm in lms}
     assert ids["tree_8"] == "tree"
     assert ids["tree_8_clone_3"] == "tree"

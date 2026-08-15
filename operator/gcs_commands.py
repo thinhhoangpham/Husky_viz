@@ -22,7 +22,7 @@ def parse_command(line):
                 return ("goal", [float(rest[0]), float(rest[1])])
             except ValueError:
                 return ("error", ["goal args must be numbers"])
-        # goal <name>  -- single non-numeric arg -> named place lookup
+        # goal <name>  -- single non-numeric arg -> named object lookup
         if len(rest) == 1:
             return ("goal_name", [rest[0]])
         return ("error", ["goal needs <lat> <lon>, xy <x> <y>, or <name>"])

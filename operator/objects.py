@@ -1,4 +1,4 @@
-"""Load the named-places table (maps/park_places.yaml) and resolve a name to its
+"""Load the named-objects table (maps/park_objects.yaml) and resolve a name to its
 map-frame center point. Clearance from the object's inflated footprint is NOT
 handled here -- the caller (operate.py) snaps the resolved center to the
 nearest free cell in the live global costmap before sending it as a goal.
@@ -11,21 +11,21 @@ import re
 _LINE = re.compile(r"^([^:#\s]+):\s*\{x:\s*([-\d.]+),\s*y:\s*([-\d.]+)[^}]*\}")
 
 
-def load_places(path):
-    places = {}
+def load_objects(path):
+    objects = {}
     with open(path, "r") as fh:
         for line in fh:
             m = _LINE.match(line.strip())
             if m:
-                places[m.group(1)] = (float(m.group(2)), float(m.group(3)))
-    return places
+                objects[m.group(1)] = (float(m.group(2)), float(m.group(3)))
+    return objects
 
 
-def resolve(name, places, offset=0.0):
-    if name not in places:
-        raise KeyError("unknown place '%s'; known: %s"
-                       % (name, ", ".join(sorted(places))))
-    x, y = places[name]
+def resolve(name, objects, offset=0.0):
+    if name not in objects:
+        raise KeyError("unknown object '%s'; known: %s"
+                       % (name, ", ".join(sorted(objects))))
+    x, y = objects[name]
     # No offset by default: returns the object center. operate.py snaps this
     # to the nearest free costmap cell before sending it as a move_base goal.
     return (x + offset, y)

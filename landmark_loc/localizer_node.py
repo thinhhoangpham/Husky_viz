@@ -178,8 +178,8 @@ def main():
     from visualization_msgs.msg import MarkerArray
 
     rospy.init_node("landmark_localizer")
-    places = rospy.get_param("~places_path",
-                             "/home/thinh/Documents/Husky_viz/maps/park_places.yaml")
+    objects = rospy.get_param("~objects_path",
+                              "/home/thinh/Documents/Husky_viz/maps/park_objects.yaml")
     p = dict(
         z_min=rospy.get_param("~z_min", -0.5),  # measured per tree-landmark spec: raised to drop ground blob
         z_max=rospy.get_param("~z_max", 7.0),  # measured per tree-landmark spec: raised to include tree canopies
@@ -203,7 +203,7 @@ def main():
         rospy.logwarn("landmark_localizer: unknown ~matcher %r, defaulting to 'typed'",
                       p["matcher"])
         p["matcher"] = "typed"
-    landmarks = catalog.load(places)
+    landmarks = catalog.load(objects)
     rospy.loginfo("landmark_localizer: %d catalog landmarks", len(landmarks))
     rospy.loginfo("[localizer] matcher mode: %s", p["matcher"])
 

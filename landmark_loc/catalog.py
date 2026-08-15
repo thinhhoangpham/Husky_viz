@@ -1,6 +1,6 @@
 """Load the known landmark catalog and gate it to the robot's plausible view.
 
-The catalog is maps/park_places.yaml (name -> map-frame x,y). Each name is
+The catalog is maps/park_objects.yaml (name -> map-frame x,y). Each name is
 mapped to a landmark identity via map_tools.sdf_parse.classify. gate() prunes
 the catalog to landmarks a robot at the prior pose could currently see, so
 association is a local problem, not a global search.
@@ -36,8 +36,8 @@ class MapLandmark:
     yaw: float = None
 
 
-def load(places_path):
-    with open(places_path) as fh:
+def load(objects_path):
+    with open(objects_path) as fh:
         data = yaml.safe_load(fh)
     out = []
     for name, xy in data.items():

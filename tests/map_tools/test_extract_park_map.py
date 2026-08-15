@@ -1,6 +1,6 @@
 import os
 from map_tools.sdf_parse import parse_models, Model
-from map_tools.extract_park_map import RADII, build_grid, build_places
+from map_tools.extract_park_map import RADII, build_grid, build_objects
 
 WORLD = os.path.join(os.path.dirname(__file__), "..", "..",
                      "natural_environments_ros_opt", "natural_enviroment",
@@ -19,15 +19,17 @@ def test_build_grid_marks_a_known_tree_and_leaves_far_ground_free():
     # A point 50 m away from any obstacle is free. Use grid corner-ish empty.
     assert g.is_occupied(tree.world_x + 40.0, tree.world_y + 40.0) is False
 
-def test_build_places_has_named_furniture_not_trees():
+def test_build_objects_has_named_furniture_and_trees_not_bushes():
     models = parse_models(WORLD)
-    places = build_places(models)
-    assert any(n.startswith("bench") for n in places)
-    assert any(n.startswith("lamp") for n in places)
-    assert not any(n.startswith("arbolpartes4") for n in places)
-    assert not any(n.startswith("tree_8") for n in places)
+    objects = build_objects(models)
+    assert any(n.startswith("bench") for n in objects)
+    assert any(n.startswith("lamp") for n in objects)
+    # tree_8 IS a valid catalog object (is_object=True); trees are objects too.
+    assert any(n.startswith("tree_8") for n in objects)
+    # arbolpartes4 bushes are obstacle-only, never catalog objects.
+    assert not any(n.startswith("arbolpartes4") for n in objects)
     # Each entry has numeric x and y.
-    sample = next(iter(places.values()))
+    sample = next(iter(objects.values()))
     assert isinstance(sample["x"], float) and isinstance(sample["y"], float)
 
 def test_bench_box_is_stamped_at_shifted_geometry_center_not_link_origin():
@@ -99,4 +101,4 @@ def test_main_writes_three_files(tmp_path):
     assert rc == 0
     assert (out / "park_map.pgm").exists()
     assert (out / "park_map.yaml").exists()
-    assert (out / "park_places.yaml").exists()
+    assert (out / "park_objects.yaml").exists()

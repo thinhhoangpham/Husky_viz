@@ -16,7 +16,7 @@ map_tools/* and landmark_loc/* import DOWN into it, with no import cycle.
 Semantics preserved verbatim from the tables this replaces:
   - world_prefix   : map_tools/sdf_parse.py::_FAMILY_PREFIXES
   - identity       : landmark_loc/catalog.py::_FAMILY_TO_IDENTITY (tree_8->tree)
-  - is_place       : map_tools/extract_park_map.py::PLACE_FAMILIES
+  - is_object      : map_tools/extract_park_map.py::OBJECT_FAMILIES
   - is_catalog     : landmark_loc/catalog.py::_IDENTITY_FAMILIES
   - disc_radius    : map_tools/extract_park_map.py::RADII
   - mesh           : landmark_loc/signatures.py::_MESHES
@@ -27,12 +27,12 @@ Semantics preserved verbatim from the tables this replaces:
 
 Preserved asymmetries:
   - arbolpartes4 = obstacle-only: has disc_radius + world_prefix, but
-    is_place=False, is_catalog=False, mesh=None (never becomes a place or a
+    is_object=False, is_catalog=False, mesh=None (never becomes an object or a
     catalog landmark; only stamped as a disc obstacle).
-  - tree_8 -> identity 'tree': is_place + is_catalog, but mesh=None and its
+  - tree_8 -> identity 'tree': is_object + is_catalog, but mesh=None and its
     detect_radius is hardcoded 0.45 (trunk radius), NOT mesh-derived, because
     trees are identified by vertical profile, not a size band.
-  - lamp / trash_bin_1: have a mesh signature + is_place, but box_stamped=False
+  - lamp / trash_bin_1: have a mesh signature + is_object, but box_stamped=False
     (stamped as discs -- their box footprint is sub-cell at 0.15 m).
   - bench / garden_table: box_stamped=True (yaw-oriented box footprints).
 """
@@ -49,7 +49,7 @@ _MODELS_ROOT = os.path.join(os.path.dirname(__file__), "..", "models_opt")
 class ParkType:
     world_prefix: str                      # model-name prefix in park.world
     identity: str                          # matcher identity (tree_8 -> 'tree')
-    is_place: bool                         # becomes a named goal destination
+    is_object: bool                         # becomes a named goal destination
     is_catalog: bool                       # participates in matcher catalog
     disc_radius: float                     # footprint disc radius (m)
     mesh: Optional[Tuple[Tuple[str, ...], float]]  # (rel-path-parts, scale)|None
@@ -119,37 +119,37 @@ _RECT_FOOTPRINT_LITERALS = {
 PARK_TYPES = (
     ParkType(
         world_prefix="bench", identity="bench",
-        is_place=True, is_catalog=True, disc_radius=0.90,
+        is_object=True, is_catalog=True, disc_radius=0.90,
         mesh=(("bench", "Bench_1.dae"), 0.15),
         box_stamped=True, marker_color=(0.0, 1.0, 0.0, 1.0),
     ),
     ParkType(
         world_prefix="garden_table", identity="garden_table",
-        is_place=True, is_catalog=True, disc_radius=0.60,
+        is_object=True, is_catalog=True, disc_radius=0.60,
         mesh=(("garden_table", "garden_table.dae"), 1.0),
         box_stamped=True, marker_color=(0.0, 1.0, 1.0, 1.0),
     ),
     ParkType(
         world_prefix="lamp", identity="lamp",
-        is_place=True, is_catalog=True, disc_radius=0.20,
+        is_object=True, is_catalog=True, disc_radius=0.20,
         mesh=(("lamp", "street_lamp.dae"), 1.0),
         box_stamped=False, marker_color=(1.0, 1.0, 0.0, 1.0),
     ),
     ParkType(
         world_prefix="trash_bin_1", identity="trash_bin_1",
-        is_place=True, is_catalog=True, disc_radius=0.25,
+        is_object=True, is_catalog=True, disc_radius=0.25,
         mesh=(("trash_bin_1", "trash_bin.dae"), 1.0),
         box_stamped=False, marker_color=(1.0, 0.5, 0.0, 1.0),
     ),
     ParkType(
         world_prefix="tree_8", identity="tree",
-        is_place=True, is_catalog=True, disc_radius=0.45,
+        is_object=True, is_catalog=True, disc_radius=0.45,
         mesh=None,
         box_stamped=False, marker_color=(0.0, 0.4, 0.0, 1.0),
     ),
     ParkType(
         world_prefix="arbolpartes4", identity="arbolpartes4",
-        is_place=False, is_catalog=False, disc_radius=0.30,
+        is_object=False, is_catalog=False, disc_radius=0.30,
         mesh=None,
         box_stamped=False, marker_color=(1.0, 0.0, 0.0, 1.0),
     ),
