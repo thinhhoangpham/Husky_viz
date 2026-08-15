@@ -47,6 +47,7 @@ DoD SAFE-*/
 # Vendored ROS package trees — excluded from this repo by request.
 # ---------------------------------------------------------------------------
 models_opt/
+models_lake_opt/
 natural_environments_ros_opt/
 
 # ---------------------------------------------------------------------------
