@@ -16,6 +16,10 @@ services:
       # `docker compose exec operator bash -c "..."` gets a working ROS env
       # without repeating `source /opt/ros/noetic/setup.bash` by hand.
       BASH_ENV: "/etc/ros_env.sh"
+      # Named-objects table behind `goal <name>`. Defaults to park; set
+      # OBJECTS_PATH=/repo/maps/lake_objects.yaml in the environment (or export
+      # it before `docker compose up`) to drive the lake world by name instead.
+      OBJECTS_PATH: "${OBJECTS_PATH:-/repo/maps/park_objects.yaml}"
     volumes:
       # Repo mounted rw so operate.py can write operator_run.csv, and so its
       # `from send_mapless_goal import ...` resolves from /repo.

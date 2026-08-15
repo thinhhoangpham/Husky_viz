@@ -2,6 +2,24 @@
 
 One terminal per step. Each block sets its own ROS env, so copy-paste as-is.
 
+> **Park is the default.** To run the same demo in the **lake** world, change
+> three things — everything else is identical:
+>
+> | Step | Park (default) | Lake |
+> |---|---|---|
+> | 1 | `./load-park-world.sh` | `./load-park-world.sh --world lake` |
+> | 2 | `roslaunch launch/move_base_gps_map.launch` | append `map:=$HOME/Documents/Husky_viz/maps/lake_map.yaml` |
+> | 3 | `_objects_path:=…/maps/park_objects.yaml` | `…/maps/lake_objects.yaml` |
+>
+> Lake is self-contained in `models_lake_opt/` (low-poly visuals *and* the original
+> collision meshes) — no external drive needed to run it.
+> Its landmarks are `tree`, `postescable`, `lago` — and note **the lake itself is a
+> landmark, not an obstacle**: `lago` has no `<collision>`, so the lidar cannot see
+> the water and it is deliberately absent from `lake_map.pgm`. Low vegetation is
+> skipped in the static map too; the robot dodges it from live lidar.
+> Step 3's operator (`operate.py`) still reads `maps/park_objects.yaml` — goal-by-name
+> is park-only until that path is parameterised.
+
 ## Step 0 — Docker network
 
 ```bash

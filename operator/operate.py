@@ -51,7 +51,24 @@ from goal_marker import place_goal_marker
 # the map-frame goal we send. (The old /odometry/filtered is the odom frame.)
 ODOM_TOPIC = "/odometry/filtered_map"
 GOAL_FRAME = "map"
-_OBJECTS_PATH = os.path.join(os.path.dirname(__file__), "..", "maps", "park_objects.yaml")
+# Named-objects table for `goal <name>`. Park by default so existing runs are
+# unchanged; override per world without editing this file, either way:
+#   ROS param : _objects_path:=/repo/maps/lake_objects.yaml
+#   env var   : OBJECTS_PATH=/repo/maps/lake_objects.yaml   (works in the
+#               container, where the REPL is exec'd rather than roslaunched)
+# Resolved lazily in _objects_path() -- NOT at import, because rospy params are
+# not available until init_node has run.
+_DEFAULT_OBJECTS_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "maps", "park_objects.yaml")
+
+
+def _objects_path():
+    """Path to the named-objects YAML: ROS param, then env, then park default."""
+    try:
+        p = rospy.get_param("~objects_path", None)
+    except Exception:
+        p = None
+    return p or os.environ.get("OBJECTS_PATH") or _DEFAULT_OBJECTS_PATH
 PLANNER_CMD_TOPIC = "/cmd_vel"                              # move_base output
 CTRL_CMD_TOPIC = "/husky_velocity_controller/cmd_vel"      # controller input
 
@@ -341,7 +358,7 @@ class Operator(object):
             self._do_goal_xy(args[0], args[1])
         elif cmd == "goal_name":
             try:
-                objects = load_objects(_OBJECTS_PATH)
+                objects = load_objects(_objects_path())
                 gx, gy = resolve_object(args[0], objects)
             except (KeyError, IOError) as exc:
                 rospy.logwarn("named goal failed: %s", exc)
@@ -563,7 +580,7 @@ class Operator(object):
             "Commands:\n"
             "  goal <lat> <lon>  send a GPS goal (map-frame, via /fromLL)\n"
             "  goal xy <x> <y>   send a map-frame goal (metres) directly\n"
-            "  goal <name>       send a goal by name (maps/park_objects.yaml)\n"
+            "  goal <name>       send a goal by name (%s)\n" % os.path.basename(_objects_path()) +
             "  mode <gps|landmark>  switch the absolute-position source live\n"
             "  cancel            cancel the active move_base goal\n"
             "  teleop            enter raw-key teleop (i/,/j/l/k, x or Esc to exit)\n"

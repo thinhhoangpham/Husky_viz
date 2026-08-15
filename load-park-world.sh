@@ -70,12 +70,48 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 ROS_SETUP="/opt/ros/noetic/setup.bash"
 PKG_TREE="$SCRIPT_DIR/natural_environments_ros_opt"
-MODEL_DIR="$SCRIPT_DIR/models_opt"
-WORLD_FILE="$PKG_TREE/natural_enviroment/worlds/park.world"
 SENSOR_URDF="$PKG_TREE/husky/husky_description/urdf/sensor_description.urdf"
 
 MODE="ros"    # ros | headless | gzonly
 SPAWN_ROBOT=1 # default ON; cleared by --no-robot, forced off by --gzonly
+
+# Which world to load. Park is the default so every existing invocation and
+# runbook step is unchanged; --world lake switches the world file, the launch
+# pair and GAZEBO_MODEL_PATH. Both worlds are self-contained in their own
+# models_*_opt tree. See docs/lake-optimization-plan.md.
+WORLD_NAME="park"
+
+set_world_paths() {
+  case "$WORLD_NAME" in
+    park)
+      MODEL_DIR="$SCRIPT_DIR/models_opt"
+      WORLD_FILE="$PKG_TREE/natural_enviroment/worlds/park.world"
+      WORLD_LAUNCH="create_park.launch"
+      ROBOT_LAUNCH="add_husky_park_1.launch"
+      # A model name that only exists once the world is genuinely parsed. The
+      # readiness poll greps get_world_properties for it -- it MUST be a model
+      # from THIS world or the poll never succeeds and the robot never spawns.
+      WORLD_READY_MODEL="parque"
+      ;;
+    lake)
+      # Self-contained, exactly like park's models_opt: models_lake_opt holds
+      # BOTH the low-poly visual meshes and the original collision meshes, plus
+      # a tree_8 symlink to park's shared tree. Verified: all 16 mesh URIs in
+      # lake.world resolve from this one root. No external drive needed at
+      # runtime -- that is only required to REBUILD the low-poly meshes
+      # (scripts/optimize_lake_meshes.py).
+      MODEL_DIR="$SCRIPT_DIR/models_lake_opt"
+      WORLD_FILE="$PKG_TREE/natural_enviroment/worlds/lake.world"
+      WORLD_LAUNCH="create_lake.launch"
+      ROBOT_LAUNCH="add_husky_lake_1.launch"
+      WORLD_READY_MODEL="terreno_lago"
+      ;;
+    *)
+      echo "Error: unknown --world '$WORLD_NAME' (expected park|lake)" >&2
+      exit 2
+      ;;
+  esac
+}
 
 # How long to wait for the world before giving up and NOT spawning the robot.
 # natural_environments_ros/readme.txt:49-50 documents 2-10 minute load times for
@@ -92,11 +128,15 @@ usage() {
 load-park-world.sh - load the natural_environments "park" Gazebo world and
 spawn the Husky into it.
 
-Usage: $(basename "${BASH_SOURCE[0]}") [--headless] [--no-robot] [--gzonly] [--help]
+Usage: $(basename "${BASH_SOURCE[0]}") [--world park|lake] [--headless] [--no-robot] [--gzonly] [--help]
 
-  (no flags)   Two stages: roslaunch natural_environments create_park.launch,
+  --world W    Which world to load: park (default) or lake. Selects the world
+               file, the create_/add_husky_ launch pair, and GAZEBO_MODEL_PATH.
+               Lake is self-contained in models_lake_opt/ (low-poly visuals
+               + original collision meshes); no external drive needed.
+  (no flags)   Two stages: roslaunch natural_environments \$WORLD_LAUNCH,
                then, once the world is genuinely up,
-               roslaunch natural_environments add_husky_park_1.launch.
+               roslaunch natural_environments \$ROBOT_LAUNCH.
                Full ROS stack: gzserver + gzclient GUI, use_sim_time=true.
                SPAWNING THE ROBOT IS THE DEFAULT.
   --headless   No gzclient window. Use over SSH or when you just need the ROS
@@ -120,6 +160,12 @@ while [ $# -gt 0 ]; do
     --headless) MODE="headless" ;;
     --gzonly)   MODE="gzonly" ;;
     --no-robot) SPAWN_ROBOT=0 ;;
+    --world)
+      shift
+      [ $# -gt 0 ] || { echo "Error: --world needs a value (park|lake)." >&2; exit 2; }
+      WORLD_NAME="$1"
+      ;;
+    --world=*)  WORLD_NAME="${1#--world=}" ;;
     -h|--help)  usage; exit 0 ;;
     *)
       echo "Error: unknown option '$1'." >&2
@@ -130,6 +176,10 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+
+# Resolve MODEL_DIR / WORLD_FILE / launch names from WORLD_NAME. After parsing
+# so --world may appear in any position; exits 2 on an unknown world.
+set_world_paths
 
 # --gzonly starts no ROS master, so there is nothing to spawn the robot with.
 # Rather than erroring out on `--gzonly --no-robot` (which is redundant but not
@@ -162,9 +212,17 @@ if [ "$MODE" = "gzonly" ]; then
     || fail "--gzonly needs the 'gazebo' wrapper on PATH, but it is missing."
 fi
 
-[ -d "$MODEL_DIR" ] \
-  || fail "models directory not found: $MODEL_DIR
-Without it Gazebo cannot resolve model:// URIs and the world loads empty."
+# MODEL_DIR may be a colon-separated LIST (lake needs three roots), so check
+# each entry rather than the whole string -- `[ -d a:b ]` is always false.
+_check_model_dirs() {
+  local IFS=':' d
+  for d in $MODEL_DIR; do
+    [ -d "$d" ] || fail "models directory not found: $d
+Without it Gazebo cannot resolve model:// URIs and the world loads empty.
+(GAZEBO_MODEL_PATH for --world $WORLD_NAME is: $MODEL_DIR)"
+  done
+}
+_check_model_dirs
 
 [ -d "$PKG_TREE" ] \
   || fail "package tree not found: $PKG_TREE
@@ -390,10 +448,13 @@ pgid_of() {
 # ---------------------------------------------------------------------------
 # Heads-up before the long silence.
 # ---------------------------------------------------------------------------
-cat <<'EOF'
+cat <<EOF
 --------------------------------------------------------------------------
-Loading the park world (stage 1), then the Husky (stage 2) once the world is
-genuinely up. Stage 2 is skipped entirely with --no-robot or --gzonly.
+Loading the $WORLD_NAME world (stage 1), then the Husky (stage 2) once the world
+is genuinely up. Stage 2 is skipped entirely with --no-robot or --gzonly.
+EOF
+if [ "$WORLD_NAME" = "park" ]; then
+  cat <<'EOF'
 
 EXPECTED, HARMLESS ERROR
   Gazebo will log a mesh-not-found error for a model named `Untitled2`
@@ -407,6 +468,22 @@ FIRST LOAD IS SLOW
   The terrain assets are large (terreno_parque.dae alone is 304 MB), so a
   long silent startup with no output is normal, not a hang. Later loads
   are faster once the assets are in the page cache.
+EOF
+else
+  cat <<'EOF'
+
+LAKE USES THE LOW-POLY MESHES
+  Visuals are the low-poly meshes; collision stays on the ORIGINAL
+  meshes, so the lidar sees full detail. Both live in models_lake_opt/,
+  so this world is self-contained. See docs/lake-optimization-plan.md.
+
+THE WATER IS NOT AN OBSTACLE
+  `lago` is a visual-only box with no <collision>, so the lidar returns
+  nothing from it and live obstacle avoidance cannot see it. It is a
+  landmark in maps/lake_objects.yaml, not occupied cells in lake_map.pgm.
+EOF
+fi
+cat <<'EOF'
 
 Ctrl-C to stop.
 --------------------------------------------------------------------------
@@ -432,16 +509,16 @@ echo ""
 # it to the group. Do not drop setsid without also rethinking cleanup().
 case "$MODE" in
   ros)
-    echo "Stage 1: roslaunch natural_environments create_park.launch"
-    setsid roslaunch natural_environments create_park.launch &
+    echo "Stage 1: roslaunch natural_environments $WORLD_LAUNCH"
+    setsid roslaunch natural_environments "$WORLD_LAUNCH" &
     ;;
   headless)
     # create_park.launch -> simulator_empty_world.launch -> empty_world.launch,
     # which accepts gui/headless args, so the GUI is switched off through
     # roslaunch rather than by starting gzserver by hand. That keeps
     # use_sim_time and the /gazebo/* services identical to the GUI mode.
-    echo "Stage 1: roslaunch natural_environments create_park.launch gui:=false headless:=true"
-    setsid roslaunch natural_environments create_park.launch gui:=false headless:=true &
+    echo "Stage 1: roslaunch natural_environments $WORLD_LAUNCH gui:=false headless:=true"
+    setsid roslaunch natural_environments "$WORLD_LAUNCH" gui:=false headless:=true &
     ;;
   gzonly)
     echo "Running: gazebo \"$WORLD_FILE\"  (no ROS, and therefore no robot)"
@@ -485,7 +562,7 @@ fi
 # perfectly ready. It would produce a false timeout.
 # ---------------------------------------------------------------------------
 echo ""
-echo -n "Waiting for the park world to finish loading (up to ${WORLD_TIMEOUT_S}s) "
+echo -n "Waiting for the $WORLD_NAME world to finish loading (up to ${WORLD_TIMEOUT_S}s) "
 WORLD_READY=0
 for _ in $(seq 1 "$WORLD_TIMEOUT_S"); do
   # If stage 1 died outright there is no point burning the rest of the timeout.
@@ -497,7 +574,7 @@ for _ in $(seq 1 "$WORLD_TIMEOUT_S"); do
     exit 1
   fi
   if rosservice list 2>/dev/null | grep -q '^/gazebo/spawn_urdf_model$' \
-     && rosservice call /gazebo/get_world_properties 2>/dev/null | grep -q 'parque'; then
+     && rosservice call /gazebo/get_world_properties 2>/dev/null | grep -q "$WORLD_READY_MODEL"; then
     WORLD_READY=1
     echo " ready."
     break
@@ -527,9 +604,9 @@ fi
 # independently of and before the world.
 # ---------------------------------------------------------------------------
 echo ""
-echo "Stage 2: roslaunch natural_environments add_husky_park_1.launch"
+echo "Stage 2: roslaunch natural_environments $ROBOT_LAUNCH"
 echo "         (spawns at the bag's recorded start pose: x=45.64 y=0.02 z=3.3 yaw=2.6132)"
-setsid roslaunch natural_environments add_husky_park_1.launch &
+setsid roslaunch natural_environments "$ROBOT_LAUNCH" &
 ROBOT_PID=$!
 ROBOT_PGID="$(pgid_of "$ROBOT_PID")"
 

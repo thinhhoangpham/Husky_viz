@@ -12,11 +12,18 @@
   NavfnROS.allow_unknown is set to true in planner_gps.yaml; with
   track_unknown_space: false the static costmap marks everything known, so
   allow_unknown is harmless (nothing is unknown).
+
+  The map defaults to park; pass map:=<path> for another world, e.g.
+    roslaunch launch/move_base_gps_map.launch \
+      map:=/home/thinh/Documents/Husky_viz/maps/lake_map.yaml
+  Everything else (planner, costmaps, remaps) is world-independent.
 -->
 <launch>
 
+  <arg name="map" default="/home/thinh/Documents/Husky_viz/maps/park_map.yaml"/>
+
   <node name="map_server" pkg="map_server" type="map_server"
-        args="/home/thinh/Documents/Husky_viz/maps/park_map.yaml" output="screen"/>
+        args="$(arg map)" output="screen"/>
 
   <node pkg="move_base" type="move_base" respawn="false" name="move_base" output="screen">
 
