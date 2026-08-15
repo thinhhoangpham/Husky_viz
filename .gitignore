@@ -102,3 +102,18 @@ models_opt/**/*.tga
 ._*
 
 .worktrees/
+
+# ---------------------------------------------------------------------------
+# Scratch run output.
+#
+# scratchpad/ is throwaway transcripts of individual runs -- attacker logs,
+# sim/move_base startup logs, one-off audit CSVs, map previews. Nothing in it is
+# a tool or a reproducible result, so it is never committed. Files are left on
+# disk; this only keeps them out of `git status`.
+#
+# artifacts/ is deliberately NOT ignored: 11 files there (attack plots, plot
+# JSON, crosscheck PNGs) are tracked on purpose. Per CLAUDE.md it is where run
+# OUTPUTS go, and some of those outputs are worth keeping. Ignore individual
+# scratch subdirectories there if they appear, not the whole tree.
+# ---------------------------------------------------------------------------
+scratchpad/
