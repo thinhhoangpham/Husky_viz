@@ -1,34 +1,36 @@
 #!/usr/bin/env python3
-"""Build the low-poly lake world: reduce meshes for rendering, keep collision full.
+"""Make low-poly versions of the lake world's meshes.
 
-Mirrors what park.world does:
-  * VISUAL     -> hard-cut low-poly mesh
-  * COLLISION  -> the ORIGINAL mesh, untouched
-  * sole exception: tree bark, which gets its own separate collision mesh
-    (park already built one at models_opt/tree_8/bark8_collision.obj, reused here)
+Quadric decimation, one output per mesh. Nothing else - it does not touch
+lake.world, and it does not touch collision. Point the world's <visual> blocks at
+the results yourself; leave <collision> on the originals.
 
-Two rules that are load-bearing; breaking either produces a visibly broken world:
+Two settings are load-bearing. Change either and the output is visibly broken:
 
   1. SAVE IN THE SOURCE FORMAT.  DAE in -> DAE out, OBJ in -> OBJ out.
-     Writing a DAE source out as .obj DESTROYS the UVs: pymeshlab's OBJ writer
+     Writing a DAE source out as .obj DESTROYS the UVs - pymeshlab's OBJ writer
      only emits `vt` lines when a texture is registered, so the mesh ends up with
-     a single UV coordinate and renders as one flat blob of colour.  For OBJ
-     output also pass save_wedge_texcoord=True.
+     a single UV coordinate and renders as one flat blob of colour. OBJ output
+     also needs save_wedge_texcoord=True.
 
-  2. THE GROUND IS A HOLED GRID WITH REAL RELIEF.  terreno_lago has 742,619 of
-     1,050,625 lattice sites occupied and 2.43 m of height variation.  Cutting it
-     75% destroyed the surface outright.  50% keeps it intact.  Do not raise
-     GROUND_TARGET without re-checking the height distribution afterwards
-     (--verify does this).
+  2. THE GROUND CANNOT TAKE A HARD CUT.  terreno_lago is a holed grid (742,619 of
+     1,050,625 lattice sites) carrying 2.43 m of real relief. A 75% cut destroyed
+     the surface outright. 50% keeps it - verified height span 2.435 m, identical
+     to the original, shore dip intact.
+
+Decimation is deliberate here rather than the grid subsample park used on its own
+ground: park's terrain was flat (6.9 mm of relief) so uniform subsampling lost
+nothing, while this one has shape worth spending triangles on. Quadric decimation
+is content-aware - it collapses flat regions and keeps curvature.
+
+Outputs land in models_lake_opt/<model>/. Meshes are built in a scratch dir first
+because pymeshlab silently re-encodes texture PNGs sitting next to whatever it
+writes.
 
 Usage:
-    python3 scripts/optimize_lake_meshes.py            # decimate + install + rewrite world
-    python3 scripts/optimize_lake_meshes.py --verify   # re-check an existing build
-    python3 scripts/optimize_lake_meshes.py --revert   # restore the pristine world
-
-Requires the source assets on the external drive (see SRC below) and pymeshlab.
+    python3 scripts/optimize_lake_meshes.py            # build every mesh
+    python3 scripts/optimize_lake_meshes.py arbusto3   # build matching meshes only
 """
-import argparse
 import os
 import re
 import shutil
@@ -37,55 +39,31 @@ import sys
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = "/media/thinh/Extreme Pro/Husky viz/models"
 DST = os.path.join(REPO, "models_lake_opt")
-WORLD = os.path.join(
-    REPO, "natural_environments_ros_opt/natural_enviroment/worlds/lake.world"
-)
-BACKUP = WORLD + ".bak-before-opt"
-# scratch: pymeshlab silently re-encodes texture PNGs sitting next to whatever it
-# writes, so meshes are built here and only the mesh file is moved into place.
 SCRATCH = os.path.join(REPO, "artifacts", "lake_mesh_build")
 
-GROUND_TARGET = 740_000  # 50% of 1,481,096 - see rule 2 above
-
-# src_rel, out_name, target_faces, relax_boundary
+# src_rel, model_dir, out_name, target_faces, relax_boundary
+#
+# relax_boundary=False keeps boundary edges pinned, which the ground needs.
+# The leafy meshes floor out well above target with it on (their leaf cards are
+# nearly all boundary edges), so they relax it to reach the target.
+#
+# tree_8_v/bark8.obj is absent on purpose: park already built a low-poly of that
+# exact asset at models_opt/tree_8/bark8_lowpoly.obj (20,000 faces). Reuse it.
 JOBS = [
-    ("terreno_lago/lago.dae", "terreno_lago_lowpoly.dae", GROUND_TARGET, False),
-    ("arbusto3/model.dae", "arbusto3_lowpoly.dae", 40_000, True),
-    ("dry_bush/untitled.obj", "dry_bush_lowpoly.obj", 30_000, True),
-    ("tree_8_v/crown8.obj", "crown8_lowpoly.obj", 12_000, True),
-    ("linea1/postes.dae", "postes_lowpoly.dae", 30_000, True),
-    ("linea1/cables2.dae", "cables2_lowpoly.dae", 30_000, True),
+    ("terreno_lago/lago.dae", "terreno_lago", "terreno_lago_lowpoly.dae", 740_000, False),
+    ("arbusto3/model.dae", "arbusto3", "arbusto3_lowpoly.dae", 40_000, True),
+    ("dry_bush/untitled.obj", "dry_bush", "dry_bush_lowpoly.obj", 30_000, True),
+    ("tree_8_v/crown8.obj", "tree_8_v", "crown8_lowpoly.obj", 12_000, True),
+    ("linea1/postes.dae", "linea1", "postes_lowpoly.dae", 30_000, True),
+    ("linea1/cables2.dae", "linea1", "cables2_lowpoly.dae", 30_000, True),
 ]
 
-# model dir each output belongs in
-INSTALL = {
-    "terreno_lago_lowpoly.dae": "terreno_lago",
-    "arbusto3_lowpoly.dae": "arbusto3",
-    "dry_bush_lowpoly.obj": "dry_bush",
-    "crown8_lowpoly.obj": "tree_8_v",
-    "postes_lowpoly.dae": "linea1",
-    "cables2_lowpoly.dae": "linea1",
-}
-
-# visual swaps: original uri -> low-poly uri
-VISUAL = {
-    "terreno_lago/lago.dae": "terreno_lago/terreno_lago_lowpoly.dae",
-    "arbusto3/model.dae": "arbusto3/arbusto3_lowpoly.dae",
-    "dry_bush/untitled.obj": "dry_bush/dry_bush_lowpoly.obj",
-    "tree_8_v/crown8.obj": "tree_8_v/crown8_lowpoly.obj",
-    "linea1/postes.dae": "linea1/postes_lowpoly.dae",
-    "linea1/cables2.dae": "linea1/cables2_lowpoly.dae",
-    # park already optimized this exact asset; reuse rather than rebuild
-    "tree_8_v/bark8.obj": "tree_8/bark8_lowpoly.obj",
-}
-# collision swaps: only bark moves off its original, exactly as park did
-COLLISION = {
-    "tree_8_v/bark8.obj": "tree_8/bark8_collision.obj",
-}
+# postes/cables carry no UVs in the source, so 0 is correct for them
+NO_UV_EXPECTED = {"postes_lowpoly.dae", "cables2_lowpoly.dae"}
 
 
 def uv_count(path):
-    """Number of UV entries, so a UV-destroying save is caught immediately."""
+    """UV entries in the output, so a UV-destroying save is caught immediately."""
     if path.endswith(".obj"):
         with open(path, errors="ignore") as fh:
             return sum(1 for line in fh if line.startswith("vt "))
@@ -93,180 +71,73 @@ def uv_count(path):
     return sum(int(x) for x in re.findall(r'-map-?\d*-array"\s+count="(\d+)"', data))
 
 
-def decimate():
+def build(rel, model_dir, out, target, relax):
     import pymeshlab as ml
 
+    ms = ml.MeshSet()
+    ms.load_new_mesh(os.path.join(SRC, rel))
+    mesh = ms.current_mesh()
+    before = mesh.face_number()
+    textured = mesh.has_wedge_tex_coord()
+
+    kw = dict(
+        targetfacenum=target,
+        preserveboundary=not relax,
+        preservenormal=True,
+        planarquadric=True,
+        optimalplacement=True,
+    )
+    if not relax:
+        kw["boundaryweight"] = 2.0
+
+    if textured:
+        ms.meshing_decimation_quadric_edge_collapse_with_texture(**kw)
+    else:
+        ms.meshing_decimation_quadric_edge_collapse(preservetopology=False, **kw)
+    after = ms.current_mesh().face_number()
+
     os.makedirs(SCRATCH, exist_ok=True)
-    print("Decimating (visual meshes only; collision keeps the original):")
-    for rel, out, target, relax in JOBS:
-        ms = ml.MeshSet()
-        ms.load_new_mesh(os.path.join(SRC, rel))
-        mesh = ms.current_mesh()
-        before = mesh.face_number()
-        textured = mesh.has_wedge_tex_coord()
-        kw = dict(
-            targetfacenum=target,
-            preserveboundary=not relax,
-            preservenormal=True,
-            planarquadric=True,
-            optimalplacement=True,
-        )
-        if not relax:
-            kw["boundaryweight"] = 2.0
-        if textured:
-            ms.meshing_decimation_quadric_edge_collapse_with_texture(**kw)
-        else:
-            ms.meshing_decimation_quadric_edge_collapse(preservetopology=False, **kw)
-        after = ms.current_mesh().face_number()
+    scratch_path = os.path.join(SCRATCH, out)
+    if out.endswith(".obj"):
+        ms.save_current_mesh(scratch_path, save_wedge_texcoord=True)  # rule 1
+    else:
+        ms.save_current_mesh(scratch_path)
 
-        path = os.path.join(SCRATCH, out)
-        if path.endswith(".obj"):
-            ms.save_current_mesh(path, save_wedge_texcoord=True)  # rule 1
-        else:
-            ms.save_current_mesh(path)
+    uv = uv_count(scratch_path)
+    broken = textured and out not in NO_UV_EXPECTED and uv < 100
+    if broken:
+        print(f"  {out:26s} UV LOSS ({uv}) - not installed. See rule 1.")
+        return False
 
-        uv = uv_count(path)
-        cut = 100 * (1 - after / before)
-        warn = "  <-- UV LOSS, see rule 1" if textured and uv < 100 else ""
-        print(f"  {out:26s} {before:>9,} -> {after:>8,} ({cut:4.1f}%)  uv={uv:,}{warn}")
+    target_dir = os.path.join(DST, model_dir)
+    os.makedirs(target_dir, exist_ok=True)
+    for name in (out, out + ".mtl"):
+        src = os.path.join(SCRATCH, name)
+        if os.path.exists(src):
+            shutil.copy(src, target_dir)
+    # pymeshlab drops a placeholder texture beside OBJ output; never ship it
+    dummy = os.path.join(target_dir, "dummy.png")
+    if os.path.exists(dummy):
+        os.remove(dummy)
 
-
-def install():
-    print("Installing into models_lake_opt/:")
-    for out, model_dir in INSTALL.items():
-        target_dir = os.path.join(DST, model_dir)
-        os.makedirs(target_dir, exist_ok=True)
-        for name in (out, out + ".mtl"):
-            src = os.path.join(SCRATCH, name)
-            if os.path.exists(src):
-                shutil.copy(src, target_dir)
-        print(f"  {model_dir}/{out}")
-    # pymeshlab drops a placeholder texture next to OBJ output; never ship it
-    for root, _dirs, files in os.walk(DST):
-        for f in files:
-            if f == "dummy.png":
-                os.remove(os.path.join(root, f))
-
-
-def rewrite_world():
-    """Point <visual> at the low-poly mesh, leave <collision> on the original."""
-    if not os.path.exists(BACKUP):
-        shutil.copy(WORLD, BACKUP)
-        print(f"  backed up -> {os.path.basename(BACKUP)}")
-    # always rewrite from the pristine copy so this is idempotent
-    data = open(BACKUP, encoding="utf-8", errors="ignore").read()
-
-    chunks, pos, counts = [], 0, {}
-    for m in re.finditer(r"<(visual|collision)(\s[^>]*)?>.*?</\1>", data, re.S):
-        chunks.append(data[pos : m.start()])
-        blk, kind = m.group(0), m.group(1)
-        table = VISUAL if kind == "visual" else COLLISION
-        for orig, rep in table.items():
-            token = f"model://{orig}"
-            if token in blk:
-                blk = blk.replace(token, f"model://{rep}")
-                counts[(kind, orig)] = counts.get((kind, orig), 0) + 1
-        chunks.append(blk)
-        pos = m.end()
-    chunks.append(data[pos:])
-    new = "".join(chunks)
-
-    open(WORLD, "w", encoding="utf-8").write(new)
-    print("Rewriting lake.world:")
-    for (kind, orig), n in sorted(counts.items()):
-        print(f"  {kind:9s} {orig:26s} x{n}")
-
-    import xml.etree.ElementTree as ET
-
-    ET.parse(WORLD)
-    print(f"  {len(data):,} -> {len(new):,} bytes, XML OK")
-
-
-def verify():
-    """Re-check the two things that were silently broken on earlier attempts."""
-    ok = True
-
-    print("UV survival:")
-    for out, model_dir in INSTALL.items():
-        path = os.path.join(DST, model_dir, out)
-        if not os.path.exists(path):
-            print(f"  {out:26s} MISSING")
-            ok = False
-            continue
-        uv = uv_count(path)
-        # postes/cables have no UVs in the source, so 0 is correct for them
-        expect_uv = out not in ("postes_lowpoly.dae", "cables2_lowpoly.dae")
-        bad = expect_uv and uv < 100
-        ok &= not bad
-        print(f"  {out:26s} uv={uv:>9,}{'   <-- BROKEN' if bad else ''}")
-
-    print("Ground height (must match the original):")
-    for label, path in (
-        ("original", os.path.join(SRC, "terreno_lago/lago.dae")),
-        ("low-poly", os.path.join(DST, "terreno_lago/terreno_lago_lowpoly.dae")),
-    ):
-        if not os.path.exists(path):
-            print(f"  {label}: MISSING")
-            ok = False
-            continue
-        data = open(path, errors="ignore").read()
-        m = re.search(
-            r'<float_array[^>]*positions-array"[^>]*count="(\d+)"[^>]*>(.*?)</float_array>',
-            data,
-            re.S,
-        )
-        vals = [float(x) for x in m.group(2).split()]
-        zs = vals[2::3]
-        # ground is scaled 50 25 4 in the world; x4 gives world metres
-        print(
-            f"  {label}: verts={len(zs):>8,}  z span {(max(zs) - min(zs)) * 4:.3f} m"
-            f"  (min {min(zs) * 4:+.3f}, max {max(zs) * 4:+.3f})"
-        )
-
-    print("Collision must still reference the ORIGINAL meshes:")
-    data = open(WORLD, errors="ignore").read()
-    col = set()
-    for m in re.finditer(r"<collision[^>]*>(.*?)</collision>", data, re.S):
-        col |= {
-            u
-            for u in re.findall(r"<uri>model://([^<]+)</uri>", m.group(1))
-            if u.endswith((".dae", ".obj"))
-        }
-    for uri in sorted(col):
-        lowpoly = "_lowpoly" in uri
-        ok &= not lowpoly
-        print(f"  {uri:44s}{'  <-- LOW-POLY IN COLLISION' if lowpoly else ''}")
-
-    print("\nVERIFY:", "PASS" if ok else "FAIL")
-    return ok
-
-
-def revert():
-    if not os.path.exists(BACKUP):
-        sys.exit(f"no backup at {BACKUP}")
-    shutil.copy(BACKUP, WORLD)
-    print(f"restored {WORLD} from {os.path.basename(BACKUP)}")
+    print(
+        f"  {out:26s} {before:>9,} -> {after:>8,} "
+        f"({100 * (1 - after / before):4.1f}%)  uv={uv:,}"
+    )
+    return True
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--verify", action="store_true", help="check an existing build")
-    ap.add_argument("--revert", action="store_true", help="restore the pristine world")
-    args = ap.parse_args()
-
-    if args.revert:
-        revert()
-        return
-    if args.verify:
-        sys.exit(0 if verify() else 1)
-
     if not os.path.isdir(SRC):
         sys.exit(f"source assets not mounted: {SRC}")
-    decimate()
-    install()
-    rewrite_world()
-    print()
-    verify()
+    only = sys.argv[1] if len(sys.argv) > 1 else None
+    jobs = [j for j in JOBS if not only or only in j[2] or only in j[0]]
+    if not jobs:
+        sys.exit(f"no mesh matches {only!r}")
+
+    print(f"Low-poly meshes -> {os.path.relpath(DST, REPO)}/")
+    ok = all([build(*j) for j in jobs])
+    sys.exit(0 if ok else 1)
 
 
 if __name__ == "__main__":
