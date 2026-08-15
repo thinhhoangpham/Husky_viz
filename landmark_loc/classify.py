@@ -128,10 +128,51 @@ _RECT_FOOTPRINT = {
 
 @dataclass
 class Observation:
+    """One typed landmark sighting in the sensor frame.
+
+    This is the STABLE contract between any detector implementation and the
+    matcher/solver (see landmark_loc.detector). It says nothing about what
+    sensor produced it -- a lidar-cluster classifier, a camera image
+    classifier, or a fusion of both all emit this same record.
+
+    confidence: how sure the detector is of `identity`, in [0, 1]. The legacy
+    cascade is a hard first-match-wins rule set with no score, so it emits
+    1.0 for every type it commits to. Scoring detectors emit their real
+    score. Consumers today ignore it; it exists so a future weighted matcher
+    can use it without another contract change.
+
+    frame_id / stamp: WHERE and WHEN this sighting is expressed. x/y are
+    meaningless without them -- "2 m ahead" is only a position once you know
+    which sensor mount it is ahead of, and at what instant. The node used to
+    ASSUME every observation was in the cloud's frame at the cloud's time;
+    that assumption silently breaks the moment a second detector exists (a
+    camera on a different mount, or a fuser combining percepts from different
+    ticks), so it is now carried explicitly on the record.
+
+      frame_id: str  -- ROS frame name (e.g. "os0_lidar"). None = unstated.
+      stamp: float   -- seconds since the epoch (i.e. rospy.Time.to_sec()),
+                        NOT a rospy.Time. Deliberately a plain float so this
+                        dataclass -- the shared detector/matcher contract --
+                        stays ROS-free and unit-testable without rospy
+                        installed. None = unstated.
+
+    Consumers today (solve, constellation, constellation_typeless) read only
+    identity/x/y/yaw and IGNORE frame_id/stamp; they are correct only because
+    there is exactly one detector, all of whose output shares one frame and
+    one stamp. Any consumer that mixes detectors MUST transform to a common
+    frame/time before matching.
+
+    NOTE: `confidence`, `frame_id` and `stamp` are appended LAST on purpose --
+    existing positional construction Observation(ident, x, y[, yaw]) keeps
+    working unchanged.
+    """
     identity: str
     x: float
     y: float
     yaw: float = None
+    confidence: float = 1.0
+    frame_id: str = None
+    stamp: float = None
 
 
 def _band_width(pts, z0, z1):
@@ -216,10 +257,24 @@ def classify_cluster(cluster, margins=DEFAULT_MARGINS):
     return "unknown"
 
 
-def to_observations(clusters, margins=DEFAULT_MARGINS):
+def to_observations(clusters, margins=DEFAULT_MARGINS, frame_id=None, stamp=None,
+                    labels=None):
+    """Reduce clusters to typed Observations, dropping 'unknown' ones.
+
+    frame_id/stamp are stamped onto every emitted Observation -- see the
+    Observation docstring for the contract (they describe where/when these
+    sightings were taken; the caller that owns the sensor message supplies
+    them).
+
+    `labels`, when given, is a precomputed per-cluster identity list, used
+    INSTEAD of re-running classify_cluster. It exists purely so a caller that
+    already needed the labels (e.g. for RViz markers) does not pay for
+    classification twice per tick; passing labels computed with the same
+    margins is exactly equivalent to omitting it.
+    """
     out = []
-    for c in clusters:
-        ident = classify_cluster(c, margins)
+    for i, c in enumerate(clusters):
+        ident = classify_cluster(c, margins) if labels is None else labels[i]
         if ident == "unknown":
             continue
         yaw = None
@@ -227,7 +282,8 @@ def to_observations(clusters, margins=DEFAULT_MARGINS):
             L, W = _RECT_FOOTPRINT[ident]
             fx, fy, fyaw, ok = shapefit.fit_rectangle(c.points[:, :2], L, W)
             if ok:
-                out.append(Observation(identity=ident, x=fx, y=fy, yaw=fyaw))
+                out.append(Observation(identity=ident, x=fx, y=fy, yaw=fyaw,
+                                       frame_id=frame_id, stamp=stamp))
                 continue
             # fall through to centroid+pushout on a failed fit
         # The lidar only sees the near surface, so the raw centroid sits one
@@ -246,5 +302,6 @@ def to_observations(clusters, margins=DEFAULT_MARGINS):
             ox, oy = cx + radius * ux, cy + radius * uy
         else:
             ox, oy = cx, cy
-        out.append(Observation(identity=ident, x=ox, y=oy, yaw=yaw))
+        out.append(Observation(identity=ident, x=ox, y=oy, yaw=yaw,
+                               frame_id=frame_id, stamp=stamp))
     return out

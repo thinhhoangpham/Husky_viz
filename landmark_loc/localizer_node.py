@@ -14,7 +14,7 @@ import statistics
 
 import numpy as np
 
-from landmark_loc import segment, classify, catalog, solve
+from landmark_loc import segment, catalog, solve, detector
 
 
 def _is_landmark_mode(mode_str):
@@ -128,9 +128,12 @@ _LABEL_COLOR = {t.identity: t.marker_color for t in _PARK_TYPES if t.is_catalog}
 _LABEL_COLOR["unknown"] = (1.0, 0.0, 0.0, 1.0)  # red
 
 
-def build_observed_markers(clusters, frame_id, stamp):
+def build_observed_markers(clusters, frame_id, stamp, labels):
     """Build a MarkerArray of TEXT_VIEW_FACING labels, one per cluster, showing
     the classifier's identity string for that cluster (including 'unknown').
+    `labels` is the precomputed per-cluster identity list from
+    `Detector.detect` -- passed in rather than recomputed here so the tick
+    classifies exactly once (see landmark_loc.detector, ONE PASS PER TICK).
     First element is a DELETEALL so stale labels from a tick with more
     clusters than the current tick don't linger."""
     import rospy
@@ -142,7 +145,7 @@ def build_observed_markers(clusters, frame_id, stamp):
     arr.markers.append(delete_all)
 
     for i, c in enumerate(clusters):
-        ident = classify.classify_cluster(c)
+        ident = labels[i]
         cx, cy = c.centroid_xy
         if c.points is not None and len(c.points) > 0:
             z_top = float(c.points[:, 2].max())
@@ -198,14 +201,21 @@ def main():
         smooth_window=rospy.get_param("~smooth_window", 5),
         max_jump=rospy.get_param("~max_jump", 3.0),
         matcher=rospy.get_param("~matcher", "typed"),
+        classifier=rospy.get_param("~classifier", detector.DEFAULT_DETECTOR),
     )
     if p["matcher"] not in ("typed", "typeless"):
         rospy.logwarn("landmark_localizer: unknown ~matcher %r, defaulting to 'typed'",
                       p["matcher"])
         p["matcher"] = "typed"
+    if p["classifier"] not in detector.DETECTORS:
+        rospy.logwarn("landmark_localizer: unknown ~classifier %r, defaulting to %r",
+                      p["classifier"], detector.DEFAULT_DETECTOR)
+        p["classifier"] = detector.DEFAULT_DETECTOR
+    det = detector.get_detector(p["classifier"])
     landmarks = catalog.load(objects)
     rospy.loginfo("landmark_localizer: %d catalog landmarks", len(landmarks))
     rospy.loginfo("[localizer] matcher mode: %s", p["matcher"])
+    rospy.loginfo("[localizer] classifier mode: %s", p["classifier"])
 
     state = {
         "anchor_map": None,    # (ax, ay, ayaw) immutable-ish map anchor
@@ -293,8 +303,14 @@ def main():
             return
         cropped = segment.crop(pts, p["z_min"], p["z_max"], p["max_range"])
         clusters = segment.cluster(cropped, p["link_dist"], p["min_pts"], p["max_extent"])
-        markers_pub.publish(build_observed_markers(clusters, msg.header.frame_id, msg.header.stamp))
-        obs = classify.to_observations(clusters)
+        # One classification pass per tick: detect() returns the labels the
+        # markers need (all clusters, including 'unknown') AND the accepted
+        # observations, stamped with THIS cloud's frame/time so downstream
+        # never has to assume where/when they came from.
+        labels, obs = det.detect(clusters, frame_id=msg.header.frame_id,
+                                 stamp=msg.header.stamp.to_sec())
+        markers_pub.publish(build_observed_markers(
+            clusters, msg.header.frame_id, msg.header.stamp, labels))
         gated = catalog.gate(landmarks, prior, p["max_range"], p["fov_halfwidth"])
         _match_mod = (solve.constellation_typeless if p["matcher"] == "typeless"
                       else solve.constellation)
