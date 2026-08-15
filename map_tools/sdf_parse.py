@@ -12,10 +12,11 @@ from dataclasses import dataclass
 from map_tools.park_types import classify_prefix
 
 
-def classify(name):
+def classify(name, prefixes=None):
     # Delegates to the single type registry; longest-prefix-first so
     # "trash_bin_1"/"tree_8" are not shadowed (see park_types.classify_prefix).
-    return classify_prefix(name)
+    # prefixes=None keeps the park set (unchanged for existing callers).
+    return classify_prefix(name, prefixes)
 
 
 @dataclass
@@ -44,10 +45,14 @@ def _state_block(text):
     return text[start:end]
 
 
-def parse_models(world_path):
-    """Return the obstacle Models (family != 'skip') from park.world.
+def parse_models(world_path, prefixes=None):
+    """Return the obstacle Models (family != 'skip') from a Gazebo world.
 
     Position is the trunk/link_0 world pose from the <state> block.
+
+    `prefixes` selects which type registry classifies model names; None means
+    the park set, so every existing caller is unchanged. Pass
+    park_types.LAKE_PREFIXES_LONGEST_FIRST to parse lake.world.
     """
     with open(world_path, "r") as fh:
         text = fh.read()
@@ -60,7 +65,7 @@ def parse_models(world_path):
     for i in range(len(idxs) - 1):
         chunk = state[idxs[i]:idxs[i + 1]]
         name = _MODEL_RE.search(chunk).group(1)
-        family = classify(name)
+        family = classify(name, prefixes)
         if family == "skip":
             continue
         # Find link_0's pose within this model chunk.

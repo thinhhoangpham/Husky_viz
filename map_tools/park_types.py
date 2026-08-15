@@ -284,7 +284,82 @@ PARK_TYPES = (
 )
 
 # world_prefix -> ParkType.
+# ---------------------------------------------------------------------------
+# Lake world types.
+#
+# Deliberately a SEPARATE registry, not extra PARK_TYPES entries: PARK_TYPES is
+# imported by the whole detection stack (catalog, score, signatures, classify,
+# localizer_node), so appending lake species there would put them in the park
+# detector's catalog too. Keeping them apart means each world declares only its
+# own types, and `classify_prefix(..., types=LAKE_TYPES)` selects which.
+#
+# Model-instance names in lake.world differ from the model FOLDER names on disk
+# (world 'bush' -> folder dry_bush, 'tree' -> tree_8_v, 'postescable' -> linea1).
+# world_prefix must match the WORLD name, since that is what gets classified.
+#
+# What is deliberately ABSENT, per the mapping decision for this world:
+#   altaniv_seca_d (68), altaniv (31), bush (30), arbusto3 (34) -- all low
+#   vegetation. NOT in the registry at all, so classify_prefix returns 'skip'
+#   and they never reach the occupancy grid. The robot decides whether to dodge
+#   them from live lidar + the local costmap, not from the static map. Stamping
+#   163 vegetation footprints would carve the map into something unnavigable
+#   while hiding genuinely passable ground.
+# ---------------------------------------------------------------------------
+LAKE_TYPES = (
+    ParkType(
+        # Same asset as park's tree_8 (bark8.obj, 165,380 faces, byte-identical),
+        # so the park numbers carry over verbatim: disc_radius 0.45 is the trunk
+        # radius, mesh=None because trees are identified by vertical profile
+        # rather than a size band, and score_margin 2.0 is the canopy-width
+        # spread measured in-sim. Named 'tree' in lake.world, 'tree_8' in park.
+        world_prefix="tree", identity="tree",
+        is_object=True, is_catalog=True, disc_radius=0.45,
+        mesh=None,
+        box_stamped=False, marker_color=(0.0, 0.4, 0.0, 1.0),
+        score_family="profile", score_margin=2.0,
+        score_floor=0.05,
+    ),
+    ParkType(
+        # The power line: ONE model holding BOTH poles plus the span between
+        # them. Measured from linea1/postes.dae at its world scale 0.03: the
+        # mesh is 58.97 x 3.60 m overall, but near-base geometry clusters into
+        # exactly two poles, each 0.50 m wide, centred ~29 m apart.
+        #
+        # disc_radius 0.25 is therefore ONE pole's radius, not the model's.
+        # A single disc at the model origin cannot cover both poles -- see the
+        # note in extract_lake_map.py; the cables between them are 8 m up and
+        # are not an obstacle at robot height anyway.
+        world_prefix="postescable", identity="postescable",
+        is_object=True, is_catalog=True, disc_radius=0.25,
+        mesh=None,
+        box_stamped=False, marker_color=(0.6, 0.3, 0.0, 1.0),
+        # PROFILE type, same shape of argument as park's lamp: a pole is "a
+        # thin post rising high", not a size band. 0.35 m is the same post-width
+        # cap the lamp uses, and a 0.50 m-wide pole sits just above it.
+        score_family="profile", score_margin=0.35,
+        score_floor=0.05,
+    ),
+    ParkType(
+        # The lake itself. LANDMARK ONLY -- is_object/is_catalog True so it
+        # lands in lake_objects.yaml and the matcher catalog, but it is NEVER
+        # stamped into the occupancy grid (see extract_lake_map.py: the water
+        # family is excluded from build_grid).
+        #
+        # Rationale: `lago` is a visual-only <box> with NO <collision>, so the
+        # lidar returns nothing from it -- live obstacle avoidance is blind to
+        # water. It is not an obstacle to bump into; it is a region to plan
+        # away from, using prior map knowledge.
+        #
+        # disc_radius 0.0: never stamped, so no footprint is meaningful.
+        world_prefix="lago", identity="lake",
+        is_object=True, is_catalog=True, disc_radius=0.0,
+        mesh=None,
+        box_stamped=False, marker_color=(0.13, 0.44, 0.70, 1.0),
+    ),
+)
+
 BY_PREFIX = {t.world_prefix: t for t in PARK_TYPES}
+LAKE_BY_PREFIX = {t.world_prefix: t for t in LAKE_TYPES}
 
 # Prefixes ordered LONGEST-FIRST, so "trash_bin_1"/"tree_8" are not shadowed by
 # a shorter prefix. Replicates sdf_parse._FAMILY_PREFIXES' longest-first intent
@@ -292,15 +367,23 @@ BY_PREFIX = {t.world_prefix: t for t in PARK_TYPES}
 PREFIXES_LONGEST_FIRST = tuple(
     sorted((t.world_prefix for t in PARK_TYPES), key=len, reverse=True)
 )
+LAKE_PREFIXES_LONGEST_FIRST = tuple(
+    sorted((t.world_prefix for t in LAKE_TYPES), key=len, reverse=True)
+)
 
 
-def classify_prefix(name):
+def classify_prefix(name, prefixes=None):
     """Map a world model name to its world_prefix, or 'skip'.
 
     Longest-prefix-first so "trash_bin_1"/"tree_8" win over shorter prefixes.
     Matches sdf_parse.classify's semantics exactly.
+
+    `prefixes` defaults to the park set, so every existing caller is unchanged.
+    Pass LAKE_PREFIXES_LONGEST_FIRST to classify against the lake world instead.
     """
-    for prefix in PREFIXES_LONGEST_FIRST:
+    if prefixes is None:
+        prefixes = PREFIXES_LONGEST_FIRST
+    for prefix in prefixes:
         if name == prefix or name.startswith(prefix + "_"):
             return prefix
     return "skip"
