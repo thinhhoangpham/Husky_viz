@@ -71,12 +71,21 @@ inference cost twice.
 SELECTING AN IMPLEMENTATION
 ---------------------------
 `get_detector(name)` maps a mode string to an instance, mirroring the
-`~matcher` typed/typeless pattern in localizer_node. Step 1 has exactly one
-mode, "cascade", which is a thin indirection over the existing
-`classify.classify_cluster` / `classify.to_observations` logic -- identical
-labels, identical positions, no behavior change.
+`~matcher` typed/typeless pattern in localizer_node. Two modes exist:
+
+  "cascade" (DEFAULT) -- a thin indirection over the existing
+      `classify.classify_cluster` / `classify.to_observations` logic:
+      identical labels, identical positions, no behavior change. It has no
+      score, so it reports confidence 1.0 for everything it commits to.
+  "score" -- the best-score classifier in `landmark_loc.score`: every type
+      scores the percept, highest wins, below-floor becomes "unknown". It
+      reports a REAL confidence.
+
+The default stays "cascade" deliberately: "score" is opt-in until it has been
+validated in sim. Because confidence is part of the Observation contract,
+consumers must cope with BOTH -- a constant 1.0 and a genuine score.
 """
-from landmark_loc import classify
+from landmark_loc import classify, score
 
 
 class Detector(object):
@@ -156,10 +165,66 @@ class CascadeDetector(Detector):
         return labels, obs
 
 
-#: mode string -> factory. One entry in step 1; add the next implementation
-#: here and it becomes selectable via ~classifier with no other edits.
+class ScoreDetector(Detector):
+    """Best-score classifier: every type scores, the highest wins.
+
+    Percept type: `segment.Cluster`, same as the cascade.
+
+    The scoring itself lives in `landmark_loc.score` (machinery) and
+    `map_tools.park_types` (per-type numbers); this class is only the seam
+    adapter. Unlike the cascade it emits a REAL confidence -- the winning
+    type's score -- and it still rejects: a winner that fails its own
+    `score_floor`, or any cluster caught by a hard veto, becomes "unknown"
+    and is dropped by `observe`.
+
+    Reduction (position/yaw) is deliberately NOT re-implemented here: it is
+    type-dispatched inside `classify.to_observations`, which is passed the
+    labels this detector chose. So a percept both detectors label the same
+    reduces to the SAME position, and the A/B position delta isolates
+    labelling differences rather than mixing in reduction differences.
+    """
+
+    name = "score"
+
+    def __init__(self, margins=classify.DEFAULT_MARGINS):
+        # `margins` is accepted (and passed to to_observations, which uses it
+        # only for the reduction path) purely so both detectors share one
+        # construction signature and get_detector needs no special-casing.
+        self.margins = margins
+
+    def label(self, percept):
+        return score.classify_cluster(percept)[0]
+
+    def _label_conf(self, percepts):
+        return [score.classify_cluster(c) for c in percepts]
+
+    def observe(self, percepts, frame_id=None, stamp=None):
+        return self.detect(percepts, frame_id=frame_id, stamp=stamp)[1]
+
+    def detect(self, percepts, frame_id=None, stamp=None):
+        scored = self._label_conf(percepts)
+        labels = [ident for ident, _conf in scored]
+        obs = classify.to_observations(percepts, self.margins,
+                                       frame_id=frame_id, stamp=stamp,
+                                       labels=labels)
+        # to_observations emits accepted percepts IN INPUT ORDER (the seam
+        # contract the A/B harness relies on), so the i-th accepted percept
+        # owns the i-th Observation -- that is what lets the real confidence
+        # be attached here rather than threaded through the reduction.
+        confs = [conf for ident, conf in scored if ident != "unknown"]
+        if len(confs) == len(obs):
+            for o, conf in zip(obs, confs):
+                o.confidence = conf
+        return labels, obs
+
+
+#: mode string -> factory. Add the next implementation here and it becomes
+#: selectable via ~classifier with no other edits.
+#: NOTE: DEFAULT_DETECTOR stays "cascade" -- "score" is opt-in until it has
+#: been validated in sim.
 DETECTORS = {
     CascadeDetector.name: CascadeDetector,
+    ScoreDetector.name: ScoreDetector,
 }
 
 DEFAULT_DETECTOR = CascadeDetector.name

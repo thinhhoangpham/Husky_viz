@@ -128,12 +128,84 @@ _LABEL_COLOR = {t.identity: t.marker_color for t in _PARK_TYPES if t.is_catalog}
 _LABEL_COLOR["unknown"] = (1.0, 0.0, 0.0, 1.0)  # red
 
 
-def build_observed_markers(clusters, frame_id, stamp, labels):
+def marker_text(ident, confidence):
+    """Label text for one observed cluster: identity, plus confidence if any.
+
+    `confidence` is None when the detector reports no meaningful score for
+    this cluster, in which case the text is the bare identity -- which is what
+    keeps this sane for BOTH detectors. The cascade has no score (it reports a
+    constant 1.0), and printing "bench 1.00" on every label would be noise
+    dressed up as information; the caller passes None for it. A scoring
+    detector passes its real number and the operator sees "bench 0.75".
+
+    Rejected clusters still read "unknown", and still show their score when
+    one exists -- "unknown 0.04" tells the operator the percept ALMOST made
+    its floor, which is exactly the case a too-tight floor produces and is
+    invisible from the label alone.
+    """
+    if confidence is None:
+        return ident
+    return "%s %.2f" % (ident, confidence)
+
+
+#: detector modes whose confidence is a REAL score worth showing. The cascade
+#: is excluded on purpose: it emits a constant 1.0, which is not evidence.
+_SCORING_CLASSIFIERS = ("score",)
+
+
+def cluster_confidences(labels, observations, classifier):
+    """Per-cluster confidence list parallel to `labels`, or None.
+
+    Returns None for a non-scoring detector (the cascade), which makes the
+    markers and the [diag] line fall back to bare identities -- see
+    `marker_text` for why a constant 1.0 is worth hiding.
+
+    For a scoring detector, the score is read back off the emitted
+    Observations rather than by re-classifying: `detect` returns accepted
+    percepts IN INPUT ORDER (the seam contract), so the i-th non-unknown label
+    owns the i-th Observation. Rejected clusters get None -- their below-floor
+    score is not carried on an Observation, because no Observation was
+    emitted for them.
+
+    Guarded, not assumed: if the two sequences do not line up, this returns
+    None (no confidence shown) rather than mislabelling every cluster with
+    somebody else's score.
+    """
+    if classifier not in _SCORING_CLASSIFIERS:
+        return None
+    accepted = [i for i, l in enumerate(labels) if l != "unknown"]
+    if len(accepted) != len(observations):
+        return None
+    by_index = dict(zip(accepted, observations))
+    return [None if i not in by_index else by_index[i].confidence
+            for i in range(len(labels))]
+
+
+def confidence_summary(observations, classifier):
+    """One-line per-detection confidence summary for the [diag] log, or "".
+
+    Empty string for a non-scoring detector, so the cascade's [diag] line is
+    byte-for-byte what it was. For a scoring detector it reads e.g.
+    " conf=[lamp:0.94,bench:0.75] min=0.75" -- per-detection, because an
+    average would hide the ONE weak detection that is about to be associated
+    to a catalog landmark, which is the thing worth seeing in a live run.
+    """
+    if classifier not in _SCORING_CLASSIFIERS or not observations:
+        return ""
+    per = ",".join("%s:%.2f" % (o.identity, o.confidence) for o in observations)
+    return " conf=[%s] min=%.2f" % (
+        per, min(o.confidence for o in observations))
+
+
+def build_observed_markers(clusters, frame_id, stamp, labels, confidences=None):
     """Build a MarkerArray of TEXT_VIEW_FACING labels, one per cluster, showing
     the classifier's identity string for that cluster (including 'unknown').
     `labels` is the precomputed per-cluster identity list from
     `Detector.detect` -- passed in rather than recomputed here so the tick
     classifies exactly once (see landmark_loc.detector, ONE PASS PER TICK).
+    `confidences`, when given, is a parallel per-cluster score list (None
+    entries allowed) appended to the label text by `marker_text`; omit it for
+    a detector with no meaningful score.
     First element is a DELETEALL so stale labels from a tick with more
     clusters than the current tick don't linger."""
     import rospy
@@ -166,7 +238,8 @@ def build_observed_markers(clusters, frame_id, stamp, labels):
         r, g, b, a = _LABEL_COLOR.get(ident, _LABEL_COLOR["unknown"])
         m.color.r, m.color.g, m.color.b, m.color.a = r, g, b, a
         m.lifetime = rospy.Duration(0.5)
-        m.text = ident
+        m.text = marker_text(
+            ident, None if confidences is None else confidences[i])
         arr.markers.append(m)
     return arr
 
@@ -309,8 +382,9 @@ def main():
         # never has to assume where/when they came from.
         labels, obs = det.detect(clusters, frame_id=msg.header.frame_id,
                                  stamp=msg.header.stamp.to_sec())
+        confs = cluster_confidences(labels, obs, p["classifier"])
         markers_pub.publish(build_observed_markers(
-            clusters, msg.header.frame_id, msg.header.stamp, labels))
+            clusters, msg.header.frame_id, msg.header.stamp, labels, confs))
         gated = catalog.gate(landmarks, prior, p["max_range"], p["fov_halfwidth"])
         _match_mod = (solve.constellation_typeless if p["matcher"] == "typeless"
                       else solve.constellation)
@@ -321,8 +395,9 @@ def main():
         if result is None:
             _matched = ",".join(lm.name for _o, lm in _pairs)
             rospy.loginfo_throttle(0.5,
-                "[diag] obs=%d assoc=%d prior=(%.1f,%.1f) matched=[%s] %s"
-                % (len(obs), len(_pairs), prior[0], prior[1], _matched, "STALE"))
+                "[diag] obs=%d assoc=%d prior=(%.1f,%.1f) matched=[%s] %s%s"
+                % (len(obs), len(_pairs), prior[0], prior[1], _matched, "STALE",
+                   confidence_summary(obs, p["classifier"])))
             return
         x, y, yaw, rms, n = result
         # Physical-motion gate: reject a fix that teleports beyond reachable.
@@ -333,8 +408,9 @@ def main():
             odom_disp = (0.0, 0.0)
         if not _jump_ok((x, y), state["last_pub_xy"], odom_disp, p["max_jump"]):
             rospy.loginfo_throttle(0.5,
-                "[diag] obs=%d assoc=%d prior=(%.1f,%.1f) REJECT-JUMP fix=(%.2f,%.2f)"
-                % (len(obs), len(_pairs), prior[0], prior[1], x, y))
+                "[diag] obs=%d assoc=%d prior=(%.1f,%.1f) REJECT-JUMP fix=(%.2f,%.2f)%s"
+                % (len(obs), len(_pairs), prior[0], prior[1], x, y,
+                   confidence_summary(obs, p["classifier"])))
             return
         # Anchor stays FIXED at the initial spawn pose (no re-anchoring). The
         # prior is always initial-anchor + odom/compass motion; landmarks
@@ -346,8 +422,9 @@ def main():
         _matched = ",".join(lm.name for _o, lm in _pairs)
         rospy.loginfo_throttle(0.5,
             "[diag] obs=%d assoc=%d prior=(%.1f,%.1f) matched=[%s] "
-            "FIX x=%.2f y=%.2f rms=%.2f n=%d pub=(%.2f,%.2f)"
-            % (len(obs), len(_pairs), prior[0], prior[1], _matched, x, y, rms, n, sx, sy))
+            "FIX x=%.2f y=%.2f rms=%.2f n=%d pub=(%.2f,%.2f)%s"
+            % (len(obs), len(_pairs), prior[0], prior[1], _matched, x, y, rms, n, sx, sy,
+               confidence_summary(obs, p["classifier"])))
         od = Odometry()
         od.header.stamp = now
         od.header.frame_id = "map"
