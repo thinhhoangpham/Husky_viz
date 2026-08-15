@@ -31,27 +31,11 @@ obstacles:
     topic: /os0_cloud_node/points
     marking: true             # add obstacles where rays hit
     clearing: true            # clear free space along the ray
-    # Height gate in the costmap frame. Canopy sits well above the robot, so the
-    # upper bound drops it; the lower bound must clear the GROUND or the terrain
-    # itself is marked as an obstacle. This is the most failure-prone setting.
-    #
-    # Raised 0.15 -> 0.40 on 2026-08-15 after the lake world showed it. Measured
-    # there: the lidar sits at base_link z=+0.826, and its ground returns span
-    # -2.0..-0.5 in the sensor frame, i.e. base_link z = -1.17..+0.33. The top of
-    # that band overlapped the old 0.15 gate, so sloping ground a few metres out
-    # was painted as two phantom obstacle blobs in front of a robot standing on
-    # visibly clear ground. 0.40 clears the measured +0.33 with margin.
-    #
-    # Park never tripped this because its ground has only 6.9 mm of relief --
-    # genuinely flat. Lake carries 2.43 m across the site, so ground ahead of the
-    # robot readily rises 0.15-0.33 m above its base plane. The map frame is flat
-    # at z=0 (map->base_link z=0.000) while the robot actually stands at world
-    # z~3.9, so the costmap has no terrain model to subtract and every ground
-    # return above the base plane reads as an obstacle.
-    #
-    # COST: obstacles shorter than 0.40 m are now invisible to the costmap. The
-    # real fix is ground segmentation before the costmap, not a height gate.
-    min_obstacle_height: 0.40
+    # Height gate in the costmap frame. Ground sits near z=0 and canopy well
+    # above the robot, so 0.15-1.2 m keeps trunks/benches and drops both. This
+    # is the most failure-prone setting: too low and the ground itself becomes
+    # an obstacle.
+    min_obstacle_height: 0.15
     max_obstacle_height: 1.2
     obstacle_range: 5.0
     raytrace_range: 6.0
