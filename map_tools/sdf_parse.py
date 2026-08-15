@@ -9,22 +9,13 @@ so we read link_0's pose, not the model pose. tree_8 is single-link so link_0
 import re
 from dataclasses import dataclass
 
-# Ordered longest-prefix-first so "trash_bin_1" is not shadowed, etc.
-_FAMILY_PREFIXES = (
-    "arbolpartes4",
-    "tree_8",
-    "garden_table",
-    "trash_bin_1",
-    "bench",
-    "lamp",
-)
+from map_tools.park_types import classify_prefix
 
 
 def classify(name):
-    for fam in _FAMILY_PREFIXES:
-        if name == fam or name.startswith(fam + "_"):
-            return fam
-    return "skip"
+    # Delegates to the single type registry; longest-prefix-first so
+    # "trash_bin_1"/"tree_8" are not shadowed (see park_types.classify_prefix).
+    return classify_prefix(name)
 
 
 @dataclass

@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from landmark_loc.signatures import MESH_SIGNATURES
 from landmark_loc import shapefit
 from landmark_loc import shapefeat
+from map_tools.park_types import PARK_TYPES
 
 # Shape-signature thresholds (Task 2). Each pinned from measured live/mesh
 # values; see .superpowers/sdd/2026-08-13-shape-classifier/task-2-brief.md.
@@ -108,17 +109,21 @@ _TRUNK_BAND = 1.0             # trunk region height above cluster base, used to
 # horizontal extent from the mesh signature. Trees are not in MESH_SIGNATURES
 # (they're identified by vertical profile, not a size band), so the trunk
 # radius is hardcoded from the extractor's RADII table (tree_8 = 0.45 m).
+# Sourced from the single type registry (map_tools.park_types): each catalog
+# identity's detect_radius is signature.minor/2 for mesh types, 0.45 for tree.
 KNOWN_RADIUS = {
-    "lamp": MESH_SIGNATURES["lamp"]["minor"] / 2.0,
-    "trash_bin_1": MESH_SIGNATURES["trash_bin_1"]["minor"] / 2.0,
-    "bench": MESH_SIGNATURES["bench"]["minor"] / 2.0,
-    "garden_table": MESH_SIGNATURES["garden_table"]["minor"] / 2.0,
-    "tree": 0.45,  # tree_8 trunk radius (extractor RADII); arbolpartes4 not separately modeled here
+    t.identity: t.detect_radius
+    for t in PARK_TYPES
+    if t.is_catalog and t.detect_radius is not None
 }
 
-# Real rectangle footprints (length, width) in metres, from the mesh signatures.
-# Only elongated types get the ICP shape fit; round types keep centroid+pushout.
-_RECT_FOOTPRINT = {"bench": (1.78, 0.80), "garden_table": (3.00, 1.32)}
+# Real rectangle footprints (length, width) in metres. Only elongated
+# (box_stamped) types get the ICP shape fit; round types keep centroid+pushout.
+# Sourced from the type registry; these are the rounded literals (see
+# park_types.ParkType.rect_footprint for why they are not mesh-derived).
+_RECT_FOOTPRINT = {
+    t.identity: t.rect_footprint for t in PARK_TYPES if t.rect_footprint is not None
+}
 
 
 @dataclass

@@ -95,10 +95,10 @@ match — nothing detects a mismatch at runtime.
 
 ### Working driver
 
-`drive_to_point_gps.py` — drives to one world (x, y) point using GPS + compass only, closed-loop
+`scripts/drive_to_point_gps.py` — drives to one world (x, y) point using GPS + compass only, closed-loop
 at 10 Hz, nothing cached between ticks.
 
-    python3 drive_to_point_gps.py X Y [--tolerance 0.5] [--max-lin 0.4] [--max-ang 0.8] [--timeout 180]
+    python3 scripts/drive_to_point_gps.py X Y [--tolerance 0.5] [--max-lin 0.4] [--max-ang 0.8] [--timeout 180]
 
 Control law: turn in place while `|heading_error| > 0.25 rad`, otherwise drive forward with
 `linear.x = min(max_lin, 0.6 * dist)` and proportional heading correction. Sign convention:
@@ -155,3 +155,49 @@ master, then injects). Design and rationale (tiers, why no Gazebo attacker model
 - `thinh` is in the `docker` group, **but** the group only activates in a **new
   login session** — after install, `docker` needs `sudo` until you log out/in or
   run `newgrp docker`.
+
+---
+
+## Repository organization — KEEP IT TIDY as development moves forward
+
+The repo root was decluttered on 2026-08-14. **Maintain this structure**: when you
+create or move files, put them in the right place and do not let the root accumulate
+loose scripts, data, or junk again. This is a standing instruction, not a one-time
+cleanup.
+
+### Where things go
+- **`scripts/`** — standalone driver/plot/audit/utility `.py` and `.sh` tools that
+  are NOT container- or import-pinned (e.g. `drive_to_point_gps.py`, `plot_*.py`,
+  non-dispatched `attack_*_*.py` variants). New one-off tools go here, not at root.
+- **`artifacts/`** — all run OUTPUTS: `.csv`, `.png`, plot `.json`, logs. Never commit
+  scratch outputs to root. Point script `--csv`/`--out` defaults or your invocation at
+  `artifacts/` when practical.
+- **`archive/`** — dead/superseded files kept for reference (`.bak`, `.gps-ekf`,
+  old variants). Prefer deleting truly disposable files (git has history); archive only
+  what is ambiguous.
+- **`landmark_loc/` `map_tools/` `operator/`** — the package trees. Package code stays
+  in its package; the type registry is `map_tools/park_types.py` (single source for
+  both map-extraction and lidar-classification — see the detector section).
+- **`launch/` `config/` `maps/` `docs/`** — as named. Runbooks (`RUN-*.md`) currently
+  live at root by convention; leave them unless asked.
+- **macOS `._*` files** are junk — delete on sight, never commit.
+
+### Files PINNED to repo root — DO NOT MOVE (they break the sim/containers)
+These are referenced by hardcoded container paths, bare-name exec, or cross-imports.
+Moving any requires editing its caller too — do not relocate casually:
+- **Container-dispatched attacks:** `attack_cmd_vel.py`, `attack_compass.py`,
+  `attack_odom.py`, `attack_param.py`, `attack_goal.py`, `attack_navsat.py` —
+  `attacker/attack.sh` execs `/repo/attack_<name>.py` in the bind-mounted container.
+- **Import targets:** `goal_marker.py`, `send_mapless_goal.py` — imported by root
+  scripts AND the operator container (mounts `../:/repo`).
+- **Exec'd by name:** `spawn_robot_idle.py`, `reset-robot.py` (by
+  `spawn-robot-idle.sh`); `monitor_navsat_drift.py` (by `RUN-GOAL-HIJACK.md`).
+- **Primary entry point:** `load-park-world.sh` (invoked by all runbooks + this file).
+- **`/workspace`-external:** `husky_teleop*.py`, `park-env*.sh` — resolved inside a
+  separate Gazebo container, not this repo; leave in place.
+
+### When you move a referenced file
+Trace its callers first (launch files, `*.sh`, `attacker/`, `operator/`, `RUN-*.md`,
+this CLAUDE.md, python imports) and update every reference in the same change. A file
+referenced by bare name or absolute path breaks silently at runtime if moved without
+fixing the caller.

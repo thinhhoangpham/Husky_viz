@@ -117,14 +117,15 @@ def odom_at(buf, t):
 # RGBA color per classifier identity, for the observed-cluster text labels
 # (helps the operator spot misclassifications and 'unknown' clusters at a
 # glance). Purely a visualization constant; does not affect classification.
-_LABEL_COLOR = {
-    "lamp": (1.0, 1.0, 0.0, 1.0),          # yellow
-    "bench": (0.0, 1.0, 0.0, 1.0),         # green
-    "garden_table": (0.0, 1.0, 1.0, 1.0),  # cyan
-    "trash_bin_1": (1.0, 0.5, 0.0, 1.0),   # orange
-    "tree": (0.0, 0.4, 0.0, 1.0),          # dark green
-    "unknown": (1.0, 0.0, 0.0, 1.0),       # red
-}
+# Marker label colors by classifier identity. Sourced from the single type
+# registry (map_tools.park_types): every catalog identity contributes its
+# marker_color (lamp yellow, bench green, garden_table cyan, trash_bin_1 orange,
+# tree dark green). "unknown" is not a registry type -- it is the classifier's
+# drop label -- so its red is kept as a literal here.
+from map_tools.park_types import PARK_TYPES as _PARK_TYPES
+
+_LABEL_COLOR = {t.identity: t.marker_color for t in _PARK_TYPES if t.is_catalog}
+_LABEL_COLOR["unknown"] = (1.0, 0.0, 0.0, 1.0)  # red
 
 
 def build_observed_markers(clusters, frame_id, stamp):

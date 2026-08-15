@@ -9,16 +9,22 @@ import math
 from dataclasses import dataclass
 import yaml
 from map_tools.sdf_parse import classify as _family_of
+from map_tools.park_types import PARK_TYPES, BY_PREFIX
 
-_IDENTITY_FAMILIES = {"bench", "garden_table", "lamp", "trash_bin_1", "tree"}
+# Catalog identities (matcher-visible), from the single type registry: any type
+# with is_catalog=True, keyed by identity (tree_8 contributes identity 'tree').
+_IDENTITY_FAMILIES = {t.identity for t in PARK_TYPES if t.is_catalog}
 
 # map raw world-file family -> matcher identity (tree_8 model -> generic 'tree')
-_FAMILY_TO_IDENTITY = {"tree_8": "tree"}
+_FAMILY_TO_IDENTITY = {
+    t.world_prefix: t.identity for t in PARK_TYPES if t.identity != t.world_prefix
+}
 
 
 def _identity_of(name):
     fam = _family_of(name)
-    return _FAMILY_TO_IDENTITY.get(fam, fam)
+    entry = BY_PREFIX.get(fam)
+    return entry.identity if entry is not None else fam
 
 
 @dataclass

@@ -14,20 +14,16 @@ import argparse
 from map_tools.sdf_parse import parse_models
 from map_tools.occupancy_grid import Grid
 from map_tools.mesh_bounds import footprint
+from map_tools.park_types import PARK_TYPES
 
 # Footprint radii in metres, BEFORE costmap inflation. See the plan for rationale.
 # NOTE: the furniture entries here (bench/garden_table/lamp/trash_bin_1) are
 # superseded by BOX_MESHES below -- build_grid boxes those families using the
 # real mesh footprint instead. Left in place because test_radii still checks
 # every family has a positive radius, and RADII has no other users to break.
-RADII = {
-    "arbolpartes4": 0.30,
-    "tree_8": 0.45,
-    "bench": 0.90,
-    "garden_table": 0.60,
-    "lamp": 0.20,
-    "trash_bin_1": 0.25,
-}
+# Sourced from the single type registry (map_tools.park_types), keyed by
+# world_prefix.
+RADII = {t.world_prefix: t.disc_radius for t in PARK_TYPES}
 
 # Families stamped as yaw-oriented boxes: (collision .dae path relative to the
 # models_opt/ root, mesh scale). Everything else (trees, lamp, trash_bin_1)
@@ -48,9 +44,12 @@ RADII = {
 # loaded).
 import os as _os
 _MODELS_ROOT = _os.path.join(_os.path.dirname(__file__), "..", "models_opt")
+# Sourced from the type registry: box_stamped types carry a mesh (rel-parts,
+# scale); expand rel-parts to the absolute .dae path this module expects.
 BOX_MESHES = {
-    "bench":        (_os.path.join(_MODELS_ROOT, "bench", "Bench_1.dae"), 0.15),
-    "garden_table": (_os.path.join(_MODELS_ROOT, "garden_table", "garden_table.dae"), 1.0),
+    t.world_prefix: (_os.path.join(_MODELS_ROOT, *t.mesh[0]), t.mesh[1])
+    for t in PARK_TYPES
+    if t.box_stamped
 }
 # Cache footprints so each .dae is parsed once. Stores (half_dx, half_dy, cx,
 # cy): the mesh-local center offset (cx, cy) accounts for COLLADA node
@@ -64,8 +63,9 @@ def _box_extents(family):
         _footprint_cache[family] = footprint(path, scale)
     return _footprint_cache[family]
 
-# Families that become named goal destinations (not trees).
-PLACE_FAMILIES = ("bench", "garden_table", "lamp", "trash_bin_1", "tree_8")
+# Families that become named goal destinations. Sourced from the type registry:
+# any type with is_place=True (keyed by world_prefix, so tree_8 not 'tree').
+PLACE_FAMILIES = tuple(t.world_prefix for t in PARK_TYPES if t.is_place)
 
 
 def build_grid(models, resolution=0.15, margin=5.0):
