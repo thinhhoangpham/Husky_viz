@@ -84,7 +84,10 @@ WORLD_NAME="park"
 set_world_paths() {
   case "$WORLD_NAME" in
     park)
-      MODEL_DIR="$SCRIPT_DIR/models_opt"
+      # models_lake_opt is appended so model://linea1/... (the postescable
+      # power-line poles added to park.world) resolves too -- linea1 lives
+      # only under models_lake_opt, not models_opt.
+      MODEL_DIR="$SCRIPT_DIR/models_opt:$SCRIPT_DIR/models_lake_opt"
       WORLD_FILE="$PKG_TREE/natural_enviroment/worlds/park.world"
       WORLD_LAUNCH="create_park.launch"
       ROBOT_LAUNCH="add_husky_park_1.launch"
