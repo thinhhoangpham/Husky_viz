@@ -21,6 +21,33 @@ different window sizes. This is the design below. Sections still describing
 per-object work are marked; the descriptor and extractor need extending to
 windows, which is where the remaining implementation goes.
 
+## Revision 2 — waypoints decoupled from landmarks (2026-08-16)
+
+The first two versions treated a waypoint as a *landmark to verify*: the operator
+declared which distinctive region to expect at each point, and arrival was
+confirmed only when the robot perceived it. That was wrong on two counts.
+
+**It deadlocked.** The operator names places from `park_objects.yaml`
+(`postescable_1`); the map identifies distinctive regions by grid id
+(`loc_080`). Disjoint vocabularies, so the name check could never pass — and
+because a route always published a non-empty expectation, the proximity fallback
+was unreachable. Every route would stall at its first waypoint.
+
+**It was the wrong model.** In real unmanned-ground-vehicle practice the operator
+sends *coordinate* waypoints; landmark/map-relative localization is a separate
+layer underneath whose job is surviving GPS denial; and pre-placed beacons are a
+third, distinct mechanism. Conflating the mission layer with the localization
+layer is not how fielded systems work.
+
+Revision 2 separates them completely: **waypoints are bare coordinates; landmark
+matching is the GPS-denied localization layer; they never exchange information.**
+The distinctive regions are best understood as *natural* check-in points —
+serving the role a placed beacon would, but discovered in the existing scene.
+
+This also **strengthens** the anti-spoofing story rather than weakening it: with
+waypoints removed from the anchor path, operator intent can no longer influence
+the pose estimate at all. Only measurements do.
+
 ## Problem
 
 The localizer today identifies landmarks by **type**: `classify.py` collapses a
@@ -44,12 +71,15 @@ Two consequences:
 
 This design replaces the type-based identification with **distinctive-region
 descriptors** — computed with no classification and no notion of "object" — and
-replaces the one-time anchor with **operator waypoints that re-anchor on
-arrival**.
+replaces the never-refreshed anchor with **re-anchoring on every distinctive-
+region match**, so the accumulated odometry error is reset each time the robot
+passes a recognisable place.
 
 ## Approach
 
-Two independent information sources that cross-check each other.
+Two independent layers: a mission layer (coordinate waypoints) and a
+localization layer (region matching). They do not exchange information — see
+"The two layers are independent" below.
 
 **Robot side — region descriptors, no classification, no object types.** The
 robot describes the point cloud around a location — a *spatial region*, not a
@@ -78,14 +108,37 @@ re-emerges. The scale is the knob; the algorithm and the measurement are
 unchanged. Distinctiveness is never assumed for any structure — it is measured,
 at whatever scale is chosen, over descriptors that carry no labels.
 
-**Operator side — waypoints.** The operator sends waypoints as navigation
-targets. On arrival, a waypoint becomes the new anchor for the dead-reckoning
-prior, replacing the one-time GPS anchor.
+**Operator side — coordinate waypoints.** The operator sends a route of bare
+map-frame `(x, y)` points. The robot drives them in order via `move_base` and
+advances when its own position estimate reaches each point. Waypoints are
+**navigation targets only** — they are not landmarks, they do not name
+landmarks, and they never feed the pose estimate.
 
-Neither source derives from the other, so disagreement between them is
-meaningful: it means GPS is spoofed, odometry has drifted, or the robot is not
-where it was sent. That is the anti-spoofing property the existing attack demos
-(`attack_navsat.py`, `mode landmark`) are built around.
+### The two layers are independent (revised 2026-08-16, see Revision 2)
+
+This mirrors how fielded unmanned ground vehicles actually work, and it is the
+decisive simplification of this design:
+
+- **Waypoints are the mission**: where to drive, as coordinates, exactly as an
+  operator drops points on a map.
+- **Landmark localization is the GPS-denied layer underneath**: it keeps the
+  position estimate honest while the robot drives, opportunistically, whenever
+  the route happens to pass a distinctive region. It has no opinion about which
+  waypoint is active or whether the robot has "arrived".
+
+The two never exchange information at runtime. That is deliberate. An operator
+asserting "drive to (30, -8)" is a statement of *intent*, not evidence the robot
+*is* there — so operator input must never enter the pose estimate. Only region
+matches (and the one-time GPS bootstrap) set the anchor. Keeping intent out of
+the estimate is the correct anti-spoofing posture: a spoofed GPS, a drifting
+odometer, and a mistaken operator all fail independently rather than
+contaminating one another.
+
+Framed against real practice, the distinctive regions this design discovers are
+best understood as **natural check-in points** — the role a pre-placed beacon or
+fiducial plays in a real deployment, except found in the existing scene rather
+than installed as hardware. That is what makes them usable in terrain where
+placing hardware is not an option.
 
 ### Why regions, not per-object matching
 
@@ -283,15 +336,16 @@ heading from `/compass/data` — the mechanism `compose_prior`
 anchor*:
 
 - today: a single GPS-converged pose, captured once at startup, never updated
-- proposed: whichever of these two events happened **most recently**, since both
-  reset the accumulated odometry error:
-  - a **confirmed** waypoint arrival (confirmed in the sense below), or
-  - a distinctive-region match that passed the match gate
+- proposed: **a distinctive-region match that passed the match gate**, replacing
+  the anchor each time one lands. The one-time GPS fix remains only as the
+  bootstrap that seeds the first anchor before any region has been matched.
 
-  A region match is the stronger of the two — it is a direct measurement of
-  position against a known distinctive location in the map, where a waypoint
-  arrival is an assertion corroborated by perception. So when both occur within
-  the same tick, the region match sets the anchor.
+  Waypoints do **not** set the anchor. An earlier draft let a "confirmed
+  waypoint arrival" re-anchor the prior; that was dropped when waypoints became
+  bare coordinates (Revision 2). A waypoint is the operator's *intent*, not a
+  measurement of where the robot is, and intent must never enter the pose
+  estimate — otherwise a mistaken or spoofed instruction silently becomes
+  "truth". Region matches are measurements; they alone move the anchor.
 
 **Fix.** A confident region match pins the pose directly. The matched map
 location has a known world position, and the descriptor's own centre gives the
@@ -313,29 +367,43 @@ optional.
 
 ## Waypoints
 
-Waypoints remain navigation targets on the existing `move_base` path. The new
-behaviour is re-anchoring.
+Waypoints are **bare map-frame `(x, y)` coordinates** — a route the operator
+lays down, exactly as an operator drops points on a map in a real deployment.
+They are navigation targets on the existing `move_base` path and nothing more.
 
-**Arrival must be confirmed by descriptor match, never by `move_base` status or
-the fused pose.** This is the load-bearing constraint of the whole design. The
-project's own memory records that *move_base SUCCEEDED/dist and fused pose lie
-about arrival*, and the fused pose is precisely the quantity a navsat attack
-controls. Anchoring on an unconfirmed arrival would inject the attacker's error
-into the pose belief as though it were truth, and every downstream estimate
-would inherit it.
+`route x1 y1 x2 y2 ...` queues the points; the robot drives them in order and
+advances to the next when its own position estimate reaches the current one.
+Single-goal commands (`goal`, `goal xy`, `goal <name>`) are unchanged; `route`
+is additive.
 
-So: on reaching waypoint *k*, the robot anchors on waypoint *k*'s coordinates
-only if it independently recognises the shapes it expects to see there.
-Otherwise it holds the previous anchor and reports the discrepancy.
+**Waypoints do not interact with localization.** They do not name landmarks,
+they do not declare what the robot should perceive, and they never set the
+anchor. The region localizer runs underneath, correcting the pose estimate
+whenever the route happens to carry the robot through a distinctive region, and
+is entirely unaware of which waypoint is active.
 
-**Fault signal.** Knowing that waypoint *k+1* is a known distance and bearing
-ahead gives a predicted pose at all times. Sustained disagreement between that
-prediction and the descriptor-derived pose is surfaced to the operator as a
-fault. It is not silently averaged into the estimate — the operator may force a
-reset, but only as an explicit command.
+An earlier draft coupled the two: a waypoint declared which distinctive region
+to expect, and arrival was confirmed only when the robot perceived it. That was
+over-engineering — it conflated the mission layer with the localization layer,
+and in practice it deadlocked (the operator's names and the map's region ids
+were disjoint vocabularies, so arrival could never confirm and a route stalled
+at its first point). Revision 2 removes the coupling.
 
-This keeps waypoints as a *position assertion and consistency check*, never as a
-pose measurement. The operator asserts intent; intent is not evidence of arrival.
+**What arrival means now.** The robot reports arrival when its own
+landmark-corrected position estimate reaches the waypoint. Between region
+matches that estimate is dead-reckoned, so arrival carries the accumulated
+drift — the same honest limitation any fielded vehicle has when it reports
+"waypoint reached" from its own navigation solution.
+
+**The anti-spoofing property is preserved, and is in fact cleaner.** It does not
+live in an arrival handshake; it lives in the anchor rule: only region matches
+move the anchor. A navsat attack can corrupt the fused pose, and a mistaken
+operator can send the robot to the wrong coordinate, but neither can move the
+descriptor-derived anchor, because neither is ever consulted for it.
+
+**Fault signal.** Sustained disagreement between the dead-reckoned prior and the
+descriptor-derived position is published on `/landmark_fault` for the operator to
+see. It is never silently averaged into the estimate.
 
 ## Components
 
@@ -350,7 +418,7 @@ pose measurement. The operator asserts intent; intent is not evidence of arrival
 | distinctiveness (`landmark_loc/distinctiveness.py`) | nearest-neighbour scoring over the descriptor map; threshold placed in the measured gap (done; operates on any `{name: descriptor}` map) |
 | detector plugin (new) | registers in the existing `DETECTORS` table (`detector.py:225`); describes the region around the robot and matches it to distinctive map locations only, gated by the prior |
 | `landmark_loc/localizer_node.py` | anchor source becomes region-match / confirmed-waypoint driven rather than one-shot GPS |
-| `operator/operate.py` | waypoint sequence; arrival confirmation; fault reporting |
+| `operator/operate.py` | `route` over bare (x,y) coordinates; advance on reaching each point. NO landmark coupling (Revision 2). |
 
 `classify.py` and `constellation.py` are **not deleted**. They stay selectable
 via `~classifier` and `~matcher` and remain the documented demo path until the
@@ -375,9 +443,10 @@ pattern:
 - descriptor is stable under decimation, standing in for range-driven sparsity
 - distinctiveness scoring, run over the real extracted location grid, yields a
   distance distribution with a clear gap; the chosen threshold sits in it
-- arrival confirmation rejects a waypoint whose expected distinctive region is
-  absent
-- anchor update leaves the prior unchanged when arrival is unconfirmed
+- the waypoint queue advances only on reaching the current coordinate, and a
+  route of coordinates round-trips through parsing unchanged
+- the anchor is moved by a region match and by nothing else (no waypoint path
+  into the anchor at all, per Revision 2)
 
 In-sim (run from the main conversation, never from a subagent, per CLAUDE.md):
 the distinctive structures visible in the cloud at the stated ranges; a fix
@@ -419,6 +488,24 @@ existing navsat-drift attack unable to move the descriptor-derived pose.
    without a live GL context on `:0`.
 
 ## Verified facts behind this design
+
+- **The distinctiveness emerged from ordinary furniture, not the added
+  structures.** Running the extractor on the real park produced 11 distinctive
+  locations, each within ~12 m of a power-line pole by *coincidence of the
+  search order* — but their nearest actual objects are garden tables, benches
+  and trash bins (e.g. `loc_080` -> garden_table @ 2.8 m, `loc_116` ->
+  trash_bin @ 0.9 m). At the 8 m window it is the *arrangement* of ordinary
+  repeated furniture that is locally unique, while the poles' immediate
+  surroundings are comparatively repetitive.
+
+  Two consequences. First, this is the per-region method working exactly as
+  intended: it is type-blind, so it finds distinctiveness wherever it genuinely
+  exists rather than where we expected to plant it. Second, **the `linea1`
+  structures added in the world change turned out to be unnecessary** — the park
+  already contained distinctive arrangements. They are kept (harmless scenery,
+  and they do contribute to some regions' arrangement context), but a future
+  world would not need them. Do not repeat the add-a-distinctive-object step on
+  the assumption that a repetitive map has nothing to find; measure first.
 
 - **Lidar intensity is unusable.** The Ouster publishes an `intensity` field
   (offset 16, FLOAT32) and `park.world` assigns a distinct `<laser_retro>` per
