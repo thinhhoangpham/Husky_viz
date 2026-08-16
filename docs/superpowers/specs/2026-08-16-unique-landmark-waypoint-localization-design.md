@@ -537,6 +537,51 @@ design deliberately does not depend on either, because neither sensor is
 available and simulated versions of both diverge from hardware in ways that
 would not transfer.
 
+### Region-arrangement descriptors — built, measured, and SHELVED
+
+**Status: implemented, validated offline, failed in-sim, deliberately parked.**
+The code is on the branch (`describe_region`/`region_distance` in
+`landmark_loc/descriptor.py`, the location-grid extractor, `region_detector.py`)
+and every piece is unit-tested. It is not deleted, because the idea is sound and
+the measurements are worth keeping.
+
+**The idea.** Describe a *region of space* — everything in an 8 m window — rather
+than an object: vertical shape statistics plus an angular/radial grid recording
+what sits around the centre and in which direction. Two identical structures in
+different neighbourhoods then produce different descriptors, which per-object
+shape matching can never achieve.
+
+**What worked.** Offline it did exactly what it promised. Over a grid of
+locations it surfaced 11 distinctive spots with no knowledge of what was there,
+and same-shape/different-neighbourhood separation measured 163x
+(same-structure 0.018 vs cross-neighbourhood 2.89). It also found something we
+did not plant: the distinctive spots were near ordinary benches, tables and bins,
+not the power-line poles added for the purpose.
+
+**Why it was shelved.** It failed completely against live lidar. Parked 0.4 m
+from a distinctive location, the correct region ranked *third* at distance 6.63
+while a region 25.8 m away ranked first at 5.75 — the ranking was meaningless, so
+no threshold could rescue it. Root cause measured directly: **98% of the live 8 m
+window is ground** (12920 of 13237 points) and the mesh-built map contained 0%.
+
+**The deeper lesson, which is why this is shelved rather than fixed.** The
+arrangement term is what makes the descriptor fragile: measuring "what is around
+me, in which direction, at what range" is sensitive to the ground, to the robot's
+exact position (move 2 m and the arrangement shifts), and to heading (it needs the
+compass). A single-object descriptor is sensitive to none of those in the same
+way. The ground asymmetry was fixable — sample terrain into the map — but the
+position and heading sensitivities are intrinsic to describing *space* rather than
+*a thing*.
+
+**When to revisit.** Arrangement earns its complexity only when a map genuinely
+contains nothing individually distinctive, so that context is the sole
+discriminator. If a future world is uniformly repetitive, this is the technique —
+and the measurements above show it does work, given a map built from
+sensor-realistic data (a survey drive, not mesh sampling). A useful middle option
+was identified but not built: **object plus light context** — describe a single
+object, plus a coarse summary of its immediate surroundings, enough to separate
+identical twins without the full directional grid.
+
 ### Active re-localization: bias the planner toward distinctive regions
 
 **The single most valuable follow-up.** Today the localizer is *passive*: the
