@@ -91,34 +91,40 @@ would mean fetching from Gazebo Fuel.
 
 ### Layout
 
-The landmark unit is the **individual pylon**, not the span. A 59 m span cannot
-be reduced to one (x, y) the way a bench can, and the robot only ever sees one
-pylon or a stretch of cable at a time. This follows the precedent already set by
-commit 7091639, *"stamp the power line's real poles, not its model origin"*.
+The landmark unit is the **individual pole**, not the span. One `linea1` model
+is *two* poles 28.8 m apart joined by a 59 m cable span (measured from
+`linea1/postes.dae` at world scale 0.03, and already handled this way by
+`extract_lake_map.py:76`, `POLE_OFFSETS`). The robot only ever sees one pole or
+a stretch of cable at a time, so a pole — not the model, not the span — is the
+anchor. This follows the precedent of commit 7091639, *"stamp the power line's
+real poles, not its model origin"*, and the existing lake extractor's
+`_expand_poles`.
 
-Placement was chosen by searching straight corridors over the existing object
-map and maximising the worst pylon's clearance. The park is uniformly cluttered
-— the best any straight 3-pylon corridor achieves is 6.6 m worst-case clearance,
-so these are sited, not swept.
+Placement searched model link poses and bearings over the existing object map,
+maximising the worst *pole's* clearance. The park is uniformly cluttered — the
+best achievable worst-case clearance is 4.7 m, so these are sited, not swept.
 
-Two corridors, six pylons, 32 m spans:
+**Three models → six poles**, in two corridors. Model link poses (the values
+that go in the world file), each with its two derived pole positions:
 
-| Corridor | Pylon (x, y) | Clearance to nearest existing object |
-|---|---|---|
-| **A** — north band, bearing 12.1° (0.2109 rad) | (-42.0, 6.0) | 7.2 m |
-| | (-10.7, 12.7) | 6.6 m |
-| | (20.6, 19.3) | 7.5 m |
-| **B** — south edge, bearing 0.0° | (-24.0, -24.0) | 6.0 m |
-| | (8.0, -24.0) | 5.1 m |
-| | (40.0, -24.0) | 6.4 m |
+| Corridor | Model link pose (x, y, yaw) | Derived pole (x, y) | Clearance |
+|---|---|---|---|
+| **A** — north band, yaw 0.2094 rad (12°) | (-16.330, 5.284, 0.2094) | (-42.50, 1.00) | 4.8 m |
+| | | (-14.33, 6.99) | 5.2 m |
+| | (40.012, 17.259, 0.2094) | (13.84, 12.98) | 4.7 m |
+| | | (42.01, 18.96) | 5.3 m |
+| **B** — south edge, yaw 0.0 rad | (-0.511, -24.251, 0.0000) | (-27.00, -23.00) | 5.6 m |
+| | | (1.80, -23.00) | 4.9 m |
 
-This reads as a real utility layout: one line crossing the park's open northern
-band, one running along the southern boundary, both straight, with regular
-spacing and neither cutting through a tree stand.
+The two corridor-A models sit end-to-end (link poses 57.6 m apart along the
+12° line) so their four poles form one continuous line across the open northern
+band; corridor B runs one model along the southern boundary. Both lines are
+straight, regularly spaced, and clear of tree stands — a plausible utility
+layout.
 
-Coverage over the park's ~98 × 49 m extent: median distance to the nearest pylon
-**13.4 m**, worst case 27.8 m (at the eastern edge), and **60% of the park lies
-within the localizer's 15 m gate** (`max_range`) of at least one pylon.
+Coverage over the park's ~98 × 49 m extent: median distance to the nearest pole
+**12.9 m**, and **66% of the park lies within the localizer's 15 m gate**
+(`max_range`) of at least one pole.
 
 `linea1` lives in `models_lake_opt`, so `load-park-world.sh:240` must add that
 directory to `GAZEBO_MODEL_PATH` for the park world, or the model must be copied
