@@ -4,7 +4,9 @@
 
 **Goal:** Localize the Husky from *distinctive* landmarks (power-line poles) identified by an NDT-style shape descriptor with no classifier, re-anchoring the dead-reckoning prior on descriptor-confirmed operator-waypoint arrivals.
 
-**Architecture:** An offline step adds `linea1` poles to `park.world` and extracts a per-object shape-descriptor map. A new descriptor module (pure numpy, shared by extraction and runtime) turns points into per-height-band voxel-shape statistics. A new detector plugin matches live clusters against *unique* map descriptors only. The localizer's anchor becomes the most recent pole sighting or descriptor-confirmed waypoint arrival; between anchors non-distinctive clusters are ignored.
+**Architecture:** An offline step adds `linea1` structures to `park.world`, assembles one map-frame point cloud from all placed meshes, and measures **per-region** distinctiveness over a grid of candidate locations — no object segmentation, no types. A descriptor module (pure numpy, shared by extraction and runtime) turns the points in a spatial window into voxel-shape statistics over height bands **plus horizontal-arrangement sectors**. A detector plugin describes the region around the robot's prior and matches it to distinctive map locations only, gated by the prior. The localizer's anchor becomes the most recent region match or descriptor-confirmed waypoint arrival.
+
+> **REVISED 2026-08-16 — per-region pivot.** The original plan (Tasks 1–13 below) built *per-object* descriptors. That broke on the real map: the distinctive structures are byte-identical instances of one mesh, so per-object descriptors are distance 0 apart and none is distinctive. Per the revised spec, the unit is now a **region of space at a chosen scale**, with no notion of object or type. Tasks 1–7 and 10 stand as completed and are reused. Tasks 8, 9, 11, 12 are **superseded** by the per-region tasks **T14–T21** in the "Per-region tasks" section at the end of this plan — implement those, not the originals. Task 13 (in-sim) is replaced by T21.
 
 **Tech Stack:** Python 3.8, numpy, ROS Noetic (rospy), pytest. No new third-party dependencies.
 
@@ -1058,3 +1060,282 @@ git commit -m "feat(operator): waypoint route with descriptor-confirmed advance"
 
 - **Descriptor parameters (`voxel`, `min_voxel_pts`, `n_bands`, `DESC_UNIQUE_THRESHOLD`, `match_threshold`) are tuned, not sacred.** Task 3 is the anchor: if real in-sim pole clouds don't match the mesh-sampled descriptor, adjust these and re-run Tasks 2–3 + 8 before touching anything downstream. Record the final values in `descriptor.py`.
 - **Do not run the simulator inside Tasks 1–12.** They are pure-Python and pytest-only. Only Task 13 touches the sim, and only from the main conversation.
+
+---
+
+# Per-region tasks (T14–T21) — the pivot
+
+These replace superseded Tasks 8, 9, 11, 12, 13. Tasks 1–7 and 10 are done and reused. Build order: pure infrastructure (T14–T16) → descriptor design (T17) → extraction (T18) → runtime (T19) → operator (T20) → in-sim (T21). Each of T14–T16 is deliberately self-contained so its implementer's context holds only that piece — an `.obj` parser implementer never sees descriptor code, and vice versa.
+
+### Task T14: Wavefront .obj triangle reader
+
+**Files:**
+- Create: `map_tools/obj_read.py`
+- Test: `map_tools/tests/test_obj_read.py`
+
+**Interfaces:**
+- Consumes: nothing (stdlib + numpy).
+- Produces: `read_obj_triangles(obj_path, scale=1.0)` → `(M,3,3)` numpy array of triangles in metres. Reads only `v` (vertex) and `f` (face) lines; ignores `vn`/`vt`/`usemtl`/`o`/`g`/comments. Triangulates polygon faces by fan. Face indices are 1-based and may be `v`, `v/vt`, or `v/vt/vn` — take the vertex index (before the first `/`); negative (relative) indices supported.
+
+- [ ] **Step 1: failing test**
+
+```python
+# map_tools/tests/test_obj_read.py
+import os, numpy as np
+from map_tools.obj_read import read_obj_triangles
+
+BARK = os.path.join(os.path.dirname(__file__), "..", "..", "models_opt", "tree_8", "bark8.obj")
+
+def test_reads_a_known_obj_height():
+    tris = read_obj_triangles(BARK, scale=1.0)
+    assert tris.ndim == 3 and tris.shape[1:] == (3, 3)
+    zs = tris[:, :, 2]
+    assert zs.max() - zs.min() > 5.0   # the trunk mesh is several metres tall
+
+def test_face_formats_and_fan_triangulation():
+    import tempfile, textwrap
+    obj = textwrap.dedent('''\
+        v 0 0 0
+        v 1 0 0
+        v 1 1 0
+        v 0 1 0
+        f 1/1/1 2/2/2 3/3/3 4/4/4
+    ''')
+    with tempfile.NamedTemporaryFile("w", suffix=".obj", delete=False) as fh:
+        fh.write(obj); path = fh.name
+    tris = read_obj_triangles(path, scale=2.0)
+    assert tris.shape == (2, 3, 3)          # quad -> 2 triangles by fan
+    assert np.isclose(np.abs(tris).max(), 2.0)  # scale applied
+
+def test_negative_indices():
+    import tempfile, textwrap
+    obj = "v 0 0 0\nv 1 0 0\nv 0 1 0\nf -3 -2 -1\n"
+    with tempfile.NamedTemporaryFile("w", suffix=".obj", delete=False) as fh:
+        fh.write(obj); path = fh.name
+    tris = read_obj_triangles(path)
+    assert tris.shape == (1, 3, 3)
+```
+
+- [ ] **Step 2: run, expect fail** — `python3 -m pytest map_tools/tests/test_obj_read.py -v`
+- [ ] **Step 3: implement** `read_obj_triangles`: parse `v` lines into a vertex list; for each `f`, split tokens, take the substring before the first `/` as the (1-based, possibly negative) vertex index, resolve to 0-based, fan-triangulate (v0,vi,vi+1), stack, multiply by `scale`. No third-party libs.
+- [ ] **Step 4: run, expect pass**
+- [ ] **Step 5: commit** — `git add map_tools/obj_read.py map_tools/tests/test_obj_read.py && git commit -m "feat(map): minimal Wavefront .obj triangle reader"`
+
+---
+
+### Task T15: Scene-point assembler
+
+**Files:**
+- Create: `map_tools/scene_points.py`
+- Test: `map_tools/tests/test_scene_points.py`
+
+**Interfaces:**
+- Consumes: `mesh_sample.sample_surface` (.dae), `obj_read.read_obj_triangles` + `mesh_sample` area sampling (.obj), `sdf_parse.parse_models`, `park_types` registry (mesh paths + scales).
+- Produces: `scene_cloud(models, per_object_n=2000, seed=0)` → `(N,3)` map-frame point cloud combining every catalog model's surface points, each placed by its world (x,y,yaw). A shared helper `sample_model(model, n, seed)` returns one model's points in mesh-local frame (dispatching .dae vs .obj by extension), which `scene_cloud` rotates by yaw and translates by (world_x, world_y). z from the mesh.
+
+**Note:** the registry gives mesh path + scale per family; `sample_surface` already area-samples a `.dae`. For `.obj`, area-sample `read_obj_triangles` output with the SAME area-weighted scheme (factor it out of `mesh_sample` if needed, or add `sample_triangles(tris, n, seed)` there and have both paths call it). Reuse, do not duplicate the sampler.
+
+- [ ] **Step 1: failing test**
+
+```python
+# map_tools/tests/test_scene_points.py
+import os, numpy as np
+from map_tools.sdf_parse import parse_models
+from map_tools.scene_points import scene_cloud
+
+WORLD = os.path.join(os.path.dirname(__file__), "..", "..",
+                     "natural_environments_ros_opt", "natural_enviroment", "worlds", "park.world")
+
+def test_scene_cloud_spans_the_park_and_is_tall():
+    ms = parse_models(WORLD)
+    cloud = scene_cloud(ms, per_object_n=500, seed=0)
+    assert cloud.shape[1] == 3 and len(cloud) > 10000
+    # park extent is roughly x in [-50,48], y in [-26,23]; poles reach ~16 m + ground z~3
+    assert cloud[:, 0].min() < -40 and cloud[:, 0].max() > 40
+    assert cloud[:, 2].max() > 15.0        # the tall added structures are present
+    # determinism
+    assert np.array_equal(cloud, scene_cloud(ms, per_object_n=500, seed=0))
+```
+
+- [ ] **Step 2: run, expect fail**
+- [ ] **Step 3: implement** `sample_model` (dispatch by mesh extension via the registry; skip families with no catalog mesh AND no obj, logging which) and `scene_cloud` (place each model by yaw+translation). Poles: expand via `_expand_poles`? NO — for the scene cloud you want the RAW mesh points at the model pose, which already contains both poles and cables; do not pre-crop. The location grid (T18) handles windows.
+- [ ] **Step 4: run, expect pass**
+- [ ] **Step 5: commit** — `git add map_tools/scene_points.py map_tools/tests/test_scene_points.py map_tools/mesh_sample.py && git commit -m "feat(map): assemble one map-frame scene cloud from all placed meshes"`
+
+---
+
+### Task T16: Region-window cutter
+
+**Files:**
+- Modify: `landmark_loc/descriptor.py` (add `window` — it belongs with the descriptor since both are pure point-geometry and runtime needs it too)
+- Test: `landmark_loc/tests/test_descriptor.py` (extend)
+
+**Interfaces:**
+- Consumes: numpy only.
+- Produces: `window(cloud, cx, cy, radius)` → the subset of `(N,3)` `cloud` whose x,y is within `radius` of `(cx,cy)`, recentred so the window centre is at x=y=0 (z left absolute). Recentring is what makes a map window and a runtime window comparable regardless of world position.
+
+- [ ] **Step 1: failing test**
+
+```python
+# append to landmark_loc/tests/test_descriptor.py
+from landmark_loc.descriptor import window
+
+def test_window_selects_and_recenters():
+    pts = np.array([[10.,10.,1.],[10.5,10.,1.],[30.,30.,1.]])
+    w = window(pts, 10.0, 10.0, 2.0)
+    assert len(w) == 2                       # third point is 28 m away
+    assert abs(w[:,0].mean()) < 1.0 and abs(w[:,1].mean()) < 1.0   # recentred near origin
+    assert np.allclose(w[:,2], 1.0)          # z untouched
+```
+
+- [ ] **Step 2: run, expect fail**
+- [ ] **Step 3: implement** `window`: mask by `hypot(x-cx,y-cy) <= radius`, subtract `(cx,cy)` from x,y, leave z.
+- [ ] **Step 4: run, expect pass**
+- [ ] **Step 5: commit** — `git add landmark_loc/descriptor.py landmark_loc/tests/test_descriptor.py && git commit -m "feat(descriptor): spatial window cutter with recentering"`
+
+---
+
+### Task T17: Horizontal-arrangement descriptor
+
+**Files:**
+- Modify: `landmark_loc/descriptor.py` (add `describe_region`)
+- Test: `landmark_loc/tests/test_descriptor.py`
+
+**Interfaces:**
+- Consumes: `voxel_shape`, `describe` (the vertical part, T2), numpy.
+- Produces: `describe_region(points, n_sectors=8, n_rings=3, radius=12.0, **describe_kwargs)` → a 1-D numpy vector concatenating (a) the flattened vertical descriptor `describe(points)` and (b) an arrangement grid: for each of `n_sectors` angular sectors × `n_rings` radial rings, the occupied-point mass and mean voxel-shape mix in that cell. `region_distance(a, b)` → weighted L2 with the arrangement block weighted by `ARRANGEMENT_WEIGHT = 1.0` (tunable) so arrangement and vertical shape both count.
+
+**Design note (this is the real landmark reasoning):** the arrangement grid is what distinguishes two identical structures in different neighbourhoods. A sector/ring cell records "how much structure sits in this direction-and-distance from the window centre." Two windows over identical isolated structures with identical surroundings are identical (correct); two with different neighbours differ in the cells where the neighbours fall. Keep it rotation-SENSITIVE for now (the world has an absolute compass heading available at runtime); note in a comment that a rotation-invariant variant is a future option if heading proves unreliable.
+
+- [ ] **Step 1: failing test**
+
+```python
+# append to landmark_loc/tests/test_descriptor.py
+from landmark_loc.descriptor import describe_region, region_distance
+
+def _tower(cx, cy, seed):
+    r = _rng(seed); z = r.uniform(0,16,3000)
+    x = r.choice([-0.25,0.25],3000)+r.randn(3000)*0.02 + cx
+    y = r.randn(3000)*0.02 + cy
+    return np.column_stack([x,y,z])
+
+def test_identical_structure_same_empty_neighbourhood_matches():
+    a = _tower(0,0,1); b = _tower(0,0,2)
+    da, db = describe_region(a), describe_region(b)
+    assert region_distance(da, db) < 1.0     # same shape, same (empty) surroundings
+
+def test_neighbour_in_different_direction_separates():
+    # same central structure; one has a neighbour to the +x side, one to +y
+    base = _tower(0,0,1)
+    east = np.vstack([base, _tower(8,0,3)])
+    north = np.vstack([base, _tower(0,8,4)])
+    d = region_distance(describe_region(east), describe_region(north))
+    assert d > 1.0                            # arrangement differs by direction
+```
+
+- [ ] **Step 2: run, expect fail**
+- [ ] **Step 3: implement** `describe_region` (vertical block from `describe`; arrangement block = per sector×ring occupied mass + mean voxel_shape) and `region_distance` (weighted L2). Choose `ARRANGEMENT_WEIGHT` so both tests pass; record the value + reasoning in a comment.
+- [ ] **Step 4: run, expect pass**
+- [ ] **Step 5: commit** — `git add landmark_loc/descriptor.py landmark_loc/tests/test_descriptor.py && git commit -m "feat(descriptor): horizontal-arrangement region descriptor"`
+
+---
+
+### Task T18: Location-grid distinctiveness extractor
+
+**Files:**
+- Modify: `map_tools/extract_park_map.py`
+- Test: `map_tools/tests/test_extract_regions.py`
+
+**Interfaces:**
+- Consumes: `scene_points.scene_cloud` (T15), `descriptor.window` (T16), `descriptor.describe_region`/`region_distance` (T17), `distinctiveness` machinery (T5, generalised to `region_distance`).
+- Produces: `main()` additionally writes `maps/park_regions.yaml`: for each grid location that is distinctive, `{x, y, descriptor: [...], nearest: float}`. Grid over the park extent at a chosen step; window radius R from the descriptor. The distinctiveness threshold is CHOSEN from the measured nearest-distance distribution (report the distribution; place the threshold in the empty gap), not hardcoded blindly.
+
+- [ ] **Step 1: failing test**
+
+```python
+# map_tools/tests/test_extract_regions.py
+import os, yaml
+from map_tools import extract_park_map
+
+def test_distinctive_locations_cluster_near_the_added_structures(tmp_path):
+    extract_park_map.main(["--out-dir", str(tmp_path), "--regions"])
+    with open(tmp_path / "park_regions.yaml") as fh:
+        regs = yaml.safe_load(fh)
+    assert len(regs) >= 4                     # several distinctive spots exist
+    # every distinctive location should be near one of the six known pole positions
+    poles = [(-42.5,1.0),(-14.33,6.99),(13.84,12.98),(42.01,18.96),(-27.0,-23.0),(1.8,-23.0)]
+    import math
+    for r in regs.values():
+        assert min(math.hypot(r["x"]-px, r["y"]-py) for px,py in poles) < 20.0
+```
+
+- [ ] **Step 2: run, expect fail**
+- [ ] **Step 3: implement** the `--regions` path: build `scene_cloud`, iterate a grid, `window`+`describe_region` each, compute each location's nearest-other `region_distance`, threshold, write `park_regions.yaml`. Print the distance distribution and chosen threshold. Keep the existing occupancy-grid/objects outputs intact.
+- [ ] **Step 4: run, expect pass** (and report the distance distribution + threshold)
+- [ ] **Step 5: commit** — `git add map_tools/extract_park_map.py map_tools/tests/test_extract_regions.py maps/park_regions.yaml && git commit -m "feat(map): per-region distinctiveness over a location grid"`
+
+---
+
+### Task T19: Region anchor detector
+
+**Files:**
+- Create: `landmark_loc/region_detector.py`
+- Modify: `landmark_loc/detector.py` (register `"region"` in `DETECTORS`)
+- Test: `landmark_loc/tests/test_region_detector.py`
+
+**Interfaces:**
+- Consumes: `descriptor.window`/`describe_region`/`region_distance`, `park_regions.yaml`, the prior (x,y).
+- Produces: `RegionDetector(regions_path, match_threshold, prior_gate=25.0)` with `name="region"`. Method `match(cloud, prior_xy)` → `(map_x, map_y, confidence)` or `None`: describe the window around `prior_xy` in the live cloud, find the nearest distinctive map region whose stored (x,y) is within `prior_gate` of the prior, accept if `region_distance < match_threshold`. The prior gate is what stops a far-away look-alike being chosen.
+
+- [ ] **Step 1: failing test**
+
+```python
+# landmark_loc/tests/test_region_detector.py
+import numpy as np, yaml
+from landmark_loc.region_detector import RegionDetector
+from landmark_loc.descriptor import describe_region
+
+def _tower(cx,cy,seed):
+    r=np.random.RandomState(seed); z=r.uniform(0,16,3000)
+    x=r.choice([-0.25,0.25],3000)+r.randn(3000)*0.02+cx; y=r.randn(3000)*0.02+cy
+    return np.column_stack([x,y,z])
+
+def _regmap(path):
+    d={"loc0":{"x":10.0,"y":0.0,"descriptor":describe_region(_tower(0,0,1)).tolist()}}
+    open(path,"w").write(yaml.safe_dump(d))
+
+def test_matches_region_near_prior(tmp_path):
+    p=tmp_path/"r.yaml"; _regmap(str(p))
+    det=RegionDetector(str(p), match_threshold=1.0, prior_gate=25.0)
+    cloud=_tower(10,0,2)                      # same structure, at the map loc
+    out=det.match(cloud, (10.0,0.0))
+    assert out is not None and abs(out[0]-10.0)<2.0
+
+def test_prior_gate_rejects_far_lookalike(tmp_path):
+    p=tmp_path/"r.yaml"; _regmap(str(p))
+    det=RegionDetector(str(p), match_threshold=1.0, prior_gate=25.0)
+    cloud=_tower(200,0,2)                     # identical shape but far from the map loc
+    assert det.match(cloud, (200.0,0.0)) is None
+```
+
+- [ ] **Step 2: run, expect fail**
+- [ ] **Step 3: implement** `RegionDetector.match` + register `"region"` in `DETECTORS`. Keep the `Detector` contract shape where sensible (this one is region- not percept-based, so `match` is its own entry point; document that in the module).
+- [ ] **Step 4: run, expect pass**
+- [ ] **Step 5: commit** — `git add landmark_loc/region_detector.py landmark_loc/detector.py landmark_loc/tests/test_region_detector.py && git commit -m "feat(landmark): prior-gated region anchor detector"`
+
+---
+
+### Task T20: Wire region detector + re-anchoring into the localizer
+
+Same as the original Task 11, but the anchor fix comes from `RegionDetector.match(cloud, prior_xy)` instead of a per-cluster pole sighting. `_update_anchor` (delegating to `waypoint_anchor.choose_anchor`, T10) is unchanged. Params: `~classifier:=region`, `~regions_path`, `~match_threshold`, `~prior_gate`, `~fault_gate`. Publishes `/landmark_fault` and `/landmark_arrival_confirmed` (per ruling F3). Test at the node-helper level (`test_node_helpers.py`), no live ROS. Default `~classifier` stays `cascade` so existing runbooks are unchanged.
+
+- [ ] Write the failing helper test for `_update_anchor` (reuse the T10 semantics), run, implement the wiring, run full `landmark_loc/tests/` + `map_tools/tests/`, commit.
+
+---
+
+### Task T21: Operator waypoint route + in-sim validation
+
+T21a is the original Task 12 (operator `route` + `WaypointQueue` + descriptor-confirmed advance, bare-import per ruling F4), unchanged. T21b is the original Task 13 in-sim validation, main-conversation only, updated for region matching: distinctive structures visible; a fix from a single region match; the correct location resolved (not a far look-alike); drift bounded; navsat attack cannot move the descriptor pose.
+
+- [ ] T21a: implement operator route (see original Task 12 steps), commit.
+- [ ] T21b: MAIN CONVERSATION ONLY — run the sim per RUN-MAP-NAV Steps 0–3, then the region-localization and navsat-attack checks. Record findings in the PR; commit no sim logs.
