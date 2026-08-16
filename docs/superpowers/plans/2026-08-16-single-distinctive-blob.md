@@ -90,6 +90,13 @@ distinctive vertical profile (narrow base, wide top), unlike anything present.
 
 ### Task 1: Add ONE water-tower model to park.world
 
+> **EXECUTE TASK 2 FIRST.** This task's test cannot pass before Task 2 exists.
+> `map_tools/sdf_parse.py:78` drops any model whose prefix classifies as
+> `skip`, and `classify_prefix("water_tower")` returns `skip` until Task 2
+> registers the type. Run Task 2 (registry), then Task 1 (world edit), then
+> Task 3. Same three commits, same contents — every commit green and
+> bisectable. Task numbering is left as-is so cross-references still resolve.
+
 **Files:**
 - Modify: `natural_environments_ros_opt/natural_enviroment/worlds/park.world` (untracked — back it up first)
 - Test: `map_tools/tests/test_park_world_tower.py`
@@ -159,16 +166,23 @@ from map_tools.park_types import classify_prefix, BY_PREFIX
 def test_water_tower_registered():
     assert classify_prefix("water_tower") == "water_tower"
     t = BY_PREFIX["water_tower"]
-    assert t.is_catalog is True
+    assert t.is_catalog is False
     assert t.is_object is True
 ```
 
 - [ ] **Step 2:** run, expect fail.
 - [ ] **Step 3:** add a `ParkType` entry: `world_prefix="water_tower"`,
-      `identity="water_tower"`, `is_object=True`, `is_catalog=True`,
+      `identity="water_tower"`, `is_object=True`, `is_catalog=False`,
       `disc_radius=2.5` (the tank radius — its true footprint),
-      `mesh=None` (primitives, no mesh file), `box_stamped=False`,
-      a distinct `marker_color`. Leave the scoring fields at their defaults —
+      `mesh=None` (primitives, no mesh file), `box_stamped=False`.
+      **`is_catalog` MUST be `False`.** Every consumer of that flag is
+      classifier machinery — `classify.py:117` (`KNOWN_RADIUS` size bands),
+      `catalog.py:16` (matcher identity set), `localizer_node.py:174`
+      (`_LABEL_COLOR`) — and this design does not classify the tower.
+      `test_score.py:188` also asserts every `is_catalog` identity is
+      scoreable, so `is_catalog=True` with no `score_family` fails the suite.
+      Omit `marker_color` entirely; it defaults, and a non-classified type
+      never enters `_LABEL_COLOR`. Leave the scoring fields at their defaults —
       **do not** give it a `score_family`; `score.py`'s `profile_type_score`
       raises on unknown profile identities (this bit us before), and this design
       does not use the score detector.
