@@ -90,6 +90,21 @@ def describe(points, band_height=1.0, voxel=0.5, min_voxel_pts=5, n_bands=18):
     return out
 
 
+def window(cloud, cx, cy, radius):
+    """Return the subset of (N,3) `cloud` within `radius` of (cx,cy) in x/y.
+
+    Recentred so the window centre is at x=y=0; z is left absolute. This is
+    what makes a map window and a runtime window comparable regardless of
+    where each was cut from in world coordinates.
+    """
+    p = np.asarray(cloud, dtype=float)
+    mask = np.hypot(p[:, 0] - cx, p[:, 1] - cy) <= radius
+    out = p[mask].copy()
+    out[:, 0] -= cx
+    out[:, 1] -= cy
+    return out
+
+
 def descriptor_distance(a, b):
     """Weighted L2 over flattened (n_bands, 4) descriptors; extent down-weighted."""
     a = np.array(a, dtype=float, copy=True)

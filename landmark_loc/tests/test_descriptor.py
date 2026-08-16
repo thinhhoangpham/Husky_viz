@@ -1,5 +1,5 @@
 import numpy as np
-from landmark_loc.descriptor import voxel_shape, describe, descriptor_distance
+from landmark_loc.descriptor import voxel_shape, describe, descriptor_distance, window
 
 
 def _rng(seed):
@@ -114,3 +114,11 @@ def test_sparse_pole_still_closer_to_dense_pole_than_bench():
     dd = describe(dense)
     ds = describe(sparse)
     assert descriptor_distance(dd, ds) < descriptor_distance(dd, db)
+
+
+def test_window_selects_and_recenters():
+    pts = np.array([[10.,10.,1.],[10.5,10.,1.],[30.,30.,1.]])
+    w = window(pts, 10.0, 10.0, 2.0)
+    assert len(w) == 2                       # third point is 28 m away
+    assert abs(w[:,0].mean()) < 1.0 and abs(w[:,1].mean()) < 1.0   # recentred near origin
+    assert np.allclose(w[:,2], 1.0)          # z untouched
