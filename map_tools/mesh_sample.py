@@ -19,13 +19,16 @@ import numpy as np
 from map_tools.mesh_bounds import _triangles
 
 
-def sample_surface(dae_path, scale, n=4000, seed=0):
-    """Return (n, 3) points sampled uniformly by triangle area over the mesh
-    surface of `dae_path`, in mesh-local metres at `scale`.
+def sample_triangles(tris, n, seed=0):
+    """Return (n, 3) points sampled uniformly by triangle area over `tris`,
+    an (M,3,3) array of triangle vertices in mesh-local metres.
 
-    Deterministic given `seed`.
+    Deterministic given `seed`. Shared area-weighted sampling core used by
+    both the COLLADA (.dae) and Wavefront (.obj) mesh paths -- see
+    sample_surface for the .dae entry point and scene_points.sample_model
+    for the .obj one.
     """
-    tris = np.asarray(_triangles(dae_path, scale), dtype=float)  # (M,3,3)
+    tris = np.asarray(tris, dtype=float)
     if len(tris) == 0:
         return np.zeros((0, 3))
 
@@ -51,3 +54,13 @@ def sample_surface(dae_path, scale, n=4000, seed=0):
 
     a = v0[tri_idx]
     return a + u * (v1[tri_idx] - a) + w * (v2[tri_idx] - a)
+
+
+def sample_surface(dae_path, scale, n=4000, seed=0):
+    """Return (n, 3) points sampled uniformly by triangle area over the mesh
+    surface of `dae_path`, in mesh-local metres at `scale`.
+
+    Deterministic given `seed`.
+    """
+    tris = _triangles(dae_path, scale)  # (M,3,3)
+    return sample_triangles(tris, n, seed)
