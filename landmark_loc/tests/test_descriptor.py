@@ -1,5 +1,8 @@
 import numpy as np
-from landmark_loc.descriptor import voxel_shape, describe, descriptor_distance, window
+from landmark_loc.descriptor import (
+    voxel_shape, describe, descriptor_distance, window,
+    describe_region, region_distance,
+)
 
 
 def _rng(seed):
@@ -122,3 +125,71 @@ def test_window_selects_and_recenters():
     assert len(w) == 2                       # third point is 28 m away
     assert abs(w[:,0].mean()) < 1.0 and abs(w[:,1].mean()) < 1.0   # recentred near origin
     assert np.allclose(w[:,2], 1.0)          # z untouched
+
+
+# --- Region descriptor: horizontal arrangement -----------------------------
+#
+# The region descriptor's job is to separate two IDENTICAL structures that sit
+# in DIFFERENT neighbourhoods -- something the vertical descriptor above cannot
+# do, because it is translation-invariant within the window. The bounds below
+# are pinned to MEASURED distances (recorded in describe_region's comments), not
+# loose habit values, so a subtly-wrong arrangement grid cannot pass them.
+
+def _tower(cx, cy, seed):
+    # A 16 m lattice tower (like _lattice_pole but placeable) centred on (cx,cy).
+    r = _rng(seed); z = r.uniform(0, 16, 3000)
+    x = r.choice([-0.25, 0.25], 3000) + r.randn(3000) * 0.02 + cx
+    y = r.randn(3000) * 0.02 + cy
+    return np.column_stack([x, y, z])
+
+
+def test_identical_structure_same_empty_neighbourhood_matches():
+    # Two independent samplings of the SAME centred tower with NOTHING around
+    # either -> descriptors must be nearly identical. Measured same-structure
+    # distance is ~0.018 (sampling noise only); assert < 0.1, leaving ~5x
+    # headroom over the measured value while still ruling out any real signal.
+    a = _tower(0, 0, 1)
+    b = _tower(0, 0, 2)
+    d = region_distance(describe_region(a), describe_region(b))
+    assert d < 0.1
+
+
+def test_neighbour_in_different_direction_separates():
+    # Same central tower; one window has an identical neighbour 8 m to the EAST,
+    # the other the SAME neighbour 8 m to the NORTH. The arrangement grid must
+    # light up different sectors, so the cross-neighbourhood distance must be
+    # not merely > the match threshold but MANY times the same-structure
+    # distance -- otherwise a near-miss implementation could pass both tests.
+    a = _tower(0, 0, 1)
+    b = _tower(0, 0, 2)
+    same = region_distance(describe_region(a), describe_region(b))
+
+    base = _tower(0, 0, 1)
+    east = np.vstack([base, _tower(8, 0, 3)])
+    north = np.vstack([base, _tower(0, 8, 4)])
+    cross = region_distance(describe_region(east), describe_region(north))
+
+    assert cross > 1.0                # comfortably above the match threshold
+    assert cross >= 20.0 * same       # measured ratio ~150x; >=20x rules out near-miss
+
+
+def test_region_descriptor_responds_to_direction():
+    # The arrangement block itself (not just the summed distance) must differ
+    # when the SAME neighbour moves from +x to +y. Compare each against the
+    # lone-centre descriptor: the neighbour's mass lands in DIFFERENT sectors,
+    # so the two "with neighbour" descriptors must be far apart.
+    lone = describe_region(_tower(0, 0, 1))
+    east = describe_region(np.vstack([_tower(0, 0, 1), _tower(8, 0, 3)]))
+    north = describe_region(np.vstack([_tower(0, 0, 1), _tower(0, 8, 4)]))
+    # both neighbours perturb the descriptor away from the lone centre...
+    assert region_distance(lone, east) > 1.0
+    assert region_distance(lone, north) > 1.0
+    # ...and in genuinely different directions, so east != north.
+    assert region_distance(east, north) > 1.0
+
+
+def test_region_descriptor_is_deterministic():
+    # No RNG inside describe_region: identical points -> bit-identical vector.
+    pts = _tower(0, 0, 5)
+    assert np.array_equal(describe_region(pts), describe_region(pts))
+    assert np.array_equal(describe_region(pts.copy()), describe_region(pts))
