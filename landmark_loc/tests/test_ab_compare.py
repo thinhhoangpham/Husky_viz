@@ -247,7 +247,13 @@ def test_harness_is_ros_free():
 
 def test_harness_is_generic_over_the_registry(percepts):
     """Nothing here may be hardcoded to a specific detector name."""
-    for name in detector.DETECTORS:
+    for name, cls in detector.DETECTORS.items():
+        # The A/B harness compares PERCEPT detectors. A region-based anchor
+        # detector (percept_based=False) has a different contract
+        # (match(cloud, prior_xy)) and cannot be constructed argument-free, so
+        # it is not part of this harness -- skip it. See detector.Detector.
+        if not getattr(cls, "percept_based", True):
+            continue
         cmp = ab_compare.compare(percepts, detector.get_detector(name),
                                  detector.get_detector(name))
         assert cmp.total == len(percepts)
