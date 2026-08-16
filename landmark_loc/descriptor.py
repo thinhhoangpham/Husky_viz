@@ -146,7 +146,24 @@ ARRANGEMENT_WEIGHT = 1.0
 # Number of scalars in the flattened vertical block: describe() returns
 # (n_bands, 4) and we reuse its default n_bands=18 -> 72. region_distance reads
 # this to split a region vector back into its vertical and arrangement halves.
+#
+# This is a FIXED module constant, and region_distance ASSERTS the incoming
+# vector length matches _VERTICAL_LEN + the arrangement length before slicing
+# (Finding A). describe_region forwards **describe_kwargs to describe(), so a
+# caller passing n_bands != 18 would produce a longer/shorter vertical block;
+# with a fixed split point that would silently mis-slice and return a
+# meaningless distance. The assertion turns that into a loud ValueError. If
+# n_bands ever genuinely needs to vary, carry the split point explicitly
+# instead of relaxing this guard.
 _VERTICAL_LEN = 18 * 4
+
+# The full region-descriptor length with the default grid: 72 vertical +
+# 8 sectors * 3 rings * 4 = 96 arrangement = 168. region_distance asserts the
+# incoming vectors are exactly this length, so a vector built with a non-default
+# n_bands (or a non-default grid) fails loudly rather than mis-slicing. Note a
+# bare (size - 72) % 4 check is NOT enough: n_bands=10 gives length 136 and
+# 136 - 72 = 64 is a multiple of 4, so only pinning the exact total catches it.
+_DEFAULT_REGION_LEN = _VERTICAL_LEN + 8 * 3 * 4
 
 
 def _arrangement_grid(points, n_sectors, n_rings, radius):
@@ -220,10 +237,20 @@ def describe_region(points, n_sectors=8, n_rings=3, radius=12.0, **describe_kwar
     grid (WHERE structure sits around here). `region_distance` weights the two
     halves; see ARRANGEMENT_WEIGHT.
 
+    describe_region OWNS its `radius` (Finding B): it clips the input to points
+    within `radius` of the origin BEFORE computing either block. The window is
+    already recentred to the origin, so that clip is `hypot(x, y) <= radius`.
+    This makes the descriptor independent of whatever radius the caller's
+    window() used: the arrangement grid's mass denominator (total points) and
+    its per-cell counts are then guaranteed to be the same point set, so a
+    caller cutting a wider window cannot silently deflate every cell's mass.
+
     Deterministic: no RNG here or in anything it calls, so identical `points`
     yield an identical vector.
     """
     p = _normalise_orientation(np.asarray(points, dtype=float))
+    if p.shape[0]:
+        p = p[np.hypot(p[:, 0], p[:, 1]) <= radius]
     vertical = describe(p, **describe_kwargs).ravel()
     arrangement = _arrangement_grid(p, n_sectors, n_rings, radius).ravel()
     return np.concatenate([vertical, arrangement])
@@ -241,6 +268,22 @@ def region_distance(a, b):
     """
     a = np.asarray(a, dtype=float)
     b = np.asarray(b, dtype=float)
+
+    # Guard against a fixed-split mis-slice (Finding A): both vectors must have
+    # the length describe_region produces with the default n_bands=18. A vector
+    # built with a different n_bands has a different vertical length; slicing it
+    # at _VERTICAL_LEN would silently mix vertical and arrangement scalars and
+    # return a meaningless distance. Fail loudly instead.
+    if a.shape != b.shape:
+        raise ValueError(
+            "region_distance: mismatched vector lengths %d vs %d"
+            % (a.size, b.size))
+    if a.size != _DEFAULT_REGION_LEN:
+        raise ValueError(
+            "region_distance: vector length %d != expected %d (72 vertical + "
+            "96 arrangement). A non-default n_bands or grid is unsupported by "
+            "this fixed-split metric."
+            % (a.size, _DEFAULT_REGION_LEN))
 
     va = a[:_VERTICAL_LEN].reshape(-1, 4).copy()
     vb = b[:_VERTICAL_LEN].reshape(-1, 4).copy()

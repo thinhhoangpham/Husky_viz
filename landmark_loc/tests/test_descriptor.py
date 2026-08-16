@@ -193,3 +193,32 @@ def test_region_descriptor_is_deterministic():
     pts = _tower(0, 0, 5)
     assert np.array_equal(describe_region(pts), describe_region(pts))
     assert np.array_equal(describe_region(pts.copy()), describe_region(pts))
+
+
+def test_region_distance_rejects_nondefault_nbands(): # Finding A
+    # describe_region forwards n_bands to describe(), which changes the vector
+    # length. region_distance uses a FIXED 72-scalar vertical split, so a
+    # non-default-length vector must fail LOUDLY, not silently mis-slice into a
+    # meaningless distance.
+    pts = _tower(0, 0, 1)
+    short = describe_region(pts, n_bands=10)   # 40 vertical + 96 -> length 136
+    full = describe_region(pts)                # length 168
+    assert short.size != full.size
+    import pytest
+    with pytest.raises(ValueError):
+        region_distance(short, short)
+    with pytest.raises(ValueError):
+        region_distance(short, full)
+
+
+def test_describe_region_owns_its_radius(): # Finding B
+    # Points beyond `radius` must not affect the descriptor: describe_region
+    # clips to radius itself, so passing a wider cloud gives the SAME vector as
+    # pre-removing the far points. Without the clip, the far points would
+    # inflate the mass denominator and deflate every cell's mass fraction.
+    core = _tower(0, 0, 1)                      # centred tower, all within radius
+    far = _tower(0, 30, 3)                      # 30 m north -> outside radius=12
+    wide = np.vstack([core, far])
+    with_far = describe_region(wide, radius=12.0)
+    without_far = describe_region(core, radius=12.0)
+    assert np.array_equal(with_far, without_far)
