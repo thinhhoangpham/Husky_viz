@@ -41,6 +41,9 @@ lamp_clone_clone_clone_clone_2_clone_clone_0_clone: {x: -0.543, y: -4.580, yaw: 
 lamp_clone_clone_clone_clone_2_clone_clone_0_clone_0: {x: -9.271, y: -7.926, yaw: -2.8936}
 lamp_clone_clone_clone_clone_2_clone_clone_0_clone_1: {x: -13.323, y: -17.296, yaw: 2.5306}
 lamp_clone_clone_clone_clone_2_clone_clone_0_clone_2: {x: -6.515, y: -16.215, yaw: -0.9761}
+postescable: {x: -16.330, y: 5.284, yaw: 0.2094}
+postescable_0: {x: 40.012, y: 17.259, yaw: 0.2094}
+postescable_1: {x: -0.511, y: -24.251, yaw: 0.0000}
 trash_bin_1: {x: 24.108, y: 3.612, yaw: 0.0000}
 trash_bin_1_clone: {x: 2.965, y: -4.464, yaw: 0.0000}
 trash_bin_1_clone_0: {x: -2.604, y: 4.258, yaw: -1.6534}
