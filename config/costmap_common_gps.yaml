@@ -28,13 +28,30 @@ obstacles:
   os0:
     sensor_frame: os0_lidar
     data_type: PointCloud2
-    topic: /os0_cloud_node/points
+    # GROUND-FILTERED cloud, not the raw one. landmark_loc/ground_filter_node.py
+    # removes ground returns in the SENSOR frame before the costmap sees them.
+    #
+    # Why: this height gate is evaluated in the costmap's global_frame (odom for
+    # the local costmap, map for the global one), and both EKFs run
+    # two_d_mode: true, so the pose they publish is FLAT -- measured live,
+    # odom->base_link is z=+0.000 roll=+0.00 pitch=-0.00 while the robot is
+    # physically on sloped terrain at world z~3.9. Ground returns transformed
+    # through that flat pose get lifted above the gate and marked as obstacles.
+    # Measured at the lake spawn: 367 lethal cells, nearest 2.37 m at bearing
+    # +-175..180deg (straight behind, uphill), with NOTHING in the world and zero
+    # occupied cells within 5 m in lake_map.pgm. They survived
+    # /move_base/clear_costmaps, so they were re-marked every cycle, not stale.
+    #
+    # Park never showed this (6.9 mm of relief, so "robot is level" is true);
+    # lake carries 2.43 m. Falling back to the raw topic reinstates the blobs.
+    topic: /os0_cloud_node/points_noground
     marking: true             # add obstacles where rays hit
     clearing: true            # clear free space along the ray
     # Height gate in the costmap frame. Ground sits near z=0 and canopy well
     # above the robot, so 0.15-1.2 m keeps trunks/benches and drops both. This
     # is the most failure-prone setting: too low and the ground itself becomes
-    # an obstacle.
+    # an obstacle -- which is what the ground filter above now prevents, rather
+    # than widening this gate and blinding the robot to short obstacles.
     min_obstacle_height: 0.15
     max_obstacle_height: 1.2
     obstacle_range: 5.0
