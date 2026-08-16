@@ -94,9 +94,15 @@ def scene_cloud(models, per_object_n=2000, seed=0):
     surface points.
 
     Each model is sampled in its mesh-local frame via sample_model, then
-    rotated by the model's yaw and translated by (world_x, world_y). z is
-    left as the mesh gives it (ground-relative, since these are static
-    park-world placements with no per-model z offset).
+    rotated by the model's yaw, translated by (world_x, world_y), and its z
+    is ground-referenced by adding the model's world_z (the link_0 pose's z
+    from the world file). This matters because different meshes put their
+    local origin at different heights -- e.g. tree_8's trunk mesh (bark8.obj)
+    has its origin MID-TRUNK (mesh-local z spans roughly -3.87..+4.02), so
+    without this offset trees would sit ~6 m too low relative to objects
+    whose mesh origin sits at ground level (e.g. the postescable poles).
+    Applying world_z puts every object on the same ground plane, matching
+    what the robot's live lidar actually sees.
 
     Deterministic for a fixed seed: every model uses the same `seed`, so
     re-running with the same `models`/`per_object_n`/`seed` reproduces the
@@ -111,7 +117,7 @@ def scene_cloud(models, per_object_n=2000, seed=0):
         cos_yaw, sin_yaw = math.cos(m.yaw), math.sin(m.yaw)
         x = pts[:, 0] * cos_yaw - pts[:, 1] * sin_yaw + m.world_x
         y = pts[:, 0] * sin_yaw + pts[:, 1] * cos_yaw + m.world_y
-        z = pts[:, 2]
+        z = pts[:, 2] + m.world_z
         clouds.append(np.column_stack([x, y, z]))
 
     if not clouds:
