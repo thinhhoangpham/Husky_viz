@@ -46,10 +46,11 @@ KNOWN LIMITATION -- the power line
   With one power line in the world this is a known gap, not a silent one.
 """
 import argparse
+import math
 import os
 import sys
 
-from map_tools.sdf_parse import parse_models
+from map_tools.sdf_parse import Model, parse_models
 from map_tools.extract_park_map import build_grid, build_objects, _write_objects_yaml
 from map_tools.park_types import LAKE_TYPES, LAKE_PREFIXES_LONGEST_FIRST
 
@@ -57,10 +58,48 @@ from map_tools.park_types import LAKE_TYPES, LAKE_PREFIXES_LONGEST_FIRST
 # are never stamped into the occupancy grid. See WATER above.
 NOT_STAMPED = ("lago",)
 
+# Mesh-local (x, y) of each pole inside linea1/postes.dae, at the model's world
+# scale of 0.03. MEASURED from the mesh: take the vertices in the lowest 1 m and
+# cluster them in x -- two clusters fall out, each with a 0.49 x 0.49 m
+# footprint, 28.8 m apart.
+#
+# This offset is why a single disc at the model pose is wrong. `postescable`'s
+# link_0 sits at (36.818, -5.326) with yaw 0.8566 rad, but the geometry inside
+# the mesh is NOT centred on that link: rotating these offsets out puts the
+# poles at world (+18.52, -24.52) and (+37.39, -2.76). Neither is near the link.
+# Confirmed against the live lidar: returns above z=12 m (higher than any tree
+# in this world) cluster at (+18.34, -23.34), ~1.2 m from predicted pole A.
+#
+# Same class of bug as the park landmark map, which had to read the trunk LINK
+# rather than the model pose. Here even the link pose is not enough, because the
+# geometry is offset inside the mesh.
+POLE_OFFSETS = ((-26.489, 1.251), (2.311, 1.251))
+
 # Lake counterparts of extract_park_map's RADII / OBJECT_FAMILIES, sourced the
 # same way from the registry so the two cannot drift.
 LAKE_RADII = {t.world_prefix: t.disc_radius for t in LAKE_TYPES}
 LAKE_OBJECT_FAMILIES = tuple(t.world_prefix for t in LAKE_TYPES if t.is_object)
+
+
+def _expand_poles(models):
+    """Replace each `postescable` model with one Model per real pole.
+
+    build_grid stamps a disc at model.world_x/world_y, which for this family is
+    the link pose -- a point in mid-span with no geometry on it. Rotate each
+    measured mesh-local pole offset by the model yaw and emit a Model there
+    instead, so both poles are marked and the empty midpoint is not.
+    """
+    out = []
+    for m in models:
+        if m.family != "postescable":
+            out.append(m)
+            continue
+        for i, (lx, ly) in enumerate(POLE_OFFSETS):
+            wx = m.world_x + (lx * math.cos(m.yaw) - ly * math.sin(m.yaw))
+            wy = m.world_y + (lx * math.sin(m.yaw) + ly * math.cos(m.yaw))
+            out.append(Model(name="%s_pole%d" % (m.name, i), family=m.family,
+                             world_x=wx, world_y=wy, yaw=m.yaw))
+    return out
 
 
 def main(argv=None):
@@ -77,10 +116,14 @@ def main(argv=None):
     os.makedirs(args.out_dir, exist_ok=True)
     models = parse_models(args.world, prefixes=LAKE_PREFIXES_LONGEST_FIRST)
 
-    # objects: every classified model, water included (it is a landmark).
-    objects = build_objects(models, object_families=LAKE_OBJECT_FAMILIES)
-    # grid: everything except the landmark-only families.
-    stamped = [m for m in models if m.family not in NOT_STAMPED]
+    # objects: every classified model, water included (it is a landmark). The
+    # power line is expanded here too -- otherwise `goal postescable` sends the
+    # robot to the empty midpoint between the poles rather than to a pole.
+    objects = build_objects(_expand_poles(models),
+                            object_families=LAKE_OBJECT_FAMILIES)
+    # grid: everything except the landmark-only families, with the power line
+    # expanded into its two real poles (see POLE_OFFSETS).
+    stamped = _expand_poles([m for m in models if m.family not in NOT_STAMPED])
     grid = build_grid(stamped, resolution=args.resolution, radii=LAKE_RADII)
 
     grid.write_pgm(os.path.join(args.out_dir, "lake_map.pgm"))
