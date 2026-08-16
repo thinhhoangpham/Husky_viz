@@ -92,3 +92,25 @@ def test_decimation_stable():
     decim = full[::4]  # 1/4 the density, standing in for range
     assert descriptor_distance(describe(full), describe(decim)) \
         < descriptor_distance(describe(full), describe(_bench()))
+
+
+def _sparse_lattice_pole(seed, n_points=200, height=16.5):
+    # Realistic-density stand-in: a real Ouster return on a 16.5 m pole at
+    # ~15 m range is orders of magnitude sparser than the dense synthetic
+    # cloud _lattice_pole() produces (thousands of points). This is a LOWER
+    # BOUND sanity check on voxel/min_voxel_pts, not a substitute for
+    # validation against real Ouster returns -- that happens later against
+    # captured lidar data (see Task 13 in the implementation plan).
+    dense = _lattice_pole(seed, height=height)
+    idx = np.random.RandomState(seed + 100).choice(
+        dense.shape[0], size=n_points, replace=False)
+    return dense[idx]
+
+
+def test_sparse_pole_still_closer_to_dense_pole_than_bench():
+    dense = _lattice_pole(7)
+    sparse = _sparse_lattice_pole(7, n_points=200)
+    db = describe(_bench())
+    dd = describe(dense)
+    ds = describe(sparse)
+    assert descriptor_distance(dd, ds) < descriptor_distance(dd, db)

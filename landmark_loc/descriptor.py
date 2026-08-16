@@ -40,12 +40,17 @@ EXTENT_WEIGHT = 0.25
 def describe(points, band_height=1.0, voxel=0.5, min_voxel_pts=5, n_bands=18):
     """Per-height-band voxel-shape descriptor. Shape (n_bands, 4).
 
-    Defaults (voxel=0.5, min_voxel_pts=5) pass the partial-view and
-    decimation robustness characterization (test_partial_view_matches_full,
-    test_decimation_stable) as-is -- no tuning was needed. A half-diameter
-    voxel is coarse enough that even a 1/4-density or single-face sample of
-    the lattice pole still fills >=5 points per occupied cell, so the shape
-    ratios stay comparable to the full-density, full-view descriptor.
+    Defaults (voxel=0.5, min_voxel_pts=5) pass the partial-view, decimation,
+    and realistic-sparsity robustness characterization
+    (test_partial_view_matches_full, test_decimation_stable,
+    test_sparse_pole_still_closer_to_dense_pole_than_bench) as-is -- no
+    tuning was needed. A half-diameter voxel is coarse enough that even a
+    1/4-density, single-face, or ~200-point-total sample of the lattice pole
+    still fills >=5 points per occupied cell, so the shape ratios stay
+    comparable to the full-density, full-view descriptor. The sparsity test
+    is a lower bound only (verified to fail at n=50 points, confirming it
+    genuinely exercises the threshold) -- it is not a substitute for
+    validation against real Ouster returns, which happens later in-sim.
 
     Bands are measured above the cluster's OWN minimum z (so ground offset
     does not matter). In each band, points are bucketed into `voxel`-sized
@@ -64,17 +69,24 @@ def describe(points, band_height=1.0, voxel=0.5, min_voxel_pts=5, n_bands=18):
         band = p[(p[:, 2] >= lo) & (p[:, 2] < hi)]
         if band.shape[0] == 0:
             continue
-        out[bi, 3] = float(np.hypot(
-            band[:, 0].max() - band[:, 0].min(),
-            band[:, 1].max() - band[:, 1].min()))
         cells = np.floor(band[:, :2] / voxel).astype(int)
         buckets = {}
         for i, key in enumerate(map(tuple, cells)):
             buckets.setdefault(key, []).append(i)
-        shapes = [voxel_shape(band[idxs])
-                  for idxs in buckets.values() if len(idxs) >= min_voxel_pts]
-        if shapes:
-            out[bi, :3] = np.mean(shapes, axis=0)
+        qualifying = [idxs for idxs in buckets.values() if len(idxs) >= min_voxel_pts]
+        if not qualifying:
+            # A handful of scattered points with no voxel meeting
+            # min_voxel_pts is not a measured shape -- leave the WHOLE row
+            # zero, extent included. Writing extent from noise-driven points
+            # would give a sparse lidar band a nonzero value the dense
+            # mesh-sampled side lacks, injecting spurious distance into the
+            # exact column (weighted by EXTENT_WEIGHT) that partial/sparse
+            # views most need to agree on.
+            continue
+        out[bi, 3] = float(np.hypot(
+            band[:, 0].max() - band[:, 0].min(),
+            band[:, 1].max() - band[:, 1].min()))
+        out[bi, :3] = np.mean([voxel_shape(band[idxs]) for idxs in qualifying], axis=0)
     return out
 
 
