@@ -54,7 +54,9 @@ class ParkType:
     disc_radius: float                     # footprint disc radius (m)
     mesh: Optional[Tuple[Tuple[str, ...], float]]  # (rel-path-parts, scale)|None
     box_stamped: bool                      # stamp as a yaw-oriented box, not disc
-    marker_color: Tuple[float, float, float, float]  # RGBA label color
+    marker_color: Tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+    # RGBA label color. Default is for types NOT in the catalog
+    # (is_catalog=False), which never enter _LABEL_COLOR.
 
     # --- scoring data for the best-score detector (landmark_loc.score) ------
     # Appended LAST with defaults on purpose: every existing PARK_TYPES entry
@@ -317,17 +319,19 @@ PARK_TYPES = (
         # exactly 0, which is what sank the earlier six-identical-poles attempt.
         #
         # disc_radius 2.5 = the tank radius, its true footprint.
-        # mesh=None because it is primitives, not a mesh file -- its map-side
-        # point set comes from map_tools.primitive_sample.sample_cylinder_stack
-        # instead of sample_surface.
+        # mesh=None because it is built from SDF primitives, not a mesh file.
+        #
+        # This entry exists ONLY so the map extractor stamps the tower's
+        # footprint into the costmap as the obstacle it is. Nothing describes
+        # or identifies it: the robot finds landmarks by measuring which blob
+        # in the CURRENT scan is unlike its neighbours, and never learns what
+        # any blob is. There is deliberately no stored descriptor for this
+        # object -- matching a live blob against a prebuilt reference would be
+        # identity assignment, i.e. classification, which this design rejects.
         world_prefix="water_tower", identity="water_tower",
         is_object=True, is_catalog=False, disc_radius=2.5,
         mesh=None,
         box_stamped=False,
-        # UNUSED. marker_color has no default on ParkType, so it must be given;
-        # localizer_node._LABEL_COLOR only reads is_catalog types, so nothing
-        # ever renders this. Left neutral rather than picking a meaningful hue.
-        marker_color=(0.0, 0.0, 0.0, 0.0),
     ),
 )
 
