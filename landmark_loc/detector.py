@@ -86,7 +86,6 @@ validated in sim. Because confidence is part of the Observation contract,
 consumers must cope with BOTH -- a constant 1.0 and a genuine score.
 """
 from landmark_loc import classify, score
-from landmark_loc.region_detector import RegionDetector
 
 
 class Detector(object):
@@ -101,11 +100,11 @@ class Detector(object):
     name = None
 
     #: True if this detector implements the PERCEPT contract
-    #: (label/observe/detect over a percept sequence). A region-based anchor
-    #: detector (e.g. RegionDetector) sets this False: it lives in the same
-    #: DETECTORS registry so get_detector() can select it, but its entry point
-    #: is match(cloud, prior_xy), not the percept pipeline, so the A/B percept
-    #: harness must skip it rather than construct+compare it.
+    #: (label/observe/detect over a percept sequence). A detector with a
+    #: different entry point sets this False: it can still live in the
+    #: DETECTORS registry so get_detector() can select it, but the A/B percept
+    #: harness must skip it rather than construct+compare it. All detectors
+    #: currently registered are percept-based.
     percept_based = True
 
     def label(self, percept):
@@ -231,15 +230,9 @@ class ScoreDetector(Detector):
 #: selectable via ~classifier with no other edits.
 #: NOTE: DEFAULT_DETECTOR stays "cascade" -- "score" is opt-in until it has
 #: been validated in sim.
-#: "region" is REGION-based, not percept-based: it is selected the same way but
-#: its entry point is `match(cloud, prior_xy)`, not `detect(percepts, ...)`.
-#: `get_detector("region", regions_path=..., match_threshold=...)` works because
-#: get_detector forwards **kwargs to the constructor (RegionDetector.__init__
-#: takes regions_path). See region_detector.py.
 DETECTORS = {
     CascadeDetector.name: CascadeDetector,
     ScoreDetector.name: ScoreDetector,
-    RegionDetector.name: RegionDetector,
 }
 
 DEFAULT_DETECTOR = CascadeDetector.name

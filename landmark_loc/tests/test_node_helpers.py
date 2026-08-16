@@ -44,21 +44,9 @@ def test_backward_teleport_rejected():
     assert _jump_ok((18.0, 0.0), (10.0, 0.0), (-2.0, 0.0), 3.0) is False
 
 
-# --- region-anchor wiring helpers (T20) ------------------------------------
+# --- cloud_to_map_frame ----------------------------------------------------
 
 import numpy as np
-
-
-def test_update_anchor_region_fix_replaces_prev():
-    # A region fix is a MEASUREMENT and replaces the anchor.
-    xy, src = ln._update_anchor((1.0, 1.0), (5.0, 6.0))
-    assert xy == (5.0, 6.0) and src == "pole"
-
-
-def test_update_anchor_holds_prev_when_no_region_fix():
-    # No waypoint argument exists any more: with no measurement the anchor holds.
-    xy, src = ln._update_anchor((1.0, 1.0), None)
-    assert xy == (1.0, 1.0) and src == "hold"
 
 
 def test_cloud_to_map_frame_known_prior_and_point():

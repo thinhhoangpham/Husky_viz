@@ -1,5 +1,5 @@
 import numpy as np
-from landmark_loc.distinctiveness import nearest_distances, unique_names
+from archive.distinctiveness import nearest_distances, unique_names
 
 
 def _d(*rows):

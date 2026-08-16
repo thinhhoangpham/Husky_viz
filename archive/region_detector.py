@@ -36,7 +36,8 @@ what this rule prevents.
 """
 import yaml
 
-from landmark_loc.descriptor import window, describe_region, region_distance
+# ARCHIVED: these moved with this file. See archive/descriptor_region_functions.py.
+from archive.descriptor_region_functions import window, describe_region, region_distance
 
 
 # Provisional acceptance threshold on region_distance(live, map) for the SAME

@@ -12,8 +12,8 @@ import numpy as np
 import yaml
 import pytest
 
-from landmark_loc.region_detector import RegionDetector
-from landmark_loc.descriptor import window, describe_region
+from archive.region_detector import RegionDetector
+from archive.descriptor_region_functions import window, describe_region
 
 MAP_RADIUS = 8.0  # matches maps/park_regions.yaml _meta.window_radius
 
@@ -112,7 +112,7 @@ def test_meta_radius_is_enforced_not_default(tmp_path):
     # Sanity: the same tower described at radius 12 vs 8 must actually DIFFER,
     # otherwise this test would pass trivially regardless of the radius used.
     cloud = _tower(10.0, 0.0, 3)
-    from landmark_loc.descriptor import region_distance
+    from archive.descriptor_region_functions import region_distance
     d12 = region_distance(_describe_at(cloud, 0.0, 0.0, radius=12.0), empty_desc)
     d8 = region_distance(_describe_at(cloud, 0.0, 0.0, radius=8.0), empty_desc)
     assert d12 > 1.0        # at radius 12 the tower enters -> far from empty

@@ -14,29 +14,20 @@ import statistics
 
 import numpy as np
 
-from landmark_loc import segment, catalog, solve, detector, waypoint_anchor
+from landmark_loc import segment, catalog, solve, detector
 
 
 def cloud_to_map_frame(pts, prior):
     """Transform an (N,3) cloud from the sensor/base frame into the MAP frame
     using the map-frame prior (px, py, pyaw).
 
-    WHY: the map region descriptors (park_regions.yaml) are built in MAP-frame
-    coordinates, but the live lidar cloud arrives in the sensor/base frame
-    (origin at the robot, x forward). RegionDetector.describe_region uses
-    ANGULAR sectors about the window centre, so it is orientation-sensitive:
-    the same neighbourhood described in the base frame vs the map frame yields
-    a DIFFERENT descriptor. So we must apply the FULL rigid transform -- rotate
-    the points by the prior heading, then translate by the prior position --
-    before describing.
+    Applies the FULL rigid transform: rotate the points by the prior heading,
+    then translate by the prior position. An empty cloud passes through as an
+    empty (0,3) array.
 
-    APPROXIMATION (stated plainly, per the spec Risk section): the prior is a
-    dead-reckoned estimate, so both the rotation (compass yaw) and translation
-    (odom-advanced anchor) carry error. A small prior error shifts/rotates the
-    transformed cloud slightly, which in turn off-centres the window that
-    RegionDetector.match cuts about (px,py). This is tolerated, not corrected:
-    the match still recentres about the prior, so a small offset only perturbs
-    the descriptor rather than breaking the lookup. It is NOT exact.
+    APPROXIMATION: the prior is a dead-reckoned estimate, so both the rotation
+    (compass yaw) and the translation (odom-advanced anchor) carry error, and
+    that error transfers directly to the map-frame points. It is NOT exact.
     """
     p = np.asarray(pts, dtype=float)
     if len(p) == 0:
@@ -50,18 +41,6 @@ def cloud_to_map_frame(pts, prior):
     out[:, 1] = py + s * x + c * y
     out[:, 2] = p[:, 2]
     return out
-
-
-def _update_anchor(prev_anchor, region_fix):
-    """Thin node-side wrapper over waypoint_anchor.choose_anchor.
-
-    Precedence: a region fix replaces the anchor; otherwise the previous anchor
-    is held. Waypoints never enter this decision -- an operator's waypoint is a
-    statement of INTENT, not a measurement of where the robot is, so it must not
-    move the pose estimate. Returns `(anchor_xy, source)`. Kept as its own helper
-    so the precedence is unit-testable without a running node.
-    """
-    return waypoint_anchor.choose_anchor(prev_anchor, region_fix, None)
 
 
 def _is_landmark_mode(mode_str):
@@ -322,11 +301,6 @@ def main():
         max_jump=rospy.get_param("~max_jump", 3.0),
         matcher=rospy.get_param("~matcher", "typed"),
         classifier=rospy.get_param("~classifier", detector.DEFAULT_DETECTOR),
-        regions_path=rospy.get_param(
-            "~regions_path",
-            "/home/thinh/Documents/Husky_viz/maps/park_regions.yaml"),
-        match_threshold=rospy.get_param("~match_threshold", 1.0),
-        prior_gate=rospy.get_param("~prior_gate", 25.0),
         fault_gate=rospy.get_param("~fault_gate", 5.0),
     )
     if p["matcher"] not in ("typed", "typeless"):
@@ -337,18 +311,7 @@ def main():
         rospy.logwarn("landmark_localizer: unknown ~classifier %r, defaulting to %r",
                       p["classifier"], detector.DEFAULT_DETECTOR)
         p["classifier"] = detector.DEFAULT_DETECTOR
-    region_det = None
-    det = None
-    if p["classifier"] == "region":
-        # Region-based anchor detector: entry point is match(cloud, prior_xy),
-        # not the percept detect() pipeline. Build it once here.
-        region_det = detector.get_detector(
-            "region", regions_path=p["regions_path"],
-            match_threshold=p["match_threshold"], prior_gate=p["prior_gate"])
-        rospy.loginfo("[localizer] region detector: %s (match_threshold=%.2f, prior_gate=%.1f)",
-                      p["regions_path"], p["match_threshold"], p["prior_gate"])
-    else:
-        det = detector.get_detector(p["classifier"])
+    det = detector.get_detector(p["classifier"])
     landmarks = catalog.load(objects)
     rospy.loginfo("landmark_localizer: %d catalog landmarks", len(landmarks))
     rospy.loginfo("[localizer] matcher mode: %s", p["matcher"])
@@ -419,71 +382,6 @@ def main():
 
     def on_mode(msg):
         state["abs_fix_mode"] = msg.data
-
-    def on_cloud_region(msg):
-        """Region-anchor path: a successful region match re-anchors the pose.
-
-        Replaces the one-time GPS anchor with a running region-derived anchor.
-        """
-        if not _is_landmark_mode(state["abs_fix_mode"]):
-            return
-        now = rospy.Time.now()
-        if (now - state["last_pub"]).to_sec() < 1.0 / p["rate"]:
-            return
-        if (state["anchor_map"] is None or state["anchor_odom"] is None
-                or state["odom_now"] is None):
-            return
-        if state["compass_yaw"] is None:
-            return
-        odom_synced = odom_at(state["odom_buf"], msg.header.stamp.to_sec())
-        if odom_synced is None:
-            return
-        prior = compose_prior(state["anchor_map"], state["anchor_odom"],
-                              odom_synced, state["compass_yaw"])
-        pts = cloud_to_array(msg)
-        if len(pts) == 0:
-            return
-        px, py, pyaw = prior
-        # Transform live points into the MAP frame using the prior, then match.
-        cloud_map = cloud_to_map_frame(pts, prior)
-        matched = region_det.match(cloud_map, (px, py))
-        if matched is None:
-            rospy.loginfo_throttle(0.5,
-                "[region] prior=(%.1f,%.1f) no-match" % (px, py))
-            return
-        loc_id, mx, my, conf = matched
-
-        # Fault signal: how far the region fix disagrees with the prior.
-        offset = waypoint_anchor.fault_offset((px, py), (mx, my))
-        if offset > p["fault_gate"]:
-            fault_pub.publish(Float32(data=offset))
-            rospy.logwarn_throttle(0.5,
-                "[region] FAULT offset=%.2f > gate=%.2f prior=(%.1f,%.1f) fix=(%.2f,%.2f)"
-                % (offset, p["fault_gate"], px, py, mx, my))
-
-        # Re-anchor on the MEASUREMENT only: the region fix replaces the anchor,
-        # otherwise the previous anchor holds. No waypoint / operator input here.
-        prev_anchor_xy = (state["anchor_map"][0], state["anchor_map"][1])
-        (ax, ay), source = _update_anchor(prev_anchor_xy, (mx, my))
-        state["anchor_map"] = (ax, ay, state["compass_yaw"])
-        state["anchor_odom"] = state["odom_now"]
-
-        rospy.loginfo_throttle(0.5,
-            "[region] prior=(%.1f,%.1f) FIX=(%.2f,%.2f) conf=%.2f src=%s offset=%.2f"
-            % (px, py, mx, my, conf, source, offset))
-
-        od = Odometry()
-        od.header.stamp = msg.header.stamp
-        od.header.frame_id = "map"
-        od.child_frame_id = "base_link"
-        od.pose.pose.position.x = ax
-        od.pose.pose.position.y = ay
-        od.pose.pose.orientation.w = 1.0
-        od.pose.covariance = covariance_for(1, p["base_var"])
-        pub.publish(od)
-        state["last_pub"] = now
-        state["last_pub_xy"] = (ax, ay)
-        state["last_pub_odom"] = odom_synced
 
     def on_cloud(msg):
         if not _is_landmark_mode(state["abs_fix_mode"]):
@@ -581,8 +479,7 @@ def main():
     rospy.Subscriber("/navsat/fix", NavSatFix, on_navsat, queue_size=5)
     rospy.Subscriber("/odometry/filtered_map", Odometry, on_map, queue_size=5)
     rospy.Subscriber("/abs_fix_mode", String, on_mode, queue_size=1)
-    cloud_cb = on_cloud_region if p["classifier"] == "region" else on_cloud
-    rospy.Subscriber("/os0_cloud_node/points", PointCloud2, cloud_cb, queue_size=1,
+    rospy.Subscriber("/os0_cloud_node/points", PointCloud2, on_cloud, queue_size=1,
                      buff_size=2**24)  # 16 MB: large ~1–2 MB OS0 clouds need buffer > default 64 KB to avoid stale-frame fragmentation
     rospy.spin()
 

@@ -1,4 +1,9 @@
-"""End-to-end: the location-grid distinctiveness extractor should surface
+"""ARCHIVED (2026-08-16). This test no longer runs: the `--regions` code path
+it exercises was removed from `map_tools/extract_park_map.py` when the
+per-region descriptor approach was retired (see
+`docs/research/lidar-place-recognition-survey.md`). Kept for reference only.
+
+End-to-end: the location-grid distinctiveness extractor should surface
 distinctive locations that cluster near the six known pole world-positions.
 
 This runs the real --regions extraction ONCE (main builds the ~72 s scene cloud
