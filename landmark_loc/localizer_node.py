@@ -464,7 +464,7 @@ def main():
             rospy.loginfo_throttle(0.5,
                 "[region] prior=(%.1f,%.1f) no-match" % (px, py))
             return
-        mx, my, conf = matched
+        loc_id, mx, my, conf = matched
 
         # Fault signal: how far the region fix disagrees with the prior.
         offset = waypoint_anchor.fault_offset((px, py), (mx, my))
@@ -474,19 +474,35 @@ def main():
                 "[region] FAULT offset=%.2f > gate=%.2f prior=(%.1f,%.1f) fix=(%.2f,%.2f)"
                 % (offset, p["fault_gate"], px, py, mx, my))
 
-        # Arrival confirmation (ruling F3, localizer -> operator): a match that
-        # lands near the operator's active waypoint AND whose location matches
-        # what the operator expects there confirms arrival by DESCRIPTOR, never
-        # by move_base status or fused pose.
+        # Arrival confirmation (ruling F3, localizer -> operator): confirmed by
+        # DESCRIPTOR, never by move_base status or fused pose. The cross-check is
+        # the whole point of the feature: the matched region must be BOTH near
+        # the operator's active waypoint AND one of the anchors the operator
+        # expected there. Proximity alone is not enough -- the matcher could fix
+        # on the WRONG distinctive region that happens to sit near the waypoint.
+        #
+        # `expected_anchors` is a comma-separated String (F3), parsed to a set of
+        # names. FALLBACK: when the operator declared NO expected anchors, fall
+        # back to proximity-only so the feature still works without an explicit
+        # expectation; when expected anchors ARE declared, the matched loc_id
+        # must be among them. confirm_arrival(waypoint, expected, sightings,
+        # radius) gives both conditions (name membership + proximity) in one
+        # call; we pass the single matched region as the sighting.
         awp = state["active_waypoint"]
-        if awp is not None and math.hypot(mx - awp[0], my - awp[1]) <= p["arrival_radius"]:
-            arrival_pub.publish(Bool(data=True))
-            rospy.loginfo(
-                "[region] arrival confirmed at waypoint (%.2f,%.2f) via region fix (%.2f,%.2f)",
-                awp[0], awp[1], mx, my)
-            confirmed_wp = awp
-        else:
-            confirmed_wp = None
+        expected = set(state["expected_anchors"])
+        confirmed_wp = None
+        if awp is not None:
+            if expected:
+                arrived = waypoint_anchor.confirm_arrival(
+                    awp, expected, [(loc_id, mx, my)], p["arrival_radius"])
+            else:
+                arrived = math.hypot(mx - awp[0], my - awp[1]) <= p["arrival_radius"]
+            if arrived:
+                arrival_pub.publish(Bool(data=True))
+                rospy.loginfo(
+                    "[region] arrival confirmed at waypoint (%.2f,%.2f) via region "
+                    "fix %s (%.2f,%.2f)", awp[0], awp[1], loc_id, mx, my)
+                confirmed_wp = awp
 
         # Re-anchor: region fix wins over confirmed waypoint over holding.
         prev_anchor_xy = (state["anchor_map"][0], state["anchor_map"][1])

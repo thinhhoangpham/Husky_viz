@@ -65,7 +65,8 @@ def test_matches_region_near_prior(tmp_path):
     out = det.match(cloud, (10.0, 0.0))
 
     assert out is not None
-    map_x, map_y, conf = out
+    loc_id, map_x, map_y, conf = out
+    assert loc_id == "loc_000"                # the exact map location's id
     assert (map_x, map_y) == (10.0, 0.0)      # the exact map location
     # Same structure, different RNG seed than the map's -> a small but nonzero
     # distance (~0.018). conf = 1 - dist/threshold, so a strong match at
@@ -119,7 +120,8 @@ def test_meta_radius_is_enforced_not_default(tmp_path):
 
     out = det.match(cloud, (0.0, 0.0))
     assert out is not None            # radius 8 in force: window is empty, matches
-    map_x, map_y, conf = out
+    loc_id, map_x, map_y, conf = out
+    assert loc_id == "loc_000"
     assert (map_x, map_y) == (0.0, 0.0)
     assert conf > 0.99                # dist ~ 0 -> confidence ~ 1
 

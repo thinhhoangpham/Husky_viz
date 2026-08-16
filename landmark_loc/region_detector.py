@@ -102,7 +102,7 @@ class RegionDetector(object):
         # Locations are the entries whose id starts with "loc_"; skip "_meta"
         # (and anything else non-loc) when iterating.
         self.locations = [
-            (float(v["x"]), float(v["y"]), v["descriptor"])
+            (k, float(v["x"]), float(v["y"]), v["descriptor"])
             for k, v in data.items()
             if isinstance(k, str) and k.startswith("loc_")
         ]
@@ -110,8 +110,12 @@ class RegionDetector(object):
     def match(self, cloud, prior_xy):
         """Match the live region around `prior_xy` to a map location.
 
-        Returns `(map_x, map_y, confidence)` for the best accepted match, or
-        `None` if no gated candidate is close enough.
+        Returns `(loc_id, map_x, map_y, confidence)` for the best accepted
+        match, or `None` if no gated candidate is close enough. `loc_id` is the
+        map location's id (e.g. "loc_080") -- callers cross-check it against the
+        operator's expected anchors so arrival is confirmed only when the place
+        the matcher fixed on is the place the operator expected there, not merely
+        a distinctive region that happens to sit nearby.
 
         Steps:
           1. Cut+describe the live window at the prior, using the `_meta` params
@@ -130,17 +134,17 @@ class RegionDetector(object):
 
         best_dist = None
         best_loc = None
-        for loc_x, loc_y, loc_desc in self.locations:
+        for loc_id, loc_x, loc_y, loc_desc in self.locations:
             # Prior gate: only consider map locations near the prior.
             if (loc_x - prior_x) ** 2 + (loc_y - prior_y) ** 2 > self.prior_gate ** 2:
                 continue
             dist = region_distance(desc, loc_desc)
             if best_dist is None or dist < best_dist:
                 best_dist = dist
-                best_loc = (loc_x, loc_y)
+                best_loc = (loc_id, loc_x, loc_y)
 
         if best_loc is None or best_dist >= self.match_threshold:
             return None
 
         confidence = 1.0 - best_dist / self.match_threshold
-        return (best_loc[0], best_loc[1], confidence)
+        return (best_loc[0], best_loc[1], best_loc[2], confidence)
