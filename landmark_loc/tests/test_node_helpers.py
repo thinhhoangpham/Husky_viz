@@ -42,3 +42,43 @@ def test_backward_teleport_rejected():
     # last pub (10,0); odom moved (-2,0) forward; expected ~(8,0);
     # fix jumps BACKWARD to (18,0) -> 10m from expected -> reject
     assert _jump_ok((18.0, 0.0), (10.0, 0.0), (-2.0, 0.0), 3.0) is False
+
+
+# --- region-anchor wiring helpers (T20) ------------------------------------
+
+import numpy as np
+
+
+def test_update_anchor_region_fix_wins():
+    # A region fix (pole_sighting) wins over a confirmed waypoint and hold.
+    xy, src = ln._update_anchor((1.0, 1.0), (5.0, 6.0), (9.0, 9.0))
+    assert xy == (5.0, 6.0) and src == "pole"
+
+
+def test_update_anchor_confirmed_waypoint_when_no_region_fix():
+    xy, src = ln._update_anchor((1.0, 1.0), None, (9.0, 9.0))
+    assert xy == (9.0, 9.0) and src == "waypoint"
+
+
+def test_update_anchor_holds_prev_when_nothing():
+    xy, src = ln._update_anchor((1.0, 1.0), None, None)
+    assert xy == (1.0, 1.0) and src == "hold"
+
+
+def test_cloud_to_map_frame_known_prior_and_point():
+    # Prior at (10, 20) heading 90deg (pi/2). A point 1m in front of the robot
+    # (base-frame x=1,y=0) rotates to map +y, so map = (10, 21). A point to the
+    # robot's left (x=0,y=1) rotates to map -x, so map = (9, 20). z passes
+    # through unchanged.
+    prior = (10.0, 20.0, np.pi / 2)
+    pts = np.array([[1.0, 0.0, 2.5],
+                    [0.0, 1.0, -0.3]], dtype=float)
+    out = ln.cloud_to_map_frame(pts, prior)
+    expected = np.array([[10.0, 21.0, 2.5],
+                         [9.0, 20.0, -0.3]], dtype=float)
+    assert np.allclose(out, expected)
+
+
+def test_cloud_to_map_frame_empty():
+    out = ln.cloud_to_map_frame(np.empty((0, 3)), (1.0, 2.0, 0.5))
+    assert out.shape == (0, 3)
