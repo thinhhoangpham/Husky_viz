@@ -281,6 +281,17 @@ PARK_TYPES = (
         mesh=None,
         box_stamped=False, marker_color=(1.0, 0.0, 0.0, 1.0),
     ),
+    ParkType(
+        # Power-line pole added to the park as a UNIQUE-shape landmark. Same
+        # asset as lake's postescable (linea1/postes.dae). disc_radius 0.25 =
+        # one pole; profile type, 0.35 m post-width margin like the lamp.
+        world_prefix="postescable", identity="postescable",
+        is_object=True, is_catalog=True, disc_radius=0.25,
+        mesh=None,
+        box_stamped=False, marker_color=(0.6, 0.3, 0.0, 1.0),
+        score_family="profile", score_margin=0.35,
+        score_floor=0.05,
+    ),
 )
 
 # world_prefix -> ParkType.
