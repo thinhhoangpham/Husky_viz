@@ -34,7 +34,8 @@ waypoints that re-anchor on arrival**.
 Two independent information sources that cross-check each other.
 
 **Robot side — descriptors, no classification.** The robot computes a
-height-band shape descriptor per cluster and matches it against a descriptor
+shape descriptor per cluster (NDT-style voxel statistics over height bands, see
+below) and matches it against a descriptor
 map built offline from the world file. It never asks "is this a bench?" It asks
 "have I seen this exact shape somewhere in the map, and only there?" Clusters
 whose descriptor has no near twin anywhere in the map are **unique anchors** and
@@ -79,7 +80,8 @@ steel pylons plus catenary cables. At the world scale of 0.03 used in
 `lake.world` it is 59 m long, 3.6 m deep and **16.5 m tall**. Nothing else in
 the park comes within 13 m of that height. Its vertical profile is strongly
 bimodal: thin legs from 0–12 m, then a wide crossarm band from 12–16.5 m. That
-is precisely what a height-band descriptor separates best.
+is precisely what the descriptor below separates best — and its legs are an open
+steel lattice, which produces a local-shape signature no solid object shares.
 
 Rejected alternatives: `dumpster` (4.0 × 2.0 × 1.68 m) and `jersey_barrier`
 (4.07 × 0.81 × 1.14 m) from `~/.gazebo/models/` — both sit in the same height
@@ -122,27 +124,85 @@ within the localizer's 15 m gate** (`max_range`) of at least one pylon.
 directory to `GAZEBO_MODEL_PATH` for the park world, or the model must be copied
 into `models_opt`.
 
-## Descriptor: height-band profile
+## Descriptor: NDT-style shape statistics over height bands
 
-For a cluster or a mesh, split the vertical range into fixed-width z-bands and
-record the horizontal extent of the points falling in each. The descriptor is
-that vector of extents, plus the total height.
+The descriptor borrows the *representation* step from NDT (Normal Distributions
+Transform) but not its registration step. NDT voxelizes a cloud and replaces the
+points in each voxel with a Gaussian — a mean and a 3×3 covariance — then
+registers scans by maximising likelihood under that field. Here the Gaussians
+are used only to **characterise local shape**, never to match scan-to-scan.
 
-This particular form was chosen because it is computable **identically from a
-mesh and from a partial point cloud**, which is what lets the map side and the
-observation side live in the same space. Height is also the most view-stable
-dimension available: which face of a pylon the robot sees changes the horizontal
-extent it measures, but barely changes where the crossarm band sits.
+### Per-voxel shape from the covariance
 
-A pylon's signature — near-zero extent through the leg bands, a sudden wide band
-at 12–16.5 m — is unreachable by any other object in the park, none of which
-have any points above ~8 m at all.
+Decompose each voxel's covariance into eigenvalues λ₁ ≥ λ₂ ≥ λ₃ — the extent of
+the local point distribution along its three principal axes. Their *ratios*
+classify the material in that voxel:
 
-Distinctiveness is measured offline: for each map object, the distance from its
-descriptor to its nearest neighbour's descriptor. Objects whose nearest match is
-far away are unique anchors. This is a *measurement*, not an assumption — if a
-future world contains two identical structures, they will correctly score as
-non-unique and be excluded.
+| Eigenvalue pattern | Class | What produces it here |
+|---|---|---|
+| λ₁ ≫ λ₂ ≈ λ₃ | **linear** — a stick | pylon members, lamp post, tree trunk |
+| λ₁ ≈ λ₂ ≫ λ₃ | **planar** — a sheet | bench seat, table top, ground |
+| λ₁ ≈ λ₂ ≈ λ₃ | **volumetric** — a blob | foliage, bushes |
+
+### The descriptor proper
+
+Split the vertical range into fixed-width z-bands. For each band record:
+
+1. the **distribution of voxel shape classes** in that band (primary signal), and
+2. the horizontal extent of the band (secondary — coarse size).
+
+A pylon reads as: dense **linear** voxels in many differing orientations from 0
+to 12 m, a wide band of linear voxels at 12–16.5 m, nothing above. A bench: a
+few **planar** voxels below 1 m, nothing above. Those cannot collide under any
+viewing angle.
+
+Note this is a strictly stronger signal than extent alone. Horizontal extent
+cannot distinguish a 1.2 m solid slab from a 1.2 m open lattice — both measure
+1.2 m across. The pylon's legs are a criss-crossing steel lattice, so they
+produce *many linear voxels in differing orientations*, which no other object in
+the park does. A tree trunk is linear too, but it is one vertical stick, not a
+lattice.
+
+### Why this form
+
+**It survives partial views.** This is the decisive property. Lidar sees only an
+object's near face, so *global* measurements like width are systematically
+understated and vary with approach angle. Eigenvalue **ratios** are a local
+property: a voxel on the near face of a steel member is linear whether or not
+the far side is visible. This directly addresses what would otherwise be the
+design's largest risk.
+
+**It computes from both a mesh and a point cloud.** The map is built offline
+from `park.world` meshes; the robot measures live returns. "What shape is the
+material in this voxel?" is answerable from either, which is what puts map and
+observation in the same space. See the mesh-sampling caveat below.
+
+**Height remains the frame.** Where the crossarm band sits does not change with
+viewing angle, so banding by height keeps the descriptor's structure stable
+while the per-band statistics describe what the material actually is.
+
+### Distinctiveness
+
+Measured offline: for each map object, the distance from its descriptor to its
+nearest neighbour's descriptor. Objects whose nearest match is far away are
+unique anchors. This is a *measurement*, not an assumption — if a future world
+contains two identical structures, they will correctly score as non-unique and
+be excluded.
+
+### Caveats this introduces
+
+- **Voxel size is a real tuning knob.** Too large and everything reads
+  volumetric; too small and there are too few points per voxel for a stable
+  covariance (~5+ needed). At 15 m the Ouster's returns are sparse enough that a
+  distant pylon may not fill enough voxels. This trades `classify.py`'s many
+  thresholds for two knobs — voxel size and minimum points per voxel — which is
+  fewer, but not none.
+- **Mesh-side computation must sample the surface, not use raw vertices.** Mesh
+  vertices cluster where the modeller added detail, not where a laser would
+  strike, so eigenvalues from vertices do not correspond to eigenvalues from
+  returns. The extractor must sample points across mesh faces.
+- **Point density falls with range**, so any count-sensitive statistic must be
+  normalised before comparison.
 
 ## Localization flow
 
@@ -207,7 +267,8 @@ pose measurement. The operator asserts intent; intent is not evidence of arrival
 |---|---|
 | `map_tools/park_types.py` | add the `linea1`/pylon type. The dataclass documents (`:59-62`) that fields appended last with defaults are a zero-breakage change. |
 | `map_tools/extract_park_map.py` | stamp pylons individually; emit the descriptor map |
-| descriptor module (new, `landmark_loc/`) | one function, points or mesh vertices → height-band vector. Shared by extraction and runtime so the two cannot drift apart. |
+| descriptor module (new, `landmark_loc/`) | points → voxel Gaussians → per-band shape statistics. Shared by extraction and runtime so the two cannot drift apart. |
+| mesh surface sampler (new, `map_tools/`) | samples points across mesh faces so the map side sees a laser-like point set rather than modeller-placed vertices |
 | distinctiveness (new) | offline nearest-neighbour scoring over the descriptor map; marks unique anchors |
 | detector plugin (new) | registers in the existing `DETECTORS` table (`detector.py:225`); matches clusters to unique anchors only |
 | `landmark_loc/localizer_node.py` | anchor source becomes waypoint/anchor-driven rather than one-shot GPS |
@@ -222,10 +283,14 @@ descriptor path is proven in-sim.
 Unit-testable without a simulator, following the existing `landmark_loc/tests`
 pattern:
 
-- descriptor of a synthetic pylon-shaped point set separates from a
-  bench/lamp/table/bin set by a wide margin
-- the same descriptor computed from mesh and from a *partial* (single-face,
-  decimated) point set of the same object stays within the match threshold
+- voxel shape classification returns *linear* for a synthetic stick, *planar*
+  for a sheet, *volumetric* for an isotropic blob
+- descriptor of a synthetic pylon-shaped point set (a lattice of sticks)
+  separates from a bench/lamp/table/bin set by a wide margin
+- the same descriptor computed from mesh-sampled points and from a *partial*
+  (single-face, decimated) point set of the same object stays within the match
+  threshold — the property the eigenvalue-ratio form exists to provide
+- descriptor is stable under decimation, standing in for range-driven sparsity
 - distinctiveness scoring marks pylons unique and the five repeated families
   non-unique, on the real extracted map
 - arrival confirmation rejects a waypoint whose expected shapes are absent
@@ -238,10 +303,13 @@ the existing navsat-drift attack unable to move the descriptor-derived pose.
 
 ## Risks
 
-1. **Partial views.** A pylon at 15 m yields few points. The map-side descriptor
-   comes from a full mesh, the observation from one face. Bands are chosen to be
-   view-stable, but this is the most likely place to need tuning, and the
-   mesh-vs-partial test above exists to catch it.
+1. **Sparsity at range, and voxel sizing.** The eigenvalue-ratio descriptor
+   largely defuses the *partial view* problem — local shape is a local property,
+   so a near-face voxel classifies correctly without the far side. What remains
+   is **density**: a pylon at 15 m may not put enough points in enough voxels to
+   yield stable covariances (~5+ points per voxel needed). Voxel size and
+   minimum point count are the two knobs, and the decimation test above exists
+   to bound them. This is now the most likely place to need tuning.
 2. **Cable returns.** `linea1`'s collision geometry includes catenary cables
    spanning 59 m. Those return lidar points belonging to no pylon and may
    pollute clustering. Likely needs an extent or height filter in segmentation.
