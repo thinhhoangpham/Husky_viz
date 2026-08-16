@@ -292,6 +292,43 @@ PARK_TYPES = (
         score_family="profile", score_margin=0.35,
         score_floor=0.05,
     ),
+    ParkType(
+        # The ONE distinctive object in the park, built from SDF primitives
+        # rather than a mesh: a 5 m-wide tank on a narrow 2 m-wide pedestal,
+        # ~11 m tall overall. Nothing else in this world is both that tall and
+        # that wide -- trees are tall but narrow, poles are tall but a thin open
+        # lattice, and every other family is under 3.2 m.
+        #
+        # NOT CLASSIFIED. The tower is recognised by matching its shape
+        # descriptor against maps/park_landmarks.yaml, not by the classifier
+        # stack: no score detector, no matcher catalog, no size-band radius, no
+        # label colour. is_catalog=False is precisely what expresses that --
+        # every is_catalog reader is classifier machinery (classify.KNOWN_RADIUS,
+        # catalog's identity set, localizer_node._LABEL_COLOR), and the tower
+        # belongs to none of it. The scoring fields stay at their defaults for
+        # the same reason.
+        #
+        # is_object=True is a separate, map-side matter: it is a real physical
+        # object and must be stamped into the costmap.
+        #
+        # EXACTLY ONE instance exists in park.world (asserted by
+        # map_tools/tests/test_park_world_tower.py). The whole design depends on
+        # it having no twin: descriptor distance between identical instances is
+        # exactly 0, which is what sank the earlier six-identical-poles attempt.
+        #
+        # disc_radius 2.5 = the tank radius, its true footprint.
+        # mesh=None because it is primitives, not a mesh file -- its map-side
+        # point set comes from map_tools.primitive_sample.sample_cylinder_stack
+        # instead of sample_surface.
+        world_prefix="water_tower", identity="water_tower",
+        is_object=True, is_catalog=False, disc_radius=2.5,
+        mesh=None,
+        box_stamped=False,
+        # UNUSED. marker_color has no default on ParkType, so it must be given;
+        # localizer_node._LABEL_COLOR only reads is_catalog types, so nothing
+        # ever renders this. Left neutral rather than picking a meaningful hue.
+        marker_color=(0.0, 0.0, 0.0, 0.0),
+    ),
 )
 
 # world_prefix -> ParkType.
