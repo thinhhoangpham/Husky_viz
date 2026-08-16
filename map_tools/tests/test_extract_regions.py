@@ -22,7 +22,25 @@ POLES = [
 def test_distinctive_locations_cluster_near_the_added_structures(tmp_path):
     extract_park_map.main(["--out-dir", str(tmp_path), "--regions"])
     with open(tmp_path / "park_regions.yaml") as fh:
-        regs = yaml.safe_load(fh)
+        doc = yaml.safe_load(fh)
+
+    # _meta is a reserved, additive key; split it off so the location assertions
+    # see only loc_NNN entries.
+    meta = doc.pop("_meta")
+    regs = doc
+
+    # The map must be self-describing: the runtime (T19) reads these to describe
+    # its live window with the SAME parameters. A radius mismatch is silent (a
+    # window at any radius yields the same 168-length vector, so region_distance's
+    # length guard cannot catch it), so pin the recorded params to what the
+    # extractor actually used -- change a literal without regenerating and this
+    # fails.
+    assert meta["window_radius"] == extract_park_map.WINDOW_RADIUS
+    assert meta["n_sectors"] == extract_park_map.N_SECTORS
+    assert meta["n_rings"] == extract_park_map.N_RINGS
+    assert meta["grid_step"] == extract_park_map.GRID_STEP
+    # No location id may collide with the reserved key.
+    assert all(not lid.startswith("_") for lid in regs)
 
     assert len(regs) >= 4, "expected several distinctive spots, got %d" % len(regs)
 
