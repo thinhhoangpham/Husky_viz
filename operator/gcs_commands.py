@@ -26,6 +26,11 @@ def parse_command(line):
         if len(rest) == 1:
             return ("goal_name", [rest[0]])
         return ("error", ["goal needs <lat> <lon>, xy <x> <y>, or <name>"])
+    if verb == "route":
+        rest = parts[1:]
+        if not rest:
+            return ("error", ["route needs one or more waypoint names"])
+        return ("route", list(rest))
     if verb == "mode":
         rest = parts[1:]
         if len(rest) != 1:

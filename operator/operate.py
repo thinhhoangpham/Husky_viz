@@ -30,7 +30,7 @@ import time
 import actionlib
 import rospy
 from actionlib_msgs.msg import GoalStatus, GoalStatusArray
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import PointStamped, Twist
 from move_base_msgs.msg import MoveBaseAction, MoveBaseActionGoal, MoveBaseGoal
 from nav_msgs.msg import Odometry, OccupancyGrid
 from std_msgs.msg import Bool, String
@@ -41,6 +41,7 @@ from gcs_csv import CSV_HEADER as GCS_CSV_HEADER, build_row
 from gcs_intervene import Intervene
 from gcs_commands import parse_command
 from objects import load_objects, resolve as resolve_object  # operator/ is on sys.path[0]
+from waypoint_queue import WaypointQueue
 
 # goal_marker.py lives at the repo root; when run by path, sys.path[0] is this
 # script's dir (operator/), so add the repo root so the import resolves.
@@ -69,6 +70,17 @@ def _objects_path():
     except Exception:
         p = None
     return p or os.environ.get("OBJECTS_PATH") or _DEFAULT_OBJECTS_PATH
+# Route waypoint coordination with the localizer (ruling F3):
+#   localizer -> operator: /landmark_arrival_confirmed (Bool) -- True when the
+#     localizer PERCEIVES the expected distinctive region at the active waypoint.
+#     This Bool is the ONLY thing that advances the route; move_base SUCCEEDED
+#     and the (spoofable) fused pose never advance it.
+#   operator -> localizer: /operator/active_waypoint (PointStamped, map frame)
+#     and /operator/expected_anchors (String, comma-separated anchor names) tell
+#     the localizer which waypoint is live and what to expect there.
+ARRIVAL_CONFIRMED_TOPIC = "/landmark_arrival_confirmed"
+ACTIVE_WAYPOINT_TOPIC = "/operator/active_waypoint"
+EXPECTED_ANCHORS_TOPIC = "/operator/expected_anchors"
 PLANNER_CMD_TOPIC = "/cmd_vel"                              # move_base output
 CTRL_CMD_TOPIC = "/husky_velocity_controller/cmd_vel"      # controller input
 
@@ -232,6 +244,17 @@ class Operator(object):
         self._estop_pub = rospy.Publisher("e_stop", Bool, queue_size=1, latch=True)
         self._intervene = Intervene(self._teleop_pub, self._estop_pub, Twist, Bool)
 
+        # Multi-waypoint route state. _route is None unless a `route` command is
+        # active; _route_objects caches the name->(x,y) table for the run.
+        self._route = None            # WaypointQueue or None
+        self._route_objects = None    # dict name -> (x, y)
+        self._active_waypoint_pub = rospy.Publisher(
+            ACTIVE_WAYPOINT_TOPIC, PointStamped, queue_size=1, latch=True)
+        self._expected_anchors_pub = rospy.Publisher(
+            EXPECTED_ANCHORS_TOPIC, String, queue_size=1, latch=True)
+        rospy.Subscriber(ARRIVAL_CONFIRMED_TOPIC, Bool,
+                         self._on_arrival_confirmed, queue_size=1)
+
         self._csv_file = open(args.csv, "w", newline="")
         self._csv = csv.writer(self._csv_file)
         self._csv.writerow(GCS_CSV_HEADER)
@@ -369,12 +392,16 @@ class Operator(object):
                 rospy.loginfo("named goal '%s': snapped (%.2f,%.2f)->(%.2f,%.2f) "
                               "to nearest free cell", args[0], gx, gy, sx, sy)
             self._do_goal_xy(sx, sy)
+        elif cmd == "route":
+            self._do_route(args)
         elif cmd == "cancel":
+            self._route = None; self._route_objects = None
             self.client.cancel_all_goals(); self.state.set_mode("AUTO")
             rospy.loginfo("CANCELLED goal")
         elif cmd == "teleop":
             self.state.set_mode("MANUAL"); self._teleop_repl()
         elif cmd == "stop":
+            self._route = None; self._route_objects = None
             self._intervene.stop(); self.client.cancel_all_goals()
             self.state.set_mode("STOPPED")
             rospy.loginfo("STOP (zero velocity + cancel active goal)")
@@ -462,6 +489,77 @@ class Operator(object):
         self.client.send_goal(goal)
         self.state.set_mode("AUTO")
         rospy.loginfo("SENT map goal (%.2f, %.2f)", gx, gy)
+
+    def _do_route(self, names):
+        """Start a multi-waypoint route. Resolve every name up front (so a typo
+        fails the whole route before we move), build a WaypointQueue, then drive
+        the first waypoint. The route advances ONLY when the localizer publishes
+        True on /landmark_arrival_confirmed (see _on_arrival_confirmed) -- never
+        on move_base status."""
+        try:
+            objects = load_objects(_objects_path())
+        except IOError as exc:
+            rospy.logwarn("route failed to load objects: %s", exc)
+            return
+        # Validate all names before committing, using the same resolver as `goal`.
+        try:
+            for name in names:
+                resolve_object(name, objects)
+        except KeyError as exc:
+            rospy.logwarn("route aborted: %s", exc)
+            return
+        self._route_objects = objects
+        self._route = WaypointQueue(names)
+        rospy.loginfo("ROUTE started: %s", " -> ".join(names))
+        self._send_current_waypoint()
+
+    def _send_current_waypoint(self):
+        """Drive the route's current waypoint: send its (snapped) map goal and
+        publish active_waypoint + expected_anchors so the localizer knows what to
+        look for. No-op (with a completion log) once the route is done."""
+        if self._route is None:
+            return
+        name = self._route.current()
+        if name is None:
+            rospy.loginfo("ROUTE complete: all waypoints perception-confirmed.")
+            self._route = None
+            self._route_objects = None
+            return
+        gx, gy = resolve_object(name, self._route_objects)
+        sx, sy = self._snap_to_free(gx, gy)
+        if (sx, sy) != (gx, gy):
+            rospy.loginfo("route waypoint '%s': snapped (%.2f,%.2f)->(%.2f,%.2f)",
+                          name, gx, gy, sx, sy)
+        # Tell the localizer which waypoint is live and what to expect there.
+        # Expected-anchor choice: the waypoint's OWN name is the expected
+        # distinctive region. Waypoints are named landmarks in park_objects.yaml,
+        # so "arriving at pole_A" means "perceive the region around pole_A". If a
+        # waypoint later needs a different/extra expected anchor set, this is the
+        # single place to change it (publish a different comma-separated String).
+        wp = PointStamped()
+        wp.header.frame_id = GOAL_FRAME
+        wp.header.stamp = rospy.Time.now()
+        wp.point.x, wp.point.y = sx, sy
+        self._active_waypoint_pub.publish(wp)
+        self._expected_anchors_pub.publish(String(data=name))
+        rospy.loginfo("route waypoint '%s': goal (%.2f, %.2f), expecting anchor "
+                      "'%s'", name, sx, sy, name)
+        self._do_goal_xy(sx, sy)
+
+    def _on_arrival_confirmed(self, msg):
+        """Localizer perception-confirmed arrival. This is the ONLY trigger that
+        advances the route -- move_base SUCCEEDED and the fused pose are ignored
+        by design (the fused pose is spoofable). Only True advances; a False
+        message is a no-op per WaypointQueue policy."""
+        if self._route is None:
+            return
+        if not msg.data:
+            return
+        name = self._route.current()
+        self._route.on_arrival(confirmed=True)
+        rospy.loginfo("route: arrival CONFIRMED at '%s' by localizer perception.",
+                      name)
+        self._send_current_waypoint()
 
     def _do_mode(self, name):
         from topic_tools.srv import MuxSelect
@@ -581,6 +679,10 @@ class Operator(object):
             "  goal <lat> <lon>  send a GPS goal (map-frame, via /fromLL)\n"
             "  goal xy <x> <y>   send a map-frame goal (metres) directly\n"
             "  goal <name>       send a goal by name (%s)\n" % os.path.basename(_objects_path()) +
+            "  route <name> ...  drive named waypoints in order; advances to the\n"
+            "                    next ONLY when the localizer perception-confirms\n"
+            "                    arrival (/landmark_arrival_confirmed), never on\n"
+            "                    move_base status\n"
             "  mode <gps|landmark>  switch the absolute-position source live\n"
             "  cancel            cancel the active move_base goal\n"
             "  teleop            enter raw-key teleop (i/,/j/l/k, x or Esc to exit)\n"

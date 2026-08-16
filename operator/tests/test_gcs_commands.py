@@ -16,6 +16,17 @@ def test_simple_verbs():
     for v in ["cancel","teleop","stop","estop","release","auto","status","quit"]:
         assert parse_command(v) == (v, [])
 
+def test_route_names():
+    assert parse_command("route pole_A bench_3 pole_B") == (
+        "route", ["pole_A", "bench_3", "pole_B"])
+
+def test_route_single_name():
+    assert parse_command("route pole_A") == ("route", ["pole_A"])
+
+def test_route_no_names_is_error():
+    cmd, _ = parse_command("route")
+    assert cmd == "error"
+
 def test_blank_and_unknown():
     assert parse_command("   ") == ("noop", [])
     assert parse_command("frobnicate") == ("unknown", ["frobnicate"])
