@@ -40,6 +40,13 @@ EXTENT_WEIGHT = 0.25
 def describe(points, band_height=1.0, voxel=0.5, min_voxel_pts=5, n_bands=18):
     """Per-height-band voxel-shape descriptor. Shape (n_bands, 4).
 
+    Defaults (voxel=0.5, min_voxel_pts=5) pass the partial-view and
+    decimation robustness characterization (test_partial_view_matches_full,
+    test_decimation_stable) as-is -- no tuning was needed. A half-diameter
+    voxel is coarse enough that even a 1/4-density or single-face sample of
+    the lattice pole still fills >=5 points per occupied cell, so the shape
+    ratios stay comparable to the full-density, full-view descriptor.
+
     Bands are measured above the cluster's OWN minimum z (so ground offset
     does not matter). In each band, points are bucketed into `voxel`-sized
     x/y cells; each cell with >= min_voxel_pts contributes a voxel_shape, and

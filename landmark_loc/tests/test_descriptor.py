@@ -74,3 +74,21 @@ def test_empty_bands_are_zero():
     d = describe(_bench())
     # bench has no material above ~1 m -> bands 2..17 all zero
     assert np.allclose(d[2:], 0.0)
+
+
+def test_partial_view_matches_full():
+    full = _lattice_pole(5)
+    # keep only the near HALF (y < 0): a single-face view
+    partial = full[full[:, 1] < 0]
+    df = describe(full)
+    dp = describe(partial)
+    db = describe(_bench())
+    # partial view still much closer to its full self than to a bench
+    assert descriptor_distance(df, dp) < 0.5 * descriptor_distance(df, db)
+
+
+def test_decimation_stable():
+    full = _lattice_pole(6)
+    decim = full[::4]  # 1/4 the density, standing in for range
+    assert descriptor_distance(describe(full), describe(decim)) \
+        < descriptor_distance(describe(full), describe(_bench()))
