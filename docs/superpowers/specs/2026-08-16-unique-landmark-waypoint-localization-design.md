@@ -2,7 +2,24 @@
 
 **Date:** 2026-08-16
 **Branch:** `feat/unique-landmark-waypoint-loc`
-**Status:** design, pending review
+**Status:** design, REVISED 2026-08-16 to per-region descriptors (see "Revision"
+below), pending review
+
+## Revision — from per-object to per-region descriptors
+
+The first version of this spec identified distinctive *objects* by shape. That
+broke on contact with the real map: the distinctive structures we added are
+several byte-identical instances of one mesh, so their per-object descriptors are
+distance 0 apart and none is distinctive — the mechanism had nothing to grip.
+More fundamentally, "distinctive object" still smuggled in the idea of segmenting
+and implicitly typing objects, which this project exists to avoid.
+
+The revision makes the unit a **region of space at a chosen scale**, described
+with no notion of object or type. A single distinctive structure and a
+distinctive *arrangement* of ordinary structures become the same measurement at
+different window sizes. This is the design below. Sections still describing
+per-object work are marked; the descriptor and extractor need extending to
+windows, which is where the remaining implementation goes.
 
 ## Problem
 
@@ -25,21 +42,41 @@ Two consequences:
    CLAUDE.md records what this costs: a latched transform went 2.7 m, then
    7.7 m, then 13.5 m stale over one run.
 
-This design replaces the type-based identification with **shape descriptors on
-distinctive objects**, and replaces the one-time anchor with **operator
-waypoints that re-anchor on arrival**.
+This design replaces the type-based identification with **distinctive-region
+descriptors** — computed with no classification and no notion of "object" — and
+replaces the one-time anchor with **operator waypoints that re-anchor on
+arrival**.
 
 ## Approach
 
 Two independent information sources that cross-check each other.
 
-**Robot side — descriptors, no classification.** The robot computes a
-shape descriptor per cluster (NDT-style voxel statistics over height bands, see
-below) and matches it against a descriptor
-map built offline from the world file. It never asks "is this a bench?" It asks
-"have I seen this exact shape somewhere in the map, and only there?" Clusters
-whose descriptor has no near twin anywhere in the map are **unique anchors** and
-pin the pose on their own. Everything else is ignored.
+**Robot side — region descriptors, no classification, no object types.** The
+robot describes the point cloud around a location — a *spatial region*, not a
+segmented object — with an NDT-style descriptor (see below), and matches it
+against a descriptor map built offline from the world file. It never asks "is
+this a bench?" and never even asks "is this one object or several?" It asks
+"have I seen *this configuration of space* in the map, and only there?" Regions
+whose descriptor has no near twin anywhere in the map are **distinctive anchors**
+and pin the pose on their own. Everything else is ignored.
+
+**Why region, not object (the design's core decision).** Identifying a
+*distinctive object* and identifying a *distinctive arrangement of ordinary
+objects* are the same operation at different spatial scales. A single oddly
+shaped structure is distinctive in a small window; a spot surrounded by a rare
+configuration of common structures is distinctive in a large window. By making
+the descriptor summarise a **region at a chosen scale** — rather than a
+segmented object — both cases fall out of one measurement, and the system never
+needs to know what any structure physically *is*.
+
+This directly resolves the identical-instance problem. If a map contains several
+byte-identical structures, their *object* descriptors are distance 0 apart and
+none is distinctive — correct, and unhelpful. But each sits among different
+neighbours at different spacings, so at a window scale wide enough to include
+that neighbourhood, the *region* descriptors differ and distinctiveness
+re-emerges. The scale is the knob; the algorithm and the measurement are
+unchanged. Distinctiveness is never assumed for any structure — it is measured,
+at whatever scale is chosen, over descriptors that carry no labels.
 
 **Operator side — waypoints.** The operator sends waypoints as navigation
 targets. On arrival, a waypoint becomes the new anchor for the dead-reckoning
@@ -50,24 +87,26 @@ meaningful: it means GPS is spoofed, odometry has drifted, or the robot is not
 where it was sent. That is the anti-spoofing property the existing attack demos
 (`attack_navsat.py`, `mode landmark`) are built around.
 
-### Why not descriptor-matching on ordinary objects
+### Why regions, not per-object matching
 
-Considered and rejected. The park's 76 objects are instances of **five identical
-meshes**, so every bench's descriptor is not merely similar but *identical*.
-Descriptor similarity would buy exactly what the type label already buys, minus
-the ability to hash into buckets the way `_cat_pair_index` does today — a slower
-reimplementation of type matching with thresholds to tune.
+An earlier version of this design matched *per-object* descriptors and marked
+individual objects distinctive. That fails on this map, and the failure is
+instructive. The park's repeated structures are byte-identical instances of a
+few meshes, so their per-object descriptors are distance 0 apart: none is
+distinctive, correctly, and the added power-line structures are *also* repeated
+instances of one mesh, so per-object matching cannot tell one from another
+either. Per-object distinctiveness simply has nothing to grip on here.
 
-Worse, a descriptor able to separate a bench from a garden table from a bin,
-from partial single-face views at varying range, is *the same hard problem the
-classifier already solves*, re-solved in a new representation. Since the point
-of this work is to stop depending on that classifier, taking it on again in
-another form defeats the purpose.
-
-Restricting the mechanism to genuinely distinctive objects avoids all of it. The
-only question asked of a cluster is "is this the distinctive thing, or not?",
-and for a 16.5 m pylon against a 3.15 m lamp that is a five-fold margin on a
-single number.
+The region descriptor grips where the object descriptor cannot. Two identical
+structures in different neighbourhoods produce different *region* descriptors as
+soon as the window is wide enough to include those neighbourhoods. So the
+question asked is never "what type is this object" and never even "is this one
+object" — it is "is the configuration of space at this location one that occurs
+nowhere else in the map." That question is answered by measurement, at a chosen
+scale, over label-free descriptors — and it degrades gracefully: where a single
+structure is already distinctive, a small window suffices; where nothing is
+distinctive alone, a larger window finds distinctiveness in the arrangement, or
+correctly reports that this location is ambiguous.
 
 ## World change: power-line corridors
 
@@ -91,14 +130,16 @@ would mean fetching from Gazebo Fuel.
 
 ### Layout
 
-The landmark unit is the **individual pole**, not the span. One `linea1` model
-is *two* poles 28.8 m apart joined by a 59 m cable span (measured from
-`linea1/postes.dae` at world scale 0.03, and already handled this way by
-`extract_lake_map.py:76`, `POLE_OFFSETS`). The robot only ever sees one pole or
-a stretch of cable at a time, so a pole — not the model, not the span — is the
-anchor. This follows the precedent of commit 7091639, *"stamp the power line's
-real poles, not its model origin"*, and the existing lake extractor's
-`_expand_poles`.
+These structures exist to give the map *something with a distinctive local
+region* — they are tall and open-latticed, unlike anything else in the scene, so
+a window centred near one of them has a region descriptor with no near twin. But
+note the design does **not** treat "a pole" as the landmark unit: the distinctive
+thing is the *region of space* around a pole, which the extractor discovers by
+measuring distinctiveness over a location grid (below), not by declaring poles
+special. One `linea1` model is two poles 28.8 m apart joined by a 59 m cable span
+(`extract_lake_map.py:76`, `POLE_OFFSETS`); those poles are simply more objects
+in the scene, and the location grid will find whichever windows around them turn
+out to be distinctive.
 
 Placement searched model link poses and bearings over the existing object map,
 maximising the worst *pole's* clearance. The park is uniformly cluttered — the
@@ -142,46 +183,65 @@ are used only to **characterise local shape**, never to match scan-to-scan.
 
 Decompose each voxel's covariance into eigenvalues λ₁ ≥ λ₂ ≥ λ₃ — the extent of
 the local point distribution along its three principal axes. Their *ratios*
-classify the material in that voxel:
+describe the local structure in that voxel, with no reference to what object the
+voxel belongs to:
 
-| Eigenvalue pattern | Class | What produces it here |
-|---|---|---|
-| λ₁ ≫ λ₂ ≈ λ₃ | **linear** — a stick | pylon members, lamp post, tree trunk |
-| λ₁ ≈ λ₂ ≫ λ₃ | **planar** — a sheet | bench seat, table top, ground |
-| λ₁ ≈ λ₂ ≈ λ₃ | **volumetric** — a blob | foliage, bushes |
+| Eigenvalue pattern | Local structure |
+|---|---|
+| λ₁ ≫ λ₂ ≈ λ₃ | **linear** — points strung along one axis (a thin member) |
+| λ₁ ≈ λ₂ ≫ λ₃ | **planar** — points spread on a surface (a sheet) |
+| λ₁ ≈ λ₂ ≈ λ₃ | **volumetric** — points filling space isotropically (a blob) |
 
-### The descriptor proper
+These are three numbers per voxel. They are properties of the points, not of any
+category — the descriptor never names what produced them.
 
-Split the vertical range into fixed-width z-bands. For each band record:
+### The descriptor proper — a region, at a chosen scale
 
-1. the **distribution of voxel shape classes** in that band (primary signal), and
-2. the horizontal extent of the band (secondary — coarse size).
+The descriptor summarises **all points within a spatial window** of a chosen
+radius `R` around a location — not a segmented object. It has two parts, and the
+second is what makes the region abstraction work:
 
-A pylon reads as: dense **linear** voxels in many differing orientations from 0
-to 12 m, a wide band of linear voxels at 12–16.5 m, nothing above. A bench: a
-few **planar** voxels below 1 m, nothing above. Those cannot collide under any
-viewing angle.
+1. **Vertical structure** (as before): split the window's height range into
+   fixed z-bands; per band record the mean voxel shape-class distribution and
+   the horizontal extent. This captures "what kind of structure exists at each
+   height," which is view-stable.
 
-Note this is a strictly stronger signal than extent alone. Horizontal extent
-cannot distinguish a 1.2 m solid slab from a 1.2 m open lattice — both measure
-1.2 m across. The pylon's legs are a criss-crossing steel lattice, so they
-produce *many linear voxels in differing orientations*, which no other object in
-the park does. A tree trunk is linear too, but it is one vertical stick, not a
-lattice.
+2. **Horizontal arrangement**: split the window into an angular/radial grid of
+   sectors around its centre, and per sector record how much occupied structure
+   it contains and at what shape class. This captures "what sits *around* this
+   location, and in which direction" — the signal that distinguishes two
+   identical structures sitting in different neighbourhoods.
+
+Part 1 alone makes a single distinctive structure distinctive. Part 2 is what
+lets a location surrounded by a rare configuration of *ordinary, repeated*
+structures also be distinctive — the same descriptor, now reading arrangement
+rather than only local shape. Neither part references an object type; both are
+statistics over the raw points in the window.
+
+The window radius `R` is the **scale knob**. Small `R` describes essentially one
+structure (the single-distinctive-object case). Large `R` takes in neighbours
+(the distinctive-arrangement case). One descriptor, one measurement; the scale
+chosen at extraction time decides which regime applies, and the same `R` is used
+on the map side and the runtime side so the two remain comparable.
 
 ### Why this form
 
-**It survives partial views.** This is the decisive property. Lidar sees only an
-object's near face, so *global* measurements like width are systematically
-understated and vary with approach angle. Eigenvalue **ratios** are a local
-property: a voxel on the near face of a steel member is linear whether or not
-the far side is visible. This directly addresses what would otherwise be the
-design's largest risk.
+**Eigenvalue ratios survive partial views.** Lidar sees only the near face of
+any structure, so *global* measurements like width are systematically understated
+and vary with approach angle. Eigenvalue **ratios** are a local property: a voxel
+on the near face reads the same whether or not the far side is visible. This is
+the property the whole match rests on.
 
-**It computes from both a mesh and a point cloud.** The map is built offline
-from `park.world` meshes; the robot measures live returns. "What shape is the
-material in this voxel?" is answerable from either, which is what puts map and
-observation in the same space. See the mesh-sampling caveat below.
+**A solid volume and an open lattice are separable** where a bare extent cannot
+tell them apart: both may be 1.2 m across, but one fills its voxels
+volumetrically and the other produces many linear voxels in differing
+orientations. The descriptor sees that difference without knowing either is an
+object of any kind.
+
+**It computes identically from a mesh and from a point cloud.** The map is built
+offline from `park.world` meshes; the robot measures live returns. "What is the
+structure of the points in this window?" is answerable from either, which is what
+puts map and observation in the same space. See the mesh-sampling caveat below.
 
 **Height remains the frame.** Where the crossarm band sits does not change with
 viewing angle, so banding by height keeps the descriptor's structure stable
@@ -189,18 +249,23 @@ while the per-band statistics describe what the material actually is.
 
 ### Distinctiveness
 
-Measured offline: for each map object, the distance from its descriptor to its
-nearest neighbour's descriptor. Objects whose nearest match is far away are
-unique anchors. This is a *measurement*, not an assumption — if a future world
-contains two identical structures, they will correctly score as non-unique and
-be excluded.
+Measured offline over a grid of candidate locations (not over "objects"). At
+each location, compute the region descriptor at the chosen scale `R`; the
+distance from that descriptor to its nearest neighbour among all other locations
+is the location's distinctiveness. Locations whose nearest match is far away —
+above a threshold placed in the empty gap the measured distribution reveals, not
+guessed in advance — are **distinctive anchors**. This is a measurement, not an
+assumption: a location surrounded by an unremarkable, repeated configuration
+scores low and is excluded; a location whose neighbourhood occurs nowhere else
+scores high. Nothing here knows what physical structures produced either
+outcome.
 
 ### Caveats this introduces
 
 - **Voxel size is a real tuning knob.** Too large and everything reads
   volumetric; too small and there are too few points per voxel for a stable
   covariance (~5+ needed). At 15 m the Ouster's returns are sparse enough that a
-  distant pylon may not fill enough voxels. This trades `classify.py`'s many
+  distant, sparsely-sampled window may not fill enough voxels. This trades `classify.py`'s many
   thresholds for two knobs — voxel size and minimum points per voxel — which is
   fewer, but not none.
 - **Mesh-side computation must sample the surface, not use raw vertices.** Mesh
@@ -221,22 +286,27 @@ anchor*:
 - proposed: whichever of these two events happened **most recently**, since both
   reset the accumulated odometry error:
   - a **confirmed** waypoint arrival (confirmed in the sense below), or
-  - a pylon sighting that passed the match gate
+  - a distinctive-region match that passed the match gate
 
-  A pylon sighting is the stronger of the two — it is a direct measurement of
-  position against a known map object, where a waypoint arrival is an assertion
-  corroborated by perception. So when both occur within the same tick, the
-  pylon sighting sets the anchor.
+  A region match is the stronger of the two — it is a direct measurement of
+  position against a known distinctive location in the map, where a waypoint
+  arrival is an assertion corroborated by perception. So when both occur within
+  the same tick, the region match sets the anchor.
 
-**Fix.** A confident pylon match pins the pose directly. No three-inlier
-constellation, because a unique object plus a measured range and bearing is
-already a position.
+**Fix.** A confident region match pins the pose directly. The matched map
+location has a known world position, and the descriptor's own centre gives the
+robot's offset from it, so one match is already a position — no multi-object
+constellation required. Because the map stores each distinctive location's
+world coordinates, resolving *which* location was matched is a nearest-descriptor
+lookup gated by the robot's prior (so two far-apart locations with similar
+descriptors cannot be confused).
 
-**Between anchors.** Non-distinctive clusters are ignored entirely. The robot
-coasts on anchor + odometry until the next pylon or the next waypoint arrival.
+**Between anchors.** Non-distinctive regions are ignored entirely. The robot
+coasts on anchor + odometry until the next distinctive-region match or the next
+waypoint arrival.
 
 **Accepted tradeoff, stated explicitly:** pose quality degrades with odometry
-drift between pylon sightings, bounded by pylon spacing (median 13.4 m) and
+drift between region matches, bounded by distinctive-location spacing (median ~13 m) and
 waypoint frequency. This is the cost of not rebuilding constellation matching in
 descriptor space, and it is the reason the waypoint half of the design is not
 optional.
@@ -271,13 +341,15 @@ pose measurement. The operator asserts intent; intent is not evidence of arrival
 
 | Unit | Responsibility |
 |---|---|
-| `map_tools/park_types.py` | add the `linea1`/pylon type. The dataclass documents (`:59-62`) that fields appended last with defaults are a zero-breakage change. |
-| `map_tools/extract_park_map.py` | stamp pylons individually; emit the descriptor map |
-| descriptor module (new, `landmark_loc/`) | points → voxel Gaussians → per-band shape statistics. Shared by extraction and runtime so the two cannot drift apart. |
-| mesh surface sampler (new, `map_tools/`) | samples points across mesh faces so the map side sees a laser-like point set rather than modeller-placed vertices |
-| distinctiveness (new) | offline nearest-neighbour scoring over the descriptor map; marks unique anchors |
-| detector plugin (new) | registers in the existing `DETECTORS` table (`detector.py:225`); matches clusters to unique anchors only |
-| `landmark_loc/localizer_node.py` | anchor source becomes waypoint/anchor-driven rather than one-shot GPS |
+| `map_tools/park_types.py` | registry entry for the `linea1` model so its geometry is placed in the scene (done). No type is privileged in matching — the entry only puts the structure on the map. |
+| descriptor module (`landmark_loc/descriptor.py`) | points-in-a-window → voxel Gaussians → per-band shape statistics **plus horizontal-arrangement statistics**. Shared by extraction and runtime so the two cannot drift. Built as per-object; **must be extended to per-region windows** (the pivot). |
+| mesh surface sampler (`map_tools/mesh_sample.py`) | samples points across mesh faces so the map side sees a laser-like point set rather than modeller-placed vertices (done). |
+| `.obj` triangle reader (new, `map_tools/`) | minimal Wavefront reader (v/f lines only, no materials) so `.obj` assets (e.g. `tree_8`) can be sampled too |
+| scene-point assembler (new) | builds one combined map-frame point cloud from all placed meshes, so a region window can be cut from it at any location — the per-region analogue of today's per-object sampling |
+| region extractor (`map_tools/extract_park_map.py`) | over a grid of candidate locations, cut each window, describe it, score distinctiveness, emit the descriptor map with each distinctive location's world coordinates |
+| distinctiveness (`landmark_loc/distinctiveness.py`) | nearest-neighbour scoring over the descriptor map; threshold placed in the measured gap (done; operates on any `{name: descriptor}` map) |
+| detector plugin (new) | registers in the existing `DETECTORS` table (`detector.py:225`); describes the region around the robot and matches it to distinctive map locations only, gated by the prior |
+| `landmark_loc/localizer_node.py` | anchor source becomes region-match / confirmed-waypoint driven rather than one-shot GPS |
 | `operator/operate.py` | waypoint sequence; arrival confirmation; fault reporting |
 
 `classify.py` and `constellation.py` are **not deleted**. They stay selectable
@@ -290,42 +362,61 @@ Unit-testable without a simulator, following the existing `landmark_loc/tests`
 pattern:
 
 - voxel shape classification returns *linear* for a synthetic stick, *planar*
-  for a sheet, *volumetric* for an isotropic blob
-- descriptor of a synthetic pylon-shaped point set (a lattice of sticks)
-  separates from a bench/lamp/table/bin set by a wide margin
-- the same descriptor computed from mesh-sampled points and from a *partial*
-  (single-face, decimated) point set of the same object stays within the match
-  threshold — the property the eigenvalue-ratio form exists to provide
+  for a sheet, *volumetric* for an isotropic blob (done)
+- a region window containing a distinctive structure separates from a window
+  over ordinary repeated structure by a wide margin
+- **two windows over identical structures in different neighbourhoods are
+  distinguished by the horizontal-arrangement part** — the property the region
+  pivot exists to provide; a window over an identical structure in an *identical*
+  neighbourhood is correctly not distinguished
+- the same region descriptor computed from mesh-sampled points and from a
+  *partial* (single-face, decimated) point set of the same window stays within
+  the match threshold
 - descriptor is stable under decimation, standing in for range-driven sparsity
-- distinctiveness scoring marks pylons unique and the five repeated families
-  non-unique, on the real extracted map
-- arrival confirmation rejects a waypoint whose expected shapes are absent
+- distinctiveness scoring, run over the real extracted location grid, yields a
+  distance distribution with a clear gap; the chosen threshold sits in it
+- arrival confirmation rejects a waypoint whose expected distinctive region is
+  absent
 - anchor update leaves the prior unchanged when arrival is unconfirmed
 
-In-sim (run from the main conversation, never from a subagent, per
-CLAUDE.md): pylons visible in the cloud at the stated ranges; a fix produced
-from a single pylon sighting; drift between anchors bounded as predicted; and
-the existing navsat-drift attack unable to move the descriptor-derived pose.
+In-sim (run from the main conversation, never from a subagent, per CLAUDE.md):
+the distinctive structures visible in the cloud at the stated ranges; a fix
+produced from a single region match; the correct map location resolved (not a
+far-apart look-alike); drift between anchors bounded as predicted; and the
+existing navsat-drift attack unable to move the descriptor-derived pose.
 
 ## Risks
 
-1. **Sparsity at range, and voxel sizing.** The eigenvalue-ratio descriptor
-   largely defuses the *partial view* problem — local shape is a local property,
-   so a near-face voxel classifies correctly without the far side. What remains
-   is **density**: a pylon at 15 m may not put enough points in enough voxels to
-   yield stable covariances (~5+ points per voxel needed). Voxel size and
-   minimum point count are the two knobs, and the decimation test above exists
-   to bound them. This is now the most likely place to need tuning.
-2. **Cable returns.** `linea1`'s collision geometry includes catenary cables
-   spanning 59 m. Those return lidar points belonging to no pylon and may
-   pollute clustering. Likely needs an extent or height filter in segmentation.
-3. **Arrival confirmation strictness.** Too strict and the robot never
-   re-anchors, leaving it on pure odometry; too loose and a false anchor injects
-   error. Needs an explicit, tested gate.
-4. **Coverage gaps.** 40% of the park is beyond the 15 m gate from any pylon.
-   In those regions the design is pure dead reckoning until the next waypoint.
-5. **`gzclient` dependency.** Unchanged from today: the GPU-ray lidar produces no
-   cloud without a live GL context on `:0`.
+1. **Window scale `R` is the new central knob.** Too small and identical
+   structures stay indistinguishable (the arrangement never enters the window);
+   too large and every window overlaps its neighbours so *nothing* is distinctive
+   and matching also needs more of the scene visible at once. `R` must be chosen
+   from the measured distinctiveness distribution, and the same `R` must be used
+   on both the map and runtime sides. This is the most likely place to need
+   tuning and the biggest new risk the pivot introduces.
+2. **Runtime windows are partial and off-centre.** The map cuts a clean window
+   centred on a location; the robot cuts a window from a live cloud that sees
+   only near faces and whose centre is wherever the robot currently thinks it is.
+   The arrangement part is more sensitive to a mis-centred window than the
+   vertical part is. The prior-gated match and the partial-view test exist to
+   bound this, but it is real and must be validated in-sim.
+3. **Sparsity at range, and voxel sizing.** A distant, sparsely-sampled window
+   may not put enough points in enough voxels for stable covariances (~5+ per
+   voxel). Voxel size and minimum point count are knobs; the decimation test
+   bounds them.
+4. **Cable returns.** `linea1`'s geometry includes catenary cables spanning
+   59 m. Those points fall inside a wide region window and may distort its
+   descriptor. Whether they help (part of the real arrangement) or hurt
+   (mis-centre the statistics) is an empirical question for the in-sim task; may
+   need a height filter.
+5. **Arrival confirmation strictness.** Too strict and the robot never
+   re-anchors; too loose and a false anchor injects error. Needs an explicit,
+   tested gate.
+6. **Coverage gaps.** Parts of the park may have no distinctive region within the
+   15 m gate. There the design is pure dead reckoning until the next waypoint.
+   The extraction's distinctiveness map reveals exactly where these gaps are.
+7. **`gzclient` dependency.** Unchanged: the GPU-ray lidar produces no cloud
+   without a live GL context on `:0`.
 
 ## Verified facts behind this design
 
