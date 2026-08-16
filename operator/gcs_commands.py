@@ -27,10 +27,20 @@ def parse_command(line):
             return ("goal_name", [rest[0]])
         return ("error", ["goal needs <lat> <lon>, xy <x> <y>, or <name>"])
     if verb == "route":
+        # route <x1> <y1> <x2> <y2> ...  -- BARE map-frame coordinates. Waypoints
+        # are navigation targets only; they never name landmarks and never feed
+        # the localizer (design doc, Revision 2).
         rest = parts[1:]
-        if not rest:
-            return ("error", ["route needs one or more waypoint names"])
-        return ("route", list(rest))
+        if len(rest) < 4 or len(rest) % 2 != 0:
+            return ("error",
+                    ["route needs an even number of args, at least two "
+                     "<x> <y> pairs"])
+        try:
+            nums = [float(v) for v in rest]
+        except ValueError:
+            return ("error", ["route args must be numbers"])
+        return ("route", [(nums[i], nums[i + 1])
+                          for i in range(0, len(nums), 2)])
     if verb == "mode":
         rest = parts[1:]
         if len(rest) != 1:

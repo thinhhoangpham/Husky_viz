@@ -1,38 +1,39 @@
-"""Pure, ROS-free queue of named waypoints for the operator's `route` command.
+"""Pure, ROS-free queue of coordinate waypoints for the operator's `route` command.
 
-The operator drives waypoints in order but must advance ONLY when the localizer
-confirms arrival by PERCEPTION (a descriptor match published on
-/landmark_arrival_confirmed), never on move_base SUCCEEDED or the fused pose --
-the fused pose is exactly what a navsat spoofing attack controls.
+Waypoints are bare map-frame (x, y) points -- the MISSION layer. The robot drives
+them in order and advances when its own position estimate reaches the current
+one. The landmark localizer is a separate layer underneath (it keeps that
+position estimate honest under GPS denial); the two never exchange information,
+so nothing here knows about landmarks, regions or perception.
 
-This class holds that advance policy and nothing else: no rospy, no I/O. It is
-unit-tested in isolation. operate.py does the ROS wiring (send goals, publish the
-active waypoint + expected anchors, subscribe to the confirmation Bool).
+This class holds the advance policy and nothing else: no rospy, no I/O. It is
+unit-tested in isolation. operate.py does the ROS wiring (send goals, test the
+robot's pose against the current waypoint).
 """
 
 
 class WaypointQueue(object):
-    def __init__(self, names):
-        """names: ordered list of waypoint names to visit."""
-        self._names = list(names)
+    def __init__(self, points):
+        """points: ordered list of (x, y) map-frame waypoints to visit."""
+        self._points = list(points)
         self._index = 0
 
     def current(self):
-        """The name of the active (not-yet-confirmed) waypoint, or None when the
+        """The (x, y) of the active (not-yet-reached) waypoint, or None when the
         route is finished."""
-        if self._index < len(self._names):
-            return self._names[self._index]
+        if self._index < len(self._points):
+            return self._points[self._index]
         return None
 
-    def on_arrival(self, confirmed):
-        """Report an arrival attempt at the current waypoint. Advance to the next
-        waypoint ONLY when perception confirmed arrival (confirmed=True). A
-        confirmed=False report (e.g. move_base said done but the localizer did
-        not perceive the expected region) is a no-op. Returns the new current()."""
-        if confirmed and not self.done():
+    def on_arrival(self, reached):
+        """Report an arrival check at the current waypoint. Advance to the next
+        waypoint only when the robot's own position estimate reached it
+        (reached=True). A reached=False report is a no-op. Returns the new
+        current()."""
+        if reached and not self.done():
             self._index += 1
         return self.current()
 
     def done(self):
-        """True once every waypoint has been perception-confirmed."""
-        return self._index >= len(self._names)
+        """True once every waypoint has been reached."""
+        return self._index >= len(self._points)

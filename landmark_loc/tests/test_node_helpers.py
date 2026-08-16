@@ -49,19 +49,15 @@ def test_backward_teleport_rejected():
 import numpy as np
 
 
-def test_update_anchor_region_fix_wins():
-    # A region fix (pole_sighting) wins over a confirmed waypoint and hold.
-    xy, src = ln._update_anchor((1.0, 1.0), (5.0, 6.0), (9.0, 9.0))
+def test_update_anchor_region_fix_replaces_prev():
+    # A region fix is a MEASUREMENT and replaces the anchor.
+    xy, src = ln._update_anchor((1.0, 1.0), (5.0, 6.0))
     assert xy == (5.0, 6.0) and src == "pole"
 
 
-def test_update_anchor_confirmed_waypoint_when_no_region_fix():
-    xy, src = ln._update_anchor((1.0, 1.0), None, (9.0, 9.0))
-    assert xy == (9.0, 9.0) and src == "waypoint"
-
-
-def test_update_anchor_holds_prev_when_nothing():
-    xy, src = ln._update_anchor((1.0, 1.0), None, None)
+def test_update_anchor_holds_prev_when_no_region_fix():
+    # No waypoint argument exists any more: with no measurement the anchor holds.
+    xy, src = ln._update_anchor((1.0, 1.0), None)
     assert xy == (1.0, 1.0) and src == "hold"
 
 

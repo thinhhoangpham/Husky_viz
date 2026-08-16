@@ -52,15 +52,16 @@ def cloud_to_map_frame(pts, prior):
     return out
 
 
-def _update_anchor(prev_anchor, region_fix, confirmed_wp):
+def _update_anchor(prev_anchor, region_fix):
     """Thin node-side wrapper over waypoint_anchor.choose_anchor.
 
-    Precedence (from choose_anchor): a region fix (pole_sighting) wins over a
-    confirmed waypoint, which wins over holding the previous anchor. Returns
-    `(anchor_xy, source)`. Kept as its own helper so the pass-through
-    precedence is unit-testable without a running node.
+    Precedence: a region fix replaces the anchor; otherwise the previous anchor
+    is held. Waypoints never enter this decision -- an operator's waypoint is a
+    statement of INTENT, not a measurement of where the robot is, so it must not
+    move the pose estimate. Returns `(anchor_xy, source)`. Kept as its own helper
+    so the precedence is unit-testable without a running node.
     """
-    return waypoint_anchor.choose_anchor(prev_anchor, region_fix, confirmed_wp)
+    return waypoint_anchor.choose_anchor(prev_anchor, region_fix, None)
 
 
 def _is_landmark_mode(mode_str):
@@ -296,8 +297,7 @@ def main():
     from sensor_msgs.msg import PointCloud2
     from sensor_msgs.msg import NavSatFix
     from sensor_msgs.msg import Imu
-    from std_msgs.msg import String, Float32, Bool
-    from geometry_msgs.msg import PointStamped
+    from std_msgs.msg import String, Float32
     from visualization_msgs.msg import MarkerArray
 
     rospy.init_node("landmark_localizer")
@@ -328,7 +328,6 @@ def main():
         match_threshold=rospy.get_param("~match_threshold", 1.0),
         prior_gate=rospy.get_param("~prior_gate", 25.0),
         fault_gate=rospy.get_param("~fault_gate", 5.0),
-        arrival_radius=rospy.get_param("~arrival_radius", 5.0),
     )
     if p["matcher"] not in ("typed", "typeless"):
         rospy.logwarn("landmark_localizer: unknown ~matcher %r, defaulting to 'typed'",
@@ -367,14 +366,10 @@ def main():
         "abs_fix_mode": "gps",  # dormant until /abs_fix_mode says otherwise
         "last_pub_xy": None,    # (x, y) of last accepted/published fix
         "last_pub_odom": None,  # odom pose captured at last published fix
-        "active_waypoint": None,   # (x, y) of the operator's active waypoint
-        "expected_anchors": [],    # names the operator expects at that waypoint
     }
     pub = rospy.Publisher("/odometry/landmark_fix", Odometry, queue_size=5)
     markers_pub = rospy.Publisher("/landmark_observed_markers", MarkerArray, queue_size=1)
     fault_pub = rospy.Publisher("/landmark_fault", Float32, queue_size=5)
-    arrival_pub = rospy.Publisher(
-        "/landmark_arrival_confirmed", Bool, queue_size=5)
 
     def _yaw(q):
         return math.atan2(2 * (q.w * q.z + q.x * q.y),
@@ -425,14 +420,6 @@ def main():
     def on_mode(msg):
         state["abs_fix_mode"] = msg.data
 
-    def on_active_waypoint(msg):
-        state["active_waypoint"] = (msg.point.x, msg.point.y)
-
-    def on_expected_anchors(msg):
-        # Comma-separated names the operator expects to sight at the waypoint.
-        state["expected_anchors"] = [n.strip() for n in msg.data.split(",")
-                                     if n.strip()]
-
     def on_cloud_region(msg):
         """Region-anchor path: a successful region match re-anchors the pose.
 
@@ -474,40 +461,10 @@ def main():
                 "[region] FAULT offset=%.2f > gate=%.2f prior=(%.1f,%.1f) fix=(%.2f,%.2f)"
                 % (offset, p["fault_gate"], px, py, mx, my))
 
-        # Arrival confirmation (ruling F3, localizer -> operator): confirmed by
-        # DESCRIPTOR, never by move_base status or fused pose. The cross-check is
-        # the whole point of the feature: the matched region must be BOTH near
-        # the operator's active waypoint AND one of the anchors the operator
-        # expected there. Proximity alone is not enough -- the matcher could fix
-        # on the WRONG distinctive region that happens to sit near the waypoint.
-        #
-        # `expected_anchors` is a comma-separated String (F3), parsed to a set of
-        # names. FALLBACK: when the operator declared NO expected anchors, fall
-        # back to proximity-only so the feature still works without an explicit
-        # expectation; when expected anchors ARE declared, the matched loc_id
-        # must be among them. confirm_arrival(waypoint, expected, sightings,
-        # radius) gives both conditions (name membership + proximity) in one
-        # call; we pass the single matched region as the sighting.
-        awp = state["active_waypoint"]
-        expected = set(state["expected_anchors"])
-        confirmed_wp = None
-        if awp is not None:
-            if expected:
-                arrived = waypoint_anchor.confirm_arrival(
-                    awp, expected, [(loc_id, mx, my)], p["arrival_radius"])
-            else:
-                arrived = math.hypot(mx - awp[0], my - awp[1]) <= p["arrival_radius"]
-            if arrived:
-                arrival_pub.publish(Bool(data=True))
-                rospy.loginfo(
-                    "[region] arrival confirmed at waypoint (%.2f,%.2f) via region "
-                    "fix %s (%.2f,%.2f)", awp[0], awp[1], loc_id, mx, my)
-                confirmed_wp = awp
-
-        # Re-anchor: region fix wins over confirmed waypoint over holding.
+        # Re-anchor on the MEASUREMENT only: the region fix replaces the anchor,
+        # otherwise the previous anchor holds. No waypoint / operator input here.
         prev_anchor_xy = (state["anchor_map"][0], state["anchor_map"][1])
-        (ax, ay), source = _update_anchor(
-            prev_anchor_xy, (mx, my), confirmed_wp)
+        (ax, ay), source = _update_anchor(prev_anchor_xy, (mx, my))
         state["anchor_map"] = (ax, ay, state["compass_yaw"])
         state["anchor_odom"] = state["odom_now"]
 
@@ -624,10 +581,6 @@ def main():
     rospy.Subscriber("/navsat/fix", NavSatFix, on_navsat, queue_size=5)
     rospy.Subscriber("/odometry/filtered_map", Odometry, on_map, queue_size=5)
     rospy.Subscriber("/abs_fix_mode", String, on_mode, queue_size=1)
-    rospy.Subscriber("/operator/active_waypoint", PointStamped,
-                     on_active_waypoint, queue_size=1)
-    rospy.Subscriber("/operator/expected_anchors", String,
-                     on_expected_anchors, queue_size=1)
     cloud_cb = on_cloud_region if p["classifier"] == "region" else on_cloud
     rospy.Subscriber("/os0_cloud_node/points", PointCloud2, cloud_cb, queue_size=1,
                      buff_size=2**24)  # 16 MB: large ~1–2 MB OS0 clouds need buffer > default 64 KB to avoid stale-frame fragmentation

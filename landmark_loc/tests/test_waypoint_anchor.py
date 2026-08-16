@@ -1,7 +1,7 @@
 from landmark_loc.waypoint_anchor import confirm_arrival, choose_anchor, fault_offset
 
 
-def test_arrival_confirmed_when_expected_pole_seen():
+def test_confirm_arrival_true_when_expected_pole_seen():
     assert confirm_arrival((10.0, 5.0), {"pole_A"},
                            [("pole_A", 10.3, 5.1)], radius=1.0) is True
 
