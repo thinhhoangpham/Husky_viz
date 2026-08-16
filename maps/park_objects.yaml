@@ -78,3 +78,4 @@ tree_8_clone_clone_2: {x: -37.907, y: -12.815, yaw: -1.3931}
 tree_8_clone_clone_3: {x: -9.591, y: 4.905, yaw: -1.3931}
 tree_8_clone_clone_4: {x: -47.676, y: -23.090, yaw: -1.3931}
 tree_8_clone_clone_5: {x: -48.360, y: 9.322, yaw: -1.3931}
+water_tower: {x: 20.000, y: 14.000, yaw: 0.0000}
