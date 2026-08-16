@@ -536,3 +536,40 @@ would append columns and make distinctiveness scoring strictly sharper. The
 design deliberately does not depend on either, because neither sensor is
 available and simulated versions of both diverge from hardware in ways that
 would not transfer.
+
+### Active re-localization: bias the planner toward distinctive regions
+
+**The single most valuable follow-up.** Today the localizer is *passive*: the
+robot gets a position fix only when its route happens to carry it through a
+distinctive region. If a route never passes one, the estimate dead-reckons and
+drifts with nothing to correct it — the accepted tradeoff recorded under Risks.
+
+Making it *active* means giving the planner knowledge of where the distinctive
+regions are, so it can deliberately route through one when the estimate has gone
+stale: *"no fix in 40 m, there is a distinctive region 8 m off the path — detour
+through it, re-anchor, resume."* The robot would then manage its own localization
+confidence rather than hoping the mission takes it somewhere recognisable.
+
+Shape of the work:
+
+- A costmap **cost-bias layer** (not an obstacle layer) seeded from
+  `maps/park_regions.yaml`, making cells near distinctive regions cheaper to
+  traverse. The planner then prefers them at equal cost, for free.
+- A **staleness signal** — time or distance since the last accepted region match
+  — that scales the bias: irrelevant right after a fix, strong when drifting.
+- Optionally an explicit *re-localize* behaviour that inserts a detour waypoint
+  when staleness crosses a threshold.
+
+**Note what this is NOT.** Distinctive regions must never be written into the
+costmap as *obstacles*. The lidar already stamps every return into the obstacle
+layer directly; a second recognition-driven path would double-stamp what the
+sensor already sees and, worse, would stamp it at the wrong place whenever the
+pose is off. Obstacle avoidance must trust raw sensor geometry; recognition
+belongs in localization and, at most, in planner *preference*.
+
+The correct existing coupling between landmarks and the costmap is already in
+place and is indirect: a landmark-corrected pose keeps live sensor returns
+landing in the right cells. CLAUDE.md records the failure this prevents — a
+drifting pose "dragged the costmap off the static map", so the planner avoided
+phantom obstacles and drove into real ones. That is landmarks serving the
+costmap the right way round.
