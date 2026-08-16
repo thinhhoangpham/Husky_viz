@@ -171,17 +171,28 @@ def _canopy_width(pts):
 
 
 def profile_type_score(park_type, cluster):
-    """Score a PROFILE type (lamp / tree) by margin on its discriminator."""
+    """Score a PROFILE type (lamp / postescable / tree) by margin on its discriminator."""
     pts = cluster.points
     if park_type.identity == "tree":
         # Margin of the widest canopy band past the 2.0 m canopy floor.
         return margin_score(_canopy_width(pts),
                             classify._TREE_CANOPY_MIN_WIDTH,
                             park_type.score_margin, above=True)
-    if park_type.identity == "lamp":
-        # The thin-high-band predicate is a PREREQUISITE, not a soft term:
-        # without a thin band above HIGH_Z there is no post, and "post width"
-        # is then measuring something that is not a post at all.
+    if park_type.identity in ("lamp", "postescable"):
+        # Both are "a thin post rising high" -- the thin-high-band predicate is
+        # a PREREQUISITE, not a soft term: without a thin band above HIGH_Z
+        # there is no post, and "post width" is then measuring something that
+        # is not a post at all.
+        #
+        # postescable (a power-line pole) is scored with the LAMP's post-width
+        # margin/cap as an APPROXIMATION: this is the only profile discriminator
+        # score.py has, and the registry entry's own score_margin (0.35) is
+        # copied from the lamp for exactly that reason. This affects only the
+        # opt-in `score` detector seam exercised by this module -- the
+        # descriptor/anchor detector added later in this plan does not call
+        # score.py at all, so this approximation never reaches it. Do not read
+        # this branch as a claim that a pylon and a street lamp are the same
+        # shape; it is a stopgap discriminator, not a shape model.
         if not shapefeat.has_thin_high_band(pts):
             return 0.0
         return margin_score(shapefeat.post_width(pts),
