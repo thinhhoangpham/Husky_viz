@@ -6,7 +6,8 @@
 **Supersedes/extends:** builds on
 `2026-08-16-unique-landmark-waypoint-localization-design.md` (the region-descriptor
 line). Keeps that spec's core insight — identity lives in region structure, not in
-typed objects — and replaces its front-end and fusion with the decisions below.
+typed objects — and adds a terrain cue plus a sequence-based fusion, KEEPING the
+existing object classification pipeline rather than replacing it.
 **Evidence:** `docs/research/lidar-place-recognition-survey.md` (survey), plus live
 measurements taken this session in the lake world (cited inline).
 
@@ -38,10 +39,12 @@ confirmed this session:
    plausible-but-wrong match from a correct one, because that requires evidence
    across a *sequence*, which a per-scan mechanism does not have (survey §4.3, §6).
 
-**Goal:** a localization front-end and fusion that (a) needs few hand-tuned
-constants, (b) represents terrain as a first-class cue, and (c) resolves aliasing
-across scans — while working on BOTH the flat park and terrain-rich maps without a
-rewrite between them.
+**Goal:** (a) represent terrain as a first-class localization cue — the capability
+the object pipeline structurally lacks (problem 2); (b) resolve aliasing across
+scans (problem 3); while working on BOTH the flat park and terrain-rich maps
+without a rewrite between them. Problem 1 (the object pipeline's manual constants)
+is acknowledged but NOT solved here — the object pipeline is kept as-is; this design
+adds terrain beside it rather than rebuilding it.
 
 ---
 
@@ -75,22 +78,26 @@ These numbers, not argument, drive the design. All are reproducible from the rep
 
 ## 3. Architecture
 
-Replace the front-end; keep the constellation matcher; add terrain as a second
-cue; fuse across scans with a hypothesis tracker.
+Add gravity de-rotation and a terrain grid cue; **keep the existing object
+pipeline** (crop→cluster→classify→constellation); fuse both cues across scans with
+a hypothesis tracker. The grid does NOT replace classification — rasterizing an
+object into a height cell discards the very shape the classifier needs. The grid is
+a TERRAIN representation. Objects and terrain are two independent front-ends that
+share one input: the gravity-de-rotated cloud.
 
 ```
                          /compass/data (roll, pitch, yaw)
                                     │
 /os0_cloud_node/points ──> de-rotate scan (gravity-align)
                                     │
-                          2.5D grid front-end
-                       (per cell: max_z, min_z, count)
-                                    │
                  ┌──────────────────┴───────────────────┐
-      min_z → morphological ground          max_z − ground → height peaks
-                 │                                        │
-   gradient-correlate vs prior DTM          constellation match vs catalog
-                 │  (Cue B: terrain)                      │ (Cue A: objects)
+                 │ (shared de-rotated cloud)             │
+   crop → cluster → classify                    2.5D terrain grid
+   → constellation match vs catalog       (per cell: max_z, min_z, count)
+                 │  (Cue A: objects)                     │
+                 │                          min_z → morphological ground
+                 │                          → gradient-correlate vs DTM
+                 │                                        │ (Cue B: terrain)
                  └──────────────────┬───────────────────┘
                         hypothesis tracker (top-K across scans)
                                     │
@@ -99,10 +106,9 @@ cue; fuse across scans with a hypothesis tracker.
 
 | Layer | What | Replaces / adds |
 |---|---|---|
-| De-rotation | rotate cloud by roll/pitch from `/compass/data` | NEW; gates everything |
-| Front-end | 2.5D grid: max_z, min_z, count per cell | replaces crop→cluster→classify |
-| Cue A (objects) | height peaks above local ground → constellation | reuses existing matcher on new input |
-| Cue B (terrain) | morphological ground → gradient correlation vs DTM | NEW |
+| De-rotation | rotate cloud by roll/pitch from `/compass/data` | NEW; gates everything below |
+| Cue A (objects) | crop→cluster→classify→constellation, on the de-rotated cloud | KEPT ~as-is; input is now de-rotated |
+| Cue B (terrain) | 2.5D grid → morphological ground → gradient-correlate vs DTM | NEW; terrain only |
 | Fusion | top-K hypothesis tracker across scans | replaces one-shot gating |
 
 The map-EKF is **unchanged**. It still receives an absolute (x, y) on
@@ -113,11 +119,13 @@ the same pattern the existing localizer already uses for yaw (subscribes to
 
 ---
 
-## 4. The grid front-end (shared representation)
+## 4. The terrain grid (Cue B front-end)
 
-A single pass over the de-rotated cloud bins points into a world-frame,
-axis-aligned Cartesian grid. Per cell: `max_z`, `min_z`, `count`. No crop, no
-clustering, no shape templates.
+The grid is a TERRAIN representation, NOT an object detector. A single pass over
+the de-rotated cloud bins points into a world-frame, axis-aligned Cartesian grid.
+Per cell: `max_z`, `min_z`, `count`. This is what the object pipeline (crop→cluster
+→classify) structurally cannot do — represent a continuous surface — and it is why
+the grid is added rather than swapped in.
 
 **Cell validity is three-state, never two:**
 
@@ -131,35 +139,42 @@ Uncovered cells are **NaN**, never 0.0 — a fabricated zero is a fake flat plat
 that dominates correlation. (The DTM extractor already enforces this;
 `map_tools/dtm_raster.py`.)
 
-**Two derived channels:**
+**Derived channel:**
 
 - `ground = morphological_opening(min_z)` — erode (min-filter) then dilate
   (max-filter) over a window WIDER than the widest object and NARROWER than the
   terrain feature scale (~10 m for this park/lake; objects ≤ 6 m, terrain features
-  tens of m). This is the local, slope-following ground surface — the answer to
-  the user's "how do you define 0.0 on uneven terrain": you don't assume one, you
-  compute it from the data. Same principle as Patchwork region-wise plane fitting
-  (survey §5), done as a cheap grid filter.
-- `height_above_ground = max_z − ground` — object peaks, measured against local
-  ground, correct on a hillside.
+  tens of m). Removes objects that poke up and leaves the local, slope-following
+  ground surface — the answer to the user's "how do you define 0.0 on uneven
+  terrain": you don't assume one, you compute it from the data. Same principle as
+  Patchwork region-wise plane fitting (survey §5), done as a cheap grid filter.
 
-`ground` feeds terrain matching; `height_above_ground` feeds object matching. One
-front-end, two consumers, no duplicated machinery.
+`ground` is the terrain-matching channel (Cue B). Objects are handled separately by
+the classifier (Cue A, §5) — the grid does not detect them. The `ground` surface
+is, however, ALSO what the deferred traversability layer needs (§9), which is why
+the grid is specified as a shared representation even though only the terrain cue
+consumes it now.
 
 ---
 
-## 5. Cue A — objects (constellation)
+## 5. Cue A — objects (KEPT: classification + constellation)
 
-Object detections are **local maxima of `height_above_ground`** — a peak-find on a
-small array, not Euclidean clustering with `link_dist`/`min_pts`/`max_extent`.
-Each peak yields a position and a height. Height is used as SOFT evidence
-(a 4.5 m peak favours a tree entry over a 0.9 m bench entry) rather than a hard
-type — the survey's point (§6c) is that identity lives in the arrangement, so the
-constellation matcher (`landmark_loc/solve.py`, RANSAC over centroids) needs only
-positions, which it already consumes. **The existing typed/typeless matcher is
-reused unchanged on this new input.**
+The existing object pipeline stays: `crop → cluster → classify → constellation
+match` (`landmark_loc/segment.py`, `detector.py`, `solve.py`). It is NOT replaced
+by the grid — a distinct object's shape is exactly the information the classifier
+uses, and rasterizing it into a height cell would discard that. The grid detects no
+objects.
 
-This is the always-available cue: on the flat park it carries the entire load.
+**The one change to this pipeline: it consumes the gravity-de-rotated cloud** (§3)
+instead of the raw cloud. On a tilted robot the raw `crop(z_min…z_max)` band cuts
+the wrong slice of the world (a fixed height band is not level ground on a 17°
+slope); de-rotating first makes the existing crop meaningful on terrain. Everything
+downstream of the crop — clustering, classification, the typed/typeless
+constellation matcher — is unchanged.
+
+This is the always-available cue: on the flat park it carries the entire load. Its
+~13 hand-tuned constants remain a known wart (§1), NOT resolved by this design;
+addressing them is separate future work, out of scope here.
 
 ---
 
@@ -210,7 +225,9 @@ Recommendation: tracker first.
   Scan Context: compass already supplies the yaw its column-shift exists to
   recover, so it buys nothing here — heightmap-gradient dominates it on every axis
   for this setup).
-- **Grid replaces the front-end entirely** (crop/cluster/classify retire).
+- **Grid is terrain-only; it does NOT replace classification.** crop/cluster/
+  classify stays for objects (rasterizing an object discards its shape). Grid and
+  object pipeline are two front-ends sharing the de-rotated cloud.
 - **Prior DTM, not DSM.** Terrain matched as bare earth; objects as catalog.
 - **`two_d_mode` stays `true`.** Roll/pitch consumed in the localizer, not fused.
   Nothing observes z, so relaxing it trades stable-and-wrong for drifting-and-wrong.
@@ -290,13 +307,15 @@ Building the traversability layer itself (costmap plugin, `move_base` config) is
 ## 12. Components (implementation sketch, not built)
 
 - `landmark_loc/derotate.py` — subscribe `/compass/data`, apply inverse roll/pitch
-  to the cloud. Standalone, testable first.
-- `landmark_loc/grid.py` — 2.5D binning (max_z/min_z/count), morphological ground,
-  peak extraction. Reuses `map_tools` conventions.
+  to the cloud. Standalone, testable first. Feeds BOTH front-ends.
+- `landmark_loc/terrain_grid.py` — 2.5D binning (max_z/min_z/count) + morphological
+  ground. TERRAIN only; does not detect objects. Reuses `map_tools` conventions.
+- terrain matcher — gradient FFT-correlation of `ground` vs DTM, odom-gated search.
 - `map_tools/extract_dtm.py` — DONE this session (prior DTM from world file).
-- terrain matcher — gradient FFT-correlation vs DTM, odom-gated search.
-- object peaks → existing `solve.py` constellation matcher (reused).
-- hypothesis tracker — top-K carry across scans, commit on N-scan dominance.
+- object pipeline — `segment.py`/`detector.py`/`solve.py` KEPT as-is, input rewired
+  to the de-rotated cloud. No new object code.
+- hypothesis tracker — top-K carry across scans (both cues), commit on N-scan
+  dominance.
 
 Tests: per-module pytest under `landmark_loc/tests/` and `map_tools/tests/`, small
 synthetic grids with known geometry, following existing test conventions. Sim
