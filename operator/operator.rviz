@@ -72,6 +72,30 @@ Visualization Manager:
       Style: Points
       Topic: /os0_cloud_node/points
       Value: true
+    - Alpha: 1
+      Autocompute Intensity Bounds: true
+      Class: rviz/PointCloud2
+      Color: 255; 255; 255
+      Color Transformer: RGB8
+      Enabled: false
+      Name: DTM terrain
+      Size (Pixels): 3
+      Size (m): 0.25
+      Style: Flat Squares
+      Topic: /dtm_cloud
+      Value: false
+    - Alpha: 1
+      Autocompute Intensity Bounds: true
+      Class: rviz/PointCloud2
+      Color: 255; 255; 255
+      Color Transformer: RGB8
+      Enabled: false
+      Name: DTM water
+      Size (Pixels): 3
+      Size (m): 0.25
+      Style: Flat Squares
+      Topic: /water_cloud
+      Value: false
     - Alpha: 0.5
       Class: rviz/Map
       Color Scheme: costmap
