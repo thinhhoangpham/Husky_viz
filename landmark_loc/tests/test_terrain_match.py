@@ -63,6 +63,23 @@ def test_match_returns_none_on_too_few_valid_cells():
     assert terrain_match.match_terrain(local, 0.5, d, (5.0, 5.0), 3.0) is None
 
 
+def test_match_is_offset_invariant(tmp_path):
+    # Adding a constant to the local grid must NOT change the recovered match.
+    # This is the core "absolute z never assumed" property.
+    npy, yml, z = _synthetic_dtm(tmp_path)
+    d = terrain_match.load_dtm(str(npy), str(yml))
+    local = z[10:30, 10:30].astype(np.float32).copy()
+    cx = 10 * 0.5 + (local.shape[1] * 0.5) / 2.0
+    cy = 10 * 0.5 + (local.shape[0] * 0.5) / 2.0
+    base = terrain_match.match_terrain(local, 0.5, d, (cx, cy), search_radius_m=3.0)
+    shifted = terrain_match.match_terrain(local + 7.3, 0.5, d, (cx, cy), search_radius_m=3.0)
+    assert base is not None and shifted is not None
+    # recovered (x, y) identical; score identical to floating-point tolerance
+    assert abs(base[0] - shifted[0]) < 1e-9
+    assert abs(base[1] - shifted[1]) < 1e-9
+    assert abs(base[2] - shifted[2]) < 1e-9
+
+
 import os
 import pytest
 
