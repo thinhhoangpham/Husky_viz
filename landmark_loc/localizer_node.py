@@ -14,7 +14,7 @@ import statistics
 
 import numpy as np
 
-from landmark_loc import segment, catalog, solve, detector
+from landmark_loc import segment, catalog, solve, detector, derotate
 
 
 def cloud_to_map_frame(pts, prior):
@@ -323,6 +323,8 @@ def main():
         "odom_now": None,      # (ox, oy, oyaw) latest odom-frame pose
         "odom_buf": [],        # [(t, ox, oy, oyaw)] last ~2.0s, for cloud-stamp sync
         "compass_yaw": None,   # latest absolute yaw from /compass/data
+        "compass_roll": None,  # latest absolute roll from /compass/data
+        "compass_pitch": None,  # latest absolute pitch from /compass/data
         "gps_valid": False,    # /navsat/fix status.status >= 0 seen
         "last_pub": rospy.Time(0),
         "fix_history": [],   # last N accepted (x, y) fixes for median smoothing
@@ -352,7 +354,11 @@ def main():
             state["odom_buf"] = buf[i:]
 
     def on_compass(msg):
-        state["compass_yaw"] = _yaw(msg.orientation)
+        q = msg.orientation
+        state["compass_yaw"] = _yaw(q)
+        roll, pitch = derotate.roll_pitch_from_quat(q.x, q.y, q.z, q.w)
+        state["compass_roll"] = roll
+        state["compass_pitch"] = pitch
 
     def on_navsat(msg):
         if msg.status.status >= 0:
@@ -402,6 +408,8 @@ def main():
         pts = cloud_to_array(msg)
         if len(pts) == 0:
             return
+        pts = derotate.derotate_cloud(
+            pts, state["compass_roll"], state["compass_pitch"])
         cropped = segment.crop(pts, p["z_min"], p["z_max"], p["max_range"])
         clusters = segment.cluster(cropped, p["link_dist"], p["min_pts"], p["max_extent"])
         # One classification pass per tick: detect() returns the labels the
@@ -462,7 +470,7 @@ def main():
         # dragged the costmap off the static map. NOTE: the published value is
         # the median of fix_history, so its true epoch is the middle sample's
         # stamp; this is a floor on the remaining lag, not a full correction.
-        od.header.stamp = now
+        od.header.stamp = msg.header.stamp
         od.header.frame_id = "map"
         od.child_frame_id = "base_link"
         od.pose.pose.position.x = sx
