@@ -14,7 +14,7 @@ import statistics
 
 import numpy as np
 
-from landmark_loc import segment, catalog, solve, detector, derotate, terrain_grid, terrain_match
+from landmark_loc import segment, catalog, solve, detector, derotate, terrain_grid, terrain_match, hypothesis_tracker
 
 
 def cloud_to_map_frame(pts, prior):
@@ -327,6 +327,9 @@ def main():
     p["terrain_window_m"] = rospy.get_param("~terrain_window_m", 20.0)
     p["terrain_search_radius"] = rospy.get_param("~terrain_search_radius", 5.0)
     p["terrain_score_gate"] = rospy.get_param("~terrain_score_gate", 0.5)
+    p["tracker_k"] = rospy.get_param("~tracker_k", 5)
+    p["tracker_merge"] = rospy.get_param("~tracker_merge", 2.0)
+    p["tracker_commit"] = rospy.get_param("~tracker_commit", 3)
 
     state = {
         "anchor_map": None,    # (ax, ay, ayaw) immutable-ish map anchor
@@ -342,6 +345,9 @@ def main():
         "abs_fix_mode": "gps",  # dormant until /abs_fix_mode says otherwise
         "last_pub_xy": None,    # (x, y) of last accepted/published fix
         "last_pub_odom": None,  # odom pose captured at last published fix
+        "tracker": hypothesis_tracker.HypothesisTracker(
+            p["tracker_k"], p["tracker_merge"], p["tracker_commit"]),
+        "tracker_last_odom": None,  # odom pose at last tracker predict/update tick
     }
     pub = rospy.Publisher("/odometry/landmark_fix", Odometry, queue_size=5)
     markers_pub = rospy.Publisher("/landmark_observed_markers", MarkerArray, queue_size=1)
@@ -461,14 +467,44 @@ def main():
                 rospy.loginfo_throttle(1.0,
                     "[terrain] fix=(%.2f,%.2f) score=%.2f" % tm)
 
-        if result is None:
+        cands = []
+        if result is not None:
+            cands.append((result[0], result[1]))               # object fix (x, y)
+        if terrain_cand is not None:
+            cands.append((terrain_cand[0], terrain_cand[1]))    # terrain fix (x, y)
+        if not cands:
             _matched = ",".join(lm.name for _o, lm in _pairs)
             rospy.loginfo_throttle(0.5,
                 "[diag] obs=%d assoc=%d prior=(%.1f,%.1f) matched=[%s] %s%s"
                 % (len(obs), len(_pairs), prior[0], prior[1], _matched, "STALE",
                    confidence_summary(obs, p["classifier"])))
             return
-        x, y, yaw, rms, n = result
+        # Route both cues through the hypothesis tracker: predict by odom
+        # displacement since the last tick, update with this tick's
+        # candidates, then only act on a hypothesis that has accrued enough
+        # consistent support. This is what keeps an occasional confident
+        # wrong fix (e.g. near an identical-tree cluster) from ever being
+        # published -- an impostor candidate decays before reaching
+        # commit_support because it is not reinforced tick after tick.
+        tr = state["tracker"]
+        if state["tracker_last_odom"] is not None:
+            tdx = odom_synced[0] - state["tracker_last_odom"][0]
+            tdy = odom_synced[1] - state["tracker_last_odom"][1]
+            tr.predict(tdx, tdy)
+        state["tracker_last_odom"] = odom_synced
+        tr.update(cands)
+        committed = tr.committed()
+        if committed is None:
+            _matched = ",".join(lm.name for _o, lm in _pairs)
+            rospy.loginfo_throttle(0.5,
+                "[diag] obs=%d assoc=%d prior=(%.1f,%.1f) matched=[%s] "
+                "UNCOMMITTED hyps=%d%s"
+                % (len(obs), len(_pairs), prior[0], prior[1], _matched,
+                   len(tr.hypotheses), confidence_summary(obs, p["classifier"])))
+            return
+        x, y = committed.x, committed.y
+        rms = result[3] if result is not None else 0.0
+        n = result[4] if result is not None else committed.support
         # Physical-motion gate: reject a fix that teleports beyond reachable.
         if state["last_pub_odom"] is not None:
             odom_disp = (odom_synced[0] - state["last_pub_odom"][0],
