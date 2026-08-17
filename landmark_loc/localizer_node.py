@@ -14,7 +14,7 @@ import statistics
 
 import numpy as np
 
-from landmark_loc import segment, catalog, solve, detector, derotate
+from landmark_loc import segment, catalog, solve, detector, derotate, terrain_grid, terrain_match
 
 
 def cloud_to_map_frame(pts, prior):
@@ -317,6 +317,16 @@ def main():
     rospy.loginfo("[localizer] matcher mode: %s", p["matcher"])
     rospy.loginfo("[localizer] classifier mode: %s", p["classifier"])
 
+    dtm = None
+    dtm_path = rospy.get_param("~dtm_path", "")
+    if dtm_path:
+        dtm = terrain_match.load_dtm(dtm_path, dtm_path.replace(".npy", ".yaml"))
+        rospy.loginfo("[terrain] loaded DTM %s (%dx%d @ %.2fm)",
+                      dtm_path, dtm.z.shape[1], dtm.z.shape[0], dtm.resolution)
+    p["terrain_window"] = rospy.get_param("~terrain_window", 4)
+    p["terrain_search_radius"] = rospy.get_param("~terrain_search_radius", 5.0)
+    p["terrain_score_gate"] = rospy.get_param("~terrain_score_gate", 0.5)
+
     state = {
         "anchor_map": None,    # (ax, ay, ayaw) immutable-ish map anchor
         "anchor_odom": None,   # (ox0, oy0, oyaw0) odom pose captured with anchor
@@ -428,6 +438,22 @@ def main():
                                    p["max_prior_dist"])
         result = solve.solve_pose(obs, gated, prior, p["constellation_tol"], p["residual_gate"],
                                    p["max_prior_dist"], matcher=p["matcher"])
+
+        terrain_cand = None
+        if dtm is not None:
+            map_pts = cloud_to_map_frame(pts, prior)   # pts already de-rotated
+            g = terrain_grid.bin_min_z(
+                map_pts, dtm.resolution, dtm.origin_x, dtm.origin_y,
+                dtm.z.shape[1], dtm.z.shape[0])
+            ground = terrain_grid.morphological_ground(g, p["terrain_window"])
+            tm = terrain_match.match_terrain(
+                ground, dtm.resolution, dtm, (prior[0], prior[1]),
+                p["terrain_search_radius"])
+            if tm is not None and tm[2] >= p["terrain_score_gate"]:
+                terrain_cand = tm
+                rospy.loginfo_throttle(1.0,
+                    "[terrain] fix=(%.2f,%.2f) score=%.2f" % tm)
+
         if result is None:
             _matched = ",".join(lm.name for _o, lm in _pairs)
             rospy.loginfo_throttle(0.5,
