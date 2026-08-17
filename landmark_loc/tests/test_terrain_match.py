@@ -111,15 +111,21 @@ def test_match_succeeds_when_window_hangs_off_far_edge(tmp_path):
 
 
 def test_match_still_none_when_overlap_below_min(tmp_path):
-    # An off-edge placement whose overlap has fewer than 25 valid cells must
-    # still return None -- the safeguard survives the clip-to-overlap fix.
+    # A placement with a REAL, NONZERO overlap -- a 3x3-cell sliver in the
+    # bottom-right corner of the prior (only 4 valid gradient cells once NaN
+    # edges are excluded) -- must still return None. This exercises the
+    # `m.sum() < 25` branch specifically, distinct from the zero-overlap
+    # early-return guard (lr0>=lr1 / lc0>=lc1) that a fully-off-prior
+    # placement would hit instead.
     npy, yml, z = _synthetic_dtm(tmp_path)
     d = terrain_match.load_dtm(str(npy), str(yml))
     local = z[0:20, 0:20].astype(np.float32).copy()
-    # Push the local grid almost entirely off the prior: only a sliver
-    # overlaps, well under the 25-cell floor. search_radius_m=0 fixes the
-    # single placement so no other candidate offset can rescue the match.
-    prior_xy = (-18.0, -18.0)
+    # r0=c0=37 puts only rows/cols [37:40) of the 40x40 prior under the
+    # 20x20 local window -- a 3x3 overlap. prior_xy is the map-frame center
+    # implied by that offset: (r0 + h/2)*res = (37+10)*0.5 = 23.5.
+    # search_radius_m=0 fixes this single placement so no other candidate
+    # offset can rescue the match.
+    prior_xy = (23.5, 23.5)
     res = terrain_match.match_terrain(local, 0.5, d, prior_xy, search_radius_m=0.0)
     assert res is None
 
