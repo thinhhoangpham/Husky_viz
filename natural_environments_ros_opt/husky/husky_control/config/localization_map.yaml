@@ -37,7 +37,12 @@ base_link_frame: base_link
 map_frame: map
 world_frame: map          # <-- the ONLY substantive difference from the odom EKF
 
-two_d_mode: true
+# two_d_mode OFF here TOO. This is the DUAL-EKF trap: turning it off only in
+# localization.yaml (the odom filter) makes odom->base_link carry z/roll/pitch, but
+# THIS filter owns map->odom and would flatten the composed map->base_link straight
+# back to zero -- which is the frame RViz and every map-frame consumer actually use.
+# Both filters must agree, or the robot renders flat no matter what the odom one says.
+two_d_mode: false
 predict_to_current_time: true
 frequency: 50
 
@@ -69,13 +74,15 @@ imu0_differential: true
 imu0_queue_size: 10
 imu0_remove_gravitational_acceleration: true
 
-# --- Compass: ABSOLUTE world heading (drift-free) ----------------------------
+# --- Compass: ABSOLUTE world attitude (drift-free) ---------------------------
 # /compass/data yaw is the ONLY absolute heading reference. Without it the map
-# EKF heading drifts from wheel scrub + the 90deg-mis-mounted imu/data. Fuse
-# YAW ONLY, absolute (differential: false), so heading is anchored to truth.
+# EKF heading drifts from wheel scrub. Its orientation is gravity-referenced
+# (measured live: gravity 9.78 on Z), so it also supplies absolute ROLL and PITCH
+# -- now fused as well, so the robot tilts with the terrain instead of being
+# forced level. Absolute (differential: false).
 imu1: compass/data
 imu1_config: [false, false, false,
-              false, false, true,
+              true,  true,  true,
               false, false, false,
               false, false, false,
               false, false, false]
@@ -102,3 +109,11 @@ odom1_config: [true,  true,  false,
                false, false, false]
 odom1_differential: false
 odom1_queue_size: 10
+
+# --- NO absolute-z input, deliberately ----------------------------------------
+# Same reasoning as the odom filter (localization.yaml): fusing the lidar
+# ground-height fit gave the robot its true ~3.86 m elevation but pushed the
+# ground outside the costmap obstacle layer's fixed 0.15-1.2 m height band,
+# filling the local costmap with false obstacles. z therefore stays unobserved
+# and near 0, matching the 2D nav stack and the --z-align'd RViz terrain layer.
+# Roll and pitch ARE fused (imu1, compass) so the robot still tilts with terrain.

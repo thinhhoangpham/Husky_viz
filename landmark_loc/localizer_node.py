@@ -14,7 +14,7 @@ import statistics
 
 import numpy as np
 
-from landmark_loc import segment, catalog, solve, detector, derotate, terrain_grid, terrain_match, hypothesis_tracker
+from landmark_loc import segment, catalog, solve, detector, derotate, terrain_grid, terrain_match, hypothesis_tracker, waypoint_anchor
 
 
 def cloud_to_map_frame(pts, prior):
@@ -297,6 +297,14 @@ def main():
         base_var=rospy.get_param("~base_var", 0.5),
         rate=rospy.get_param("~rate", 2.0),
         anchor_min_dist=rospy.get_param("~anchor_min_dist", 5.0),
+        # Re-anchoring: move the dead-reckoning baseline onto a confirmed
+        # classifier sighting, so odom drift cannot accumulate without bound.
+        # ~reanchor=false restores the old pinned-at-spawn behaviour.
+        reanchor=rospy.get_param("~reanchor", True),
+        # How close a confirmed fix must be to a waypoint to count as ARRIVAL.
+        # Sized against observed move_base goal behaviour on the bag route,
+        # where it settles 0.3-2.4 m from the commanded point.
+        arrival_radius=rospy.get_param("~arrival_radius", 3.0),
         smooth_window=rospy.get_param("~smooth_window", 5),
         max_jump=rospy.get_param("~max_jump", 3.0),
         matcher=rospy.get_param("~matcher", "typed"),
@@ -312,6 +320,14 @@ def main():
                       p["classifier"], detector.DEFAULT_DETECTOR)
         p["classifier"] = detector.DEFAULT_DETECTOR
     det = detector.get_detector(p["classifier"])
+    # Route waypoints for re-anchoring. Flat list [x1,y1,x2,y2,...] so it is
+    # easy to pass on the command line; defaults to the bag route.
+    _wp_flat = rospy.get_param("~waypoints",
+                               [38.26, 1.25, 27.11, 1.10, 1.16, -2.40,
+                                -15.95, -3.33, -30.77, -3.45])
+    _waypoints = [(float(_wp_flat[i]), float(_wp_flat[i + 1]))
+                  for i in range(0, len(_wp_flat) - 1, 2)]
+
     landmarks = catalog.load(objects)
     rospy.loginfo("landmark_localizer: %d catalog landmarks", len(landmarks))
     rospy.loginfo("[localizer] matcher mode: %s", p["matcher"])
@@ -345,6 +361,12 @@ def main():
         "abs_fix_mode": "gps",  # dormant until /abs_fix_mode says otherwise
         "last_pub_xy": None,    # (x, y) of last accepted/published fix
         "last_pub_odom": None,  # odom pose captured at last published fix
+        # Waypoint re-anchoring: the route the robot is driving, and which of
+        # those waypoints have already re-anchored (each fires at most once).
+        # Defaults to the 5 bag-route waypoints (scripts/gps_goal_sender.py
+        # WORLD_WAYPOINTS); override with ~waypoints as a flat [x1,y1,x2,y2,...].
+        "waypoints": _waypoints,
+        "reached_waypoints": set(),
         "tracker": hypothesis_tracker.HypothesisTracker(
             p["tracker_k"], p["tracker_merge"], p["tracker_commit"]),
         "tracker_last_odom": None,  # odom pose at last tracker predict/update tick
@@ -517,9 +539,56 @@ def main():
                 % (len(obs), len(_pairs), prior[0], prior[1], x, y,
                    confidence_summary(obs, p["classifier"])))
             return
-        # Anchor stays FIXED at the initial spawn pose (no re-anchoring). The
-        # prior is always initial-anchor + odom/compass motion; landmarks
-        # correct the published fix but never move the dead-reckoning baseline.
+        # ---- RE-ANCHOR on a confirmed classifier sighting -------------------
+        # The anchor is the origin the dead-reckoned prior is composed from
+        # (compose_prior: anchor + odom displacement since it was captured).
+        # Leaving it pinned at spawn meant the prior's error grew without bound
+        # as odom drifted -- landmarks corrected the PUBLISHED fix but never the
+        # baseline it was measured against, so the prior kept getting worse and
+        # the catalog gate (gated by that prior) eventually looked in the wrong
+        # place. Moving the anchor to a confirmed fix resets that accumulated
+        # drift to zero.
+        #
+        # This fix has already passed: constellation solve -> tracker commit
+        # (N consecutive consistent scans) -> physical-motion jump gate. That is
+        # the "sighting" waypoint_anchor.choose_anchor treats as authoritative,
+        # and it is strictly stronger evidence than an asserted waypoint.
+        #
+        # We re-anchor at most every ~anchor_min_interval seconds so a burst of
+        # commits does not thrash the baseline, and we record the odom pose AT
+        # THE SAME INSTANT (odom_synced, the cloud-time-interpolated pose) so
+        # anchor_map and anchor_odom refer to one moment -- mixing epochs here
+        # would inject exactly the offset this is meant to remove.
+        # Re-anchor ONLY on WAYPOINT ARRIVAL -- not on every sighting. Between
+        # waypoints the robot dead-reckons from the last anchor; arriving at a
+        # waypoint is the event that resets the accumulated drift.
+        #
+        # Arrival is confirmed GEOMETRICALLY, from this committed fix: the fix
+        # itself is a landmark-derived position (constellation solve -> tracker
+        # commit -> jump gate), so "the confirmed fix is within arrival_radius of
+        # the waypoint" IS a landmark-confirmed arrival. It never consults
+        # move_base status or the fused pose, both of which an attacker controls.
+        #
+        # Each waypoint re-anchors AT MOST ONCE (tracked in reached_waypoints),
+        # so sitting at a waypoint cannot re-trigger it.
+        if p["reanchor"] and state["waypoints"]:
+            for _i, (_wx, _wy) in enumerate(state["waypoints"]):
+                if _i in state["reached_waypoints"]:
+                    continue
+                if math.hypot(x - _wx, y - _wy) > p["arrival_radius"]:
+                    continue
+                _new, _src = waypoint_anchor.choose_anchor(
+                    state["anchor_map"], None, (x, y, state["compass_yaw"]))
+                if _src == "waypoint":
+                    _drift = math.hypot(_new[0] - prior[0], _new[1] - prior[1])
+                    state["anchor_map"] = _new
+                    state["anchor_odom"] = odom_synced
+                    state["reached_waypoints"].add(_i)
+                    rospy.loginfo(
+                        "[reanchor] WAYPOINT %d (%.2f,%.2f) reached -> anchor "
+                        "(%.2f,%.2f); prior had drifted %.2f m (reset)",
+                        _i + 1, _wx, _wy, _new[0], _new[1], _drift)
+                break
         state["fix_history"].append((x, y))
         state["fix_history"] = state["fix_history"][-p["smooth_window"]:]
         sx = statistics.median(h[0] for h in state["fix_history"])

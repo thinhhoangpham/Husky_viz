@@ -2,7 +2,13 @@ odom_frame: odom
 base_link_frame: base_link
 world_frame: odom
 
-two_d_mode: true
+# two_d_mode OFF: the robot drives on real terrain (the lake has 2.4 m of relief and
+# measured local slopes up to 24 deg), so forcing z/roll/pitch to zero made the fused
+# pose describe a robot that does not exist -- and every consumer of odom->base_link
+# (the whole base_link -> os0_sensor -> os0_lidar chain, hence RViz) inherited that
+# flat frame. With it off, z comes from odom1 (lidar ground height) and roll/pitch
+# come from imu1 (compass); see those blocks below.
+two_d_mode: false
 
 predict_to_current_time: true
 
@@ -27,11 +33,30 @@ imu0_differential: true
 imu0_queue_size: 10
 imu0_remove_gravitational_acceleration: true
 
+# compass/data is a full IMU whose orientation is gravity-referenced (measured live:
+# gravity 9.78 on Z, roll -3.78 deg, pitch 0.53 deg), so it supplies ABSOLUTE roll and
+# pitch as well as the absolute yaw it already provided. Fusing roll+pitch is what lets
+# base_link tilt with the terrain once two_d_mode is off. Absolute (differential: false).
 imu1: compass/data
 imu1_config: [false, false, false,
-              false, false, true,
+              true,  true,  true,
               false, false, false,
               false, false, false,
               false, false, false]
 imu1_differential: false
 imu1_queue_size: 10
+
+# NO absolute-z input, deliberately. We tried fusing the lidar ground-height fit
+# (scripts/publish_ground_height_odom.py) so base_link carried true elevation. It
+# worked -- and BROKE obstacle avoidance: the costmap's obstacle layer classifies
+# a point as an obstacle by its height in a fixed 0.15-1.2 m band
+# (config/costmap_common_gps.yaml), calibrated for a robot at z~0. Lifting the
+# robot to its true ~3.86 m moved the ground out of that band and the local
+# costmap filled with false obstacles (8.3% lethal cells around the robot).
+#
+# So z stays UNOBSERVED and settles near 0. That is fine here: the whole nav stack
+# is 2D by design, nothing consumes absolute altitude, and the RViz terrain layer
+# is drawn with --z-align min so it shares the same near-zero datum as the robot
+# and the costmaps. Only ROLL and PITCH (from the compass, see imu1) are fused,
+# which is what makes the robot sit at the terrain's ANGLE -- the part that was
+# actually wanted -- at no cost to the costmap.

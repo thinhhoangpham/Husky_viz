@@ -20,6 +20,15 @@ services:
       # OBJECTS_PATH=/repo/maps/lake_objects.yaml in the environment (or export
       # it before `docker compose up`) to drive the lake world by name instead.
       OBJECTS_PATH: "${OBJECTS_PATH:-/repo/maps/park_objects.yaml}"
+      # Which world's DTM the entrypoint publishes on /dtm_cloud + /water_cloud.
+      # MUST be declared here or a shell-level DTM_WORLD never reaches the
+      # container and it silently falls back to the default -- which is how a
+      # park run ended up displaying the lake's terrain. Set DTM_WORLD=park (or
+      # lake) before `docker compose up`. Empty disables the DTM layers.
+      DTM_WORLD: "${DTM_WORLD:-lake}"
+      # Optional explicit z offset for those layers; the entrypoint computes one
+      # from the world's spawn point when this is unset.
+      DTM_Z_OFFSET: "${DTM_Z_OFFSET:-}"
     volumes:
       # Repo mounted rw so operate.py can write operator_run.csv, and so its
       # `from send_mapless_goal import ...` resolves from /repo.
