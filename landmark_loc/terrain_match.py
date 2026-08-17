@@ -37,18 +37,28 @@ def gradient(z):
 
 def _score_at(lgx, lgy, pgx, pgy, r0, c0):
     """Normalized gradient-match score for placing the local grid's (0,0) at
-    prior cell (r0,c0). Correlation over cells finite in BOTH; None if <25 pairs.
+    prior cell (r0,c0). The window may hang off any edge of the prior: score
+    over the CLIPPED OVERLAP of the window and the prior, not the full window.
+    Correlation over cells finite in BOTH, within that overlap; None if <25
+    pairs or if the window doesn't overlap the prior at all.
     Score = 1 / (1 + mean squared gradient difference), in (0,1]."""
     h, w = lgx.shape
     ph, pw = pgx.shape
-    if r0 < 0 or c0 < 0 or r0 + h > ph or c0 + w > pw:
+    # overlap of window [r0..r0+h, c0..c0+w] with prior [0..ph, 0..pw]
+    lr0, lr1 = max(0, -r0), min(h, ph - r0)
+    lc0, lc1 = max(0, -c0), min(w, pw - c0)
+    if lr0 >= lr1 or lc0 >= lc1:
         return None
-    px = pgx[r0:r0 + h, c0:c0 + w]
-    py = pgy[r0:r0 + h, c0:c0 + w]
-    m = np.isfinite(lgx) & np.isfinite(px) & np.isfinite(lgy) & np.isfinite(py)
+    pr0, pr1 = max(0, r0), min(ph, r0 + h)
+    pc0, pc1 = max(0, c0), min(pw, c0 + w)
+    lx = lgx[lr0:lr1, lc0:lc1]
+    ly = lgy[lr0:lr1, lc0:lc1]
+    px = pgx[pr0:pr1, pc0:pc1]
+    py = pgy[pr0:pr1, pc0:pc1]
+    m = np.isfinite(lx) & np.isfinite(px) & np.isfinite(ly) & np.isfinite(py)
     if m.sum() < 25:
         return None
-    d = (lgx[m] - px[m]) ** 2 + (lgy[m] - py[m]) ** 2
+    d = (lx[m] - px[m]) ** 2 + (ly[m] - py[m]) ** 2
     return 1.0 / (1.0 + float(d.mean()))
 
 

@@ -324,6 +324,7 @@ def main():
         rospy.loginfo("[terrain] loaded DTM %s (%dx%d @ %.2fm)",
                       dtm_path, dtm.z.shape[1], dtm.z.shape[0], dtm.resolution)
     p["terrain_window"] = rospy.get_param("~terrain_window", 4)
+    p["terrain_window_m"] = rospy.get_param("~terrain_window_m", 20.0)
     p["terrain_search_radius"] = rospy.get_param("~terrain_search_radius", 5.0)
     p["terrain_score_gate"] = rospy.get_param("~terrain_score_gate", 0.5)
 
@@ -442,9 +443,15 @@ def main():
         terrain_cand = None
         if dtm is not None:
             map_pts = cloud_to_map_frame(pts, prior)   # pts already de-rotated
+            # Windowed local grid centered on the prior, NOT the full DTM --
+            # a full-DTM-sized local grid has no room to slide (offset (0,0)
+            # only). Half-width in metres, converted to cells.
+            half = int(round(p["terrain_window_m"] / dtm.resolution))
+            win_ox = prior[0] - half * dtm.resolution
+            win_oy = prior[1] - half * dtm.resolution
             g = terrain_grid.bin_min_z(
-                map_pts, dtm.resolution, dtm.origin_x, dtm.origin_y,
-                dtm.z.shape[1], dtm.z.shape[0])
+                map_pts, dtm.resolution, win_ox, win_oy,
+                2 * half, 2 * half)
             ground = terrain_grid.morphological_ground(g, p["terrain_window"])
             tm = terrain_match.match_terrain(
                 ground, dtm.resolution, dtm, (prior[0], prior[1]),

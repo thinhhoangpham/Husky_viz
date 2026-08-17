@@ -80,6 +80,50 @@ def test_match_is_offset_invariant(tmp_path):
     assert abs(base[2] - shifted[2]) < 1e-9
 
 
+def test_match_succeeds_when_window_hangs_off_left_edge(tmp_path):
+    # Local patch placed so its window extends off the left/top edge of the
+    # prior (negative r0/c0 in _score_at). Before the fix, _score_at rejected
+    # any out-of-bounds window outright and match_terrain always returned None.
+    npy, yml, z = _synthetic_dtm(tmp_path)
+    d = terrain_match.load_dtm(str(npy), str(yml))
+    local = z[0:20, 0:20].astype(np.float32).copy()
+    # true center of this patch is at map (5, 5); request a prior_xy far
+    # enough negative that the search window pokes off the left/top edge.
+    prior_xy = (-3.0, -3.0)
+    res = terrain_match.match_terrain(local, 0.5, d, prior_xy, search_radius_m=3.0)
+    assert res is not None
+    x, y, score = res
+    assert score > 0.0
+
+
+def test_match_succeeds_when_window_hangs_off_far_edge(tmp_path):
+    # Same idea but off the right/bottom edge (r0+h > ph / c0+w > pw).
+    npy, yml, z = _synthetic_dtm(tmp_path)
+    d = terrain_match.load_dtm(str(npy), str(yml))
+    local = z[20:40, 20:40].astype(np.float32).copy()
+    # true center of this patch is at map (15, 15) in cell units -> push the
+    # prior guess further out so the window overruns the far edge.
+    prior_xy = (24.0, 24.0)
+    res = terrain_match.match_terrain(local, 0.5, d, prior_xy, search_radius_m=3.0)
+    assert res is not None
+    x, y, score = res
+    assert score > 0.0
+
+
+def test_match_still_none_when_overlap_below_min(tmp_path):
+    # An off-edge placement whose overlap has fewer than 25 valid cells must
+    # still return None -- the safeguard survives the clip-to-overlap fix.
+    npy, yml, z = _synthetic_dtm(tmp_path)
+    d = terrain_match.load_dtm(str(npy), str(yml))
+    local = z[0:20, 0:20].astype(np.float32).copy()
+    # Push the local grid almost entirely off the prior: only a sliver
+    # overlaps, well under the 25-cell floor. search_radius_m=0 fixes the
+    # single placement so no other candidate offset can rescue the match.
+    prior_xy = (-18.0, -18.0)
+    res = terrain_match.match_terrain(local, 0.5, d, prior_xy, search_radius_m=0.0)
+    assert res is None
+
+
 import os
 import pytest
 
