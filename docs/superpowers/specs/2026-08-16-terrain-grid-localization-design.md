@@ -258,8 +258,18 @@ all of which localization wants anyway EXCEPT the last:
 Item 5 is the one genuine cost localization would not otherwise pay (a rolling grid
 needs bounded memory + drift-aware placement). DECISION (open, see §10).
 
-Building the traversability layer itself (costmap plugin, `move_base` config) is
-**out of scope** for this design.
+**No map regeneration is involved — this design touches no existing map artifact.**
+Localization produces a DTM (`*_dtm.npy`, height field) and reuses the catalog
+(`*_objects.yaml`); the occupancy map (`*_map.pgm`) that backs the global costmap's
+StaticLayer is untouched, and the pose fix reaches the map-EKF through the same
+`odometry/abs_fix` interface as today. Traversability, when built, is likewise NOT a
+map regeneration: it is a **new additive costmap layer** — a slope layer derived
+from the DTM (slope-per-cell → cost), slotted into the plugin list alongside the
+existing `static → obstacles → inflation` (`config/costmap_global_gps_map.yaml`),
+exactly as the lidar obstacle layer is additive today. The `.pgm` stays the obstacle
+map; the slope layer adds terrain cost on top. Note the resolution gap this must
+bridge: DTM is 0.25 m, that costmap is 0.15 m — hence grid constraint 2 above.
+Building this layer (costmap plugin + `move_base` config) is **out of scope** here.
 
 ---
 
@@ -273,8 +283,10 @@ Building the traversability layer itself (costmap plugin, `move_base` config) is
 3. **De-rotation as a standalone first step?** It is independently useful (fixes
    the RViz tilt, enables terrain) and cheaply verifiable. Recommend building and
    testing it before the rest.
-4. **Build order:** de-rotate → grid front-end → object cue on grid (park-testable)
-   → terrain cue (lake-testable) → hypothesis tracker. Confirm.
+4. **Build order:** de-rotate (rewire object pipeline to the de-rotated cloud,
+   park-testable) → terrain grid + terrain matcher (lake-testable) → hypothesis
+   tracker over both cues. Confirm. Note: the object cue is the EXISTING pipeline on
+   de-rotated input, not new grid-based object detection.
 
 ---
 
