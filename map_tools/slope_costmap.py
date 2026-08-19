@@ -178,6 +178,14 @@ def write_yaml(path, image_name, grid, meta):
         fh.write("negate: 0\n")
         fh.write("occupied_thresh: 0.65\n")
         fh.write("free_thresh: 0.196\n")
+        # mode: scale is REQUIRED and is the whole point of the graded band.
+        # map_server's DEFAULT mode is `trinary`, which collapses every pixel to
+        # one of three values: >occupied_thresh -> 100, <free_thresh -> 0, and
+        # EVERYTHING IN BETWEEN -> -1 (unknown). That destroys the 10-18 deg
+        # ramp before costmap_2d ever sees it -- measured: a PGM holding 102
+        # distinct pixel values published as just {-1, 0, 100}, with the graded
+        # band misreported as unknown. `scale` keeps the full 0..100 range.
+        fh.write("mode: scale\n")
 
 
 def read_dtm_yaml(path):
