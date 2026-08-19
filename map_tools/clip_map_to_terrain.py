@@ -1,0 +1,233 @@
+"""Clip the object occupancy map to the terrain (DTM) footprint.
+
+The object map (maps/<world>_map.pgm) is sized from object positions plus a
+5 m margin pad (see extract_park_map.py), independent of the terrain mesh's
+own extent. Where the object map falls SHORT of the terrain, the slope
+costmap layer (map_tools/slope_costmap.py) -- which sizes itself off the
+object map -- silently discards real terrain slope data outside that
+boundary.
+
+This tool crops the object map's PGM to the DTM's world-coordinate
+footprint, snapping the crop to the object map's OWN cell grid so no cell is
+resampled or shifted -- a pure integer crop, never interpolation.
+
+Pure NumPy + stdlib -- NO ROS imports. Runs offline, unit-testable without a
+roscore.
+"""
+import argparse
+import os
+import sys
+
+import numpy as np
+
+from map_tools.slope_costmap import read_dtm_yaml, read_pgm_dimensions
+
+
+def read_map_yaml(path):
+    """Parse the object map's map_server yaml: (origin_x, origin_y, resolution)."""
+    meta = read_dtm_yaml(path)
+    origin = meta["origin"]
+    if isinstance(origin, str):
+        parts = origin.strip("[]").split(",")
+        ox, oy = float(parts[0]), float(parts[1])
+    else:
+        raise ValueError("could not parse origin from %s" % path)
+    return ox, oy, float(meta["resolution"])
+
+
+def read_pgm(path):
+    """Read a binary P5 PGM into a numpy array, row 0 = LOWEST y (flips the
+    file's row 0 = HIGHEST y convention back to the repo's internal one)."""
+    with open(path, "rb") as fh:
+        tokens = []
+        while len(tokens) < 4:
+            chunk = fh.read(1)
+            if not chunk:
+                raise IOError("truncated PGM header in %s" % path)
+            if chunk in b" \t\r\n":
+                continue
+            if chunk == b"#":
+                fh.readline()
+                continue
+            token = chunk
+            while True:
+                c = fh.read(1)
+                if not c or c in b" \t\r\n":
+                    break
+                token += c
+            tokens.append(token)
+        magic, width, height, _maxval = tokens
+        if magic != b"P5":
+            raise ValueError("%s is not a binary P5 PGM (magic=%r)" % (path, magic))
+        width, height = int(width), int(height)
+        body = fh.read(width * height)
+    pixels = np.frombuffer(body, dtype=np.uint8).reshape(height, width)
+    # File row 0 = highest y -> flip so row 0 = lowest y, matching the repo's
+    # internal convention (occupancy_grid.py, slope_costmap.py).
+    return pixels[::-1, :].copy()
+
+
+def write_pgm(path, pixels):
+    """Binary P5 PGM. `pixels` row 0 = LOWEST y; flip on write so the file's
+    row 0 = HIGHEST y, matching map_server's bottom-left origin convention."""
+    pixels = np.asarray(pixels, dtype=np.uint8)
+    height, width = pixels.shape
+    with open(path, "wb") as fh:
+        fh.write(b"P5\n%d %d\n255\n" % (width, height))
+        fh.write(pixels[::-1, :].tobytes())
+
+
+def write_yaml(path, image_name, resolution, origin_x, origin_y):
+    """Match map_tools/occupancy_grid.py's write_yaml field order/format."""
+    with open(path, "w") as fh:
+        fh.write("image: %s\n" % image_name)
+        fh.write("resolution: %.6f\n" % resolution)
+        fh.write("origin: [%.6f, %.6f, 0.0]\n" % (origin_x, origin_y))
+        fh.write("negate: 0\n")
+        fh.write("occupied_thresh: 0.65\n")
+        fh.write("free_thresh: 0.196\n")
+
+
+class ClipResult(object):
+    def __init__(self, orig_width, orig_height, clip_width, clip_height,
+                 clip_origin_x, clip_origin_y, col0, row0,
+                 discarded_count, orig_occupied_count, unchanged):
+        self.orig_width = orig_width
+        self.orig_height = orig_height
+        self.clip_width = clip_width
+        self.clip_height = clip_height
+        self.clip_origin_x = clip_origin_x
+        self.clip_origin_y = clip_origin_y
+        self.col0 = col0
+        self.row0 = row0
+        self.discarded_count = discarded_count
+        self.orig_occupied_count = orig_occupied_count
+        self.unchanged = unchanged
+
+    @property
+    def discarded_pct(self):
+        if self.orig_occupied_count == 0:
+            return 0.0
+        return 100.0 * self.discarded_count / self.orig_occupied_count
+
+
+def compute_clip(pixels, map_ox, map_oy, map_res, dtm_ox, dtm_oy, dtm_res,
+                  dtm_width, dtm_height):
+    """Compute the crop window and stats. Returns (clipped_pixels, ClipResult).
+
+    `pixels` is row 0 = LOWEST y, matching the internal (non-file) convention.
+    """
+    height, width = pixels.shape
+    occupied = pixels == 0
+    orig_occupied_count = int(occupied.sum())
+
+    # DTM world-coordinate footprint.
+    dtm_max_x = dtm_ox + dtm_width * dtm_res
+    dtm_max_y = dtm_oy + dtm_height * dtm_res
+
+    # Sub-rectangle of the object map that overlaps the DTM footprint,
+    # snapped OUTWARD to whole object-map cells so the crop is a pure
+    # crop -- never resampled/shifted, and never accidentally excludes a
+    # partially-covered edge cell.
+    col0 = max(0, int(math_floor((dtm_ox - map_ox) / map_res)))
+    row0 = max(0, int(math_floor((dtm_oy - map_oy) / map_res)))
+    col1 = min(width, int(math_ceil((dtm_max_x - map_ox) / map_res)))
+    row1 = min(height, int(math_ceil((dtm_max_y - map_oy) / map_res)))
+
+    clip_width = max(0, col1 - col0)
+    clip_height = max(0, row1 - row0)
+
+    unchanged = (col0 == 0 and row0 == 0 and clip_width == width
+                 and clip_height == height)
+
+    if unchanged:
+        clipped = pixels
+        clip_ox, clip_oy = map_ox, map_oy
+    else:
+        clipped = pixels[row0:row1, col0:col1]
+        clip_ox = map_ox + col0 * map_res
+        clip_oy = map_oy + row0 * map_res
+
+    clipped_occupied_count = int((clipped == 0).sum())
+    discarded_count = orig_occupied_count - clipped_occupied_count
+
+    result = ClipResult(
+        orig_width=width, orig_height=height,
+        clip_width=clipped.shape[1], clip_height=clipped.shape[0],
+        clip_origin_x=clip_ox, clip_origin_y=clip_oy,
+        col0=col0, row0=row0,
+        discarded_count=discarded_count,
+        orig_occupied_count=orig_occupied_count,
+        unchanged=unchanged,
+    )
+    return clipped, result
+
+
+def math_floor(x):
+    import math
+    return math.floor(x + 1e-9)  # tiny epsilon guards against fp round-down
+
+
+def math_ceil(x):
+    import math
+    return math.ceil(x - 1e-9)  # tiny epsilon guards against fp round-up
+
+
+def build(world, maps_dir="maps", out_suffix="_clipped", dry_run=False):
+    map_yaml = os.path.join(maps_dir, "%s_map.yaml" % world)
+    map_pgm = os.path.join(maps_dir, "%s_map.pgm" % world)
+    dtm_yaml = os.path.join(maps_dir, "%s_dtm.yaml" % world)
+
+    map_ox, map_oy, map_res = read_map_yaml(map_yaml)
+    dtm_meta = read_dtm_yaml(dtm_yaml)
+
+    pixels = read_pgm(map_pgm)
+
+    clipped, result = compute_clip(
+        pixels, map_ox, map_oy, map_res,
+        dtm_meta["origin_x"], dtm_meta["origin_y"], dtm_meta["resolution"],
+        dtm_meta["width"], dtm_meta["height"])
+
+    out_base = os.path.join(maps_dir, "%s_map%s" % (world, out_suffix))
+    if not dry_run:
+        write_pgm(out_base + ".pgm", clipped)
+        write_yaml(out_base + ".yaml", "%s_map%s.pgm" % (world, out_suffix),
+                   map_res, result.clip_origin_x, result.clip_origin_y)
+
+    return result
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        description="Clip a world's object occupancy map to its terrain "
+                    "(DTM) footprint.")
+    ap.add_argument("world", help="world name, e.g. lake or park")
+    ap.add_argument("--maps-dir", default="maps")
+    ap.add_argument("--out-suffix", default="_clipped")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="report the numbers without writing files")
+    args = ap.parse_args(argv)
+
+    try:
+        result = build(args.world, args.maps_dir, args.out_suffix,
+                       args.dry_run)
+    except (ValueError, IOError, OSError) as exc:
+        sys.stderr.write("error: %s\n" % exc)
+        return 1
+
+    print("clip map to terrain: %s%s" % (args.world, " (dry run)" if args.dry_run else ""))
+    print("  original dims : %dx%d" % (result.orig_width, result.orig_height))
+    print("  clipped dims  : %dx%d" % (result.clip_width, result.clip_height))
+    if result.unchanged:
+        print("  no-op: object map already within the terrain footprint")
+    print("  occupied cells discarded : %d / %d (%.2f%%)"
+          % (result.discarded_count, result.orig_occupied_count,
+             result.discarded_pct))
+    if not args.dry_run:
+        print("  -> %s_map%s.{pgm,yaml}"
+              % (os.path.join(args.maps_dir, args.world), args.out_suffix))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
