@@ -9,7 +9,13 @@ controller_frequency: 5.0
 recovery_behaviour_enabled: true
 
 NavfnROS:
-  allow_unknown: true # allow navfn to plan through unknown space (global costmap tracks unknown)
+  # allow_unknown FALSE: unknown means "no terrain data here" (open water, or
+  # beyond the terrain mesh), and the robot must not be routed across it. With
+  # this true the planner drove the Husky off the edge of the lake world -- it
+  # fell, GPS altitude -36401 m. See maps/<world>_map_terrain.pgm, which marks
+  # off-mesh cells unknown (pixel 205) precisely so this flag has something to
+  # refuse.
+  allow_unknown: false
   default_tolerance: 0.1 # tolerance on the goal point for the planner
 
 TrajectoryPlannerROS:

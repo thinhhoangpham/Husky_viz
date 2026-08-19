@@ -11,7 +11,11 @@ static_map: true
 rolling_window: false
 # track_unknown_space off: with a full static map the world is known free/occupied,
 # not "unknown". (Contrast the mapless config, which tracks unknown space.)
-track_unknown_space: false
+# track_unknown_space TRUE: the static map is now <world>_map_terrain.pgm, which
+# marks every off-terrain cell unknown. That distinction MUST survive into the
+# costmap -- with it false, unknown collapsed to free and the planner routed the
+# robot across open water and off the mesh edge, where it fell.
+track_unknown_space: true
 
 resolution: 0.15
 
@@ -50,6 +54,12 @@ slope:
   subscribe_to_updates: false
   trinary_costmap: false
   lethal_cost_threshold: 100
-  track_unknown_space: false
+  # track_unknown_space TRUE here too. With it false, the layer's -1 (no terrain
+  # data) fell through interpretValue's scale branch and was scaled into a real
+  # cost -- measured as a uniform floor of 26 across the WHOLE costmap, wiping
+  # out free space entirely. True makes those cells NO_INFORMATION, which
+  # updateWithMax then leaves alone, so the terrain-masked static layer's own
+  # unknown is what governs.
+  track_unknown_space: true
   unknown_cost_value: -1
   use_maximum: true
