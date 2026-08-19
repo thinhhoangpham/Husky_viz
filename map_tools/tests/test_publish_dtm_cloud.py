@@ -280,6 +280,82 @@ def test_map_server_style_sibling_yaml_error_mentions_grid_meta(tmp_path):
         pdc.load_grid_meta(str(npy))
 
 
+def test_color_from_uses_height_geometry_not_colour_raster_values():
+    """The bug this fixes: without --color-from, degrees were plotted as
+    metres. Heights and slopes here are built with clearly disjoint ranges so
+    a regression (z landing in the slope range) is unmistakable."""
+    heights = np.array([[3.5, 4.0], [5.0, 5.9]], dtype=np.float32)
+    slopes = np.array([[0.0, 8.0], [15.0, 24.0]], dtype=np.float32)
+    pts = pdc.build_cloud_points(heights, 0.5, 0.0, 0.0, colormap="slope",
+                                 color_z=slopes)
+    assert len(pts) == 4
+    assert sorted(pts[:, 2].tolist()) == pytest.approx(
+        sorted(heights.flatten().tolist()))
+    # None of the published z values may be slope degrees.
+    for zval in pts[:, 2]:
+        assert not any(zval == pytest.approx(s) for s in slopes.flatten())
+
+
+def test_color_from_offset_applies_to_height_not_colour_raster():
+    heights = np.array([[3.5, 4.0]], dtype=np.float32)
+    slopes = np.array([[0.0, 24.0]], dtype=np.float32)
+    pts = pdc.build_cloud_points(heights, 0.5, 0.0, 0.0, colormap="slope",
+                                 color_z=slopes, z_offset=10.0)
+    assert sorted(pts[:, 2].tolist()) == pytest.approx([13.5, 14.0])
+
+
+def test_color_from_colours_vary_with_colour_raster_not_height():
+    """Two cells at the SAME height but different slope must get different
+    colours -- proves colour is keyed to color_z, not z."""
+    heights = np.array([[5.0, 5.0]], dtype=np.float32)
+    slopes = np.array([[2.0, 20.0]], dtype=np.float32)
+    pts = pdc.build_cloud_points(heights, 0.5, 0.0, 0.0, colormap="slope",
+                                 color_z=slopes)
+    assert pts[0, 3] != pts[1, 3]
+
+
+def test_color_from_mismatched_shape_names_both_paths_and_shapes(tmp_path):
+    dtm_path = tmp_path / "world_dtm.npy"
+    slope_path = tmp_path / "world_slope.npy"
+    np.save(str(dtm_path), np.zeros((2, 3), dtype=np.float32))
+    np.save(str(slope_path), np.zeros((3, 2), dtype=np.float32))
+    (tmp_path / "world_dtm.yaml").write_text(
+        "resolution: 0.5\norigin_x: 0.0\norigin_y: 0.0\n")
+    with pytest.raises(ValueError) as exc:
+        pdc.main(["--dtm", str(dtm_path), "--color-from", str(slope_path),
+                 "--topic", "/t", "--rate", "1"])
+    msg = str(exc.value)
+    assert str(dtm_path) in msg and str(slope_path) in msg
+    assert "(2, 3)" in msg and "(3, 2)" in msg
+
+
+def test_color_from_nan_in_colour_raster_drops_cell_with_valid_height():
+    heights = np.array([[5.0, 6.0]], dtype=np.float32)
+    slopes = np.array([[3.0, np.nan]], dtype=np.float32)
+    pts = pdc.build_cloud_points(heights, 0.5, 0.0, 0.0, colormap="slope",
+                                 color_z=slopes)
+    assert len(pts) == 1
+    assert pts[0, 2] == pytest.approx(5.0)
+
+
+def test_color_from_nan_in_height_raster_drops_cell_with_valid_colour():
+    heights = np.array([[np.nan, 6.0]], dtype=np.float32)
+    slopes = np.array([[3.0, 12.0]], dtype=np.float32)
+    pts = pdc.build_cloud_points(heights, 0.5, 0.0, 0.0, colormap="slope",
+                                 color_z=slopes)
+    assert len(pts) == 1
+    assert pts[0, 2] == pytest.approx(6.0)
+
+
+def test_no_color_from_behaviour_is_byte_for_byte_unchanged():
+    """Regression guard: omitting --color-from must reproduce the exact same
+    points as the pre-existing default-call test."""
+    z = _grid()
+    without_kw = pdc.build_cloud_points(z, 0.5, 0.0, 0.0)
+    with_none = pdc.build_cloud_points(z, 0.5, 0.0, 0.0, color_z=None)
+    assert np.array_equal(without_kw, with_none)
+
+
 def test_real_park_dtm_round_trips_if_present():
     npy = os.path.join(os.path.dirname(__file__), "..", "..", "maps",
                        "park_dtm.npy")

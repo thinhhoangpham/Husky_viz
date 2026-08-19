@@ -24,6 +24,14 @@ own topic so they can be toggled independently in RViz):
         --topic /dtm_cloud
     python3 scripts/publish_dtm_cloud.py --dtm maps/lake_water.npy \
         --topic /water_cloud --colormap water
+    python3 scripts/publish_dtm_cloud.py --dtm maps/lake_dtm.npy \
+        --color-from maps/lake_slope.npy \
+        --topic /slope_cloud --colormap slope
+
+The slope layer is degrees, not metres, so it must never supply its own
+geometry -- `--color-from` drapes its colour over the DTM's height geometry
+instead, so the overlay sits ON the terrain rather than being plotted as its
+own (nonsensical) elevation.
 
 In RViz add a PointCloud2 display per topic, set Color Transformer to RGB8.
 
@@ -179,20 +187,37 @@ def compute_align_offset(z, z_align):
 
 
 def build_cloud_points(z, resolution, origin_x, origin_y, colormap="terrain",
-                       z_min=None, z_max=None, z_offset=0.0):
+                       z_min=None, z_max=None, z_offset=0.0, color_z=None):
     """(N,4) float32 array of x, y, z, rgb-as-float for every valid cell.
 
+    `z` supplies the point GEOMETRY (x, y, and height). By default the same
+    array also supplies the colour ramp's scalar. Pass `color_z` (same shape
+    as `z`) to instead DRAPE a different scalar's colour over `z`'s geometry
+    -- e.g. slope degrees coloured on top of terrain heights, so the overlay
+    sits on the real surface instead of being plotted as its own elevation.
+    A cell that is NaN in EITHER array is dropped: a point cannot be placed
+    without a height, and cannot be coloured without a value.
+
     `z_offset` is added to the published z only. The colour ramp (and so
-    `z_min`/`z_max`, which are unshifted world-frame heights) is computed from
-    the original heights, so colour stays tied to real elevation.
+    `z_min`/`z_max`, which are unshifted values in whichever array supplies
+    colour) is computed from the original, unshifted values, so colour stays
+    tied to the real underlying quantity.
     """
-    valid = np.isfinite(z)
+    if color_z is None:
+        color_z = z
+    elif color_z.shape != z.shape:
+        raise ValueError(
+            "geometry and colour rasters must be the same shape -- got "
+            "geometry shape %r vs colour shape %r" % (z.shape, color_z.shape))
+
+    valid = np.isfinite(z) & np.isfinite(color_z)
     n = int(valid.sum())
     if n == 0:
         return np.zeros((0, 4), dtype=np.float32)
 
     rows, cols = np.nonzero(valid)
     heights = z[rows, cols].astype(np.float64)
+    color_vals = color_z[rows, cols].astype(np.float64)
 
     x = origin_x + (cols + 0.5) * resolution
     y = origin_y + (rows + 0.5) * resolution
@@ -201,14 +226,14 @@ def build_cloud_points(z, resolution, origin_x, origin_y, colormap="terrain",
         # Keyed to real-world units (e.g. slope degrees), not a min/max
         # fraction of THIS grid -- pass the raw values straight through so the
         # colour means the same absolute thing on every world.
-        t = heights
+        t = color_vals
     else:
-        lo = heights.min() if z_min is None else z_min
-        hi = heights.max() if z_max is None else z_max
+        lo = color_vals.min() if z_min is None else z_min
+        hi = color_vals.max() if z_max is None else z_max
         span = hi - lo
         # A perfectly flat layer (span 0, e.g. the water plane) would divide by
         # zero; map it all to the middle of the ramp instead.
-        t = np.full_like(heights, 0.5) if span <= 0.0 else (heights - lo) / span
+        t = np.full_like(color_vals, 0.5) if span <= 0.0 else (color_vals - lo) / span
         t = np.clip(t, 0.0, 1.0)
 
     r, g, b = COLORMAPS[colormap](t)
@@ -249,6 +274,16 @@ def main(argv=None):
     ap = argparse.ArgumentParser(
         description="Publish a DTM .npy as a height-coloured PointCloud2")
     ap.add_argument("--dtm", required=True, help="path to a DTM .npy")
+    ap.add_argument("--color-from", default=None,
+                    help="path to a .npy of the SAME shape as --dtm whose "
+                         "values drive the colour ramp instead of --dtm's own "
+                         "heights -- e.g. a slope .npy coloured over the DTM's "
+                         "geometry, so the overlay drapes on the real terrain "
+                         "surface instead of being plotted as its own "
+                         "elevation. --z-min/--z-max then clamp THIS raster's "
+                         "domain. A cell NaN in either raster is dropped. "
+                         "Default: colour comes from --dtm itself (unchanged "
+                         "behaviour).")
     ap.add_argument("--grid-meta", default=None,
                     help="yaml to read grid geometry (resolution/origin_x/"
                          "origin_y) from, overriding the default of the "
@@ -286,12 +321,18 @@ def main(argv=None):
         ap.error("--rate must be positive")
 
     z = np.load(args.dtm)
+    color_z = np.load(args.color_from) if args.color_from else None
+    if color_z is not None and color_z.shape != z.shape:
+        raise ValueError(
+            "--color-from %s has shape %r, but --dtm %s has shape %r -- "
+            "they must be the same grid" %
+            (args.color_from, color_z.shape, args.dtm, z.shape))
     resolution, origin_x, origin_y = load_grid_meta(args.dtm, args.grid_meta)
     total_offset = args.z_offset + compute_align_offset(z, args.z_align)
     points = build_cloud_points(z, resolution, origin_x, origin_y,
                                 colormap=args.colormap,
                                 z_min=args.z_min, z_max=args.z_max,
-                                z_offset=total_offset)
+                                z_offset=total_offset, color_z=color_z)
     if len(points) == 0:
         rospy.logwarn("%s has no valid cells -- publishing an empty cloud",
                       args.dtm)
