@@ -25,7 +25,7 @@ own topic so they can be toggled independently in RViz):
     python3 scripts/publish_dtm_cloud.py --dtm maps/lake_water.npy \
         --topic /water_cloud --colormap water
     python3 scripts/publish_dtm_cloud.py --dtm maps/lake_dtm.npy \
-        --color-from maps/lake_slope.npy \
+        --color-from <degrees.npy> \
         --topic /slope_cloud --colormap slope
 
 The slope layer is degrees, not metres, so it must never supply its own
@@ -68,7 +68,7 @@ def load_grid_meta(npy_path, grid_meta_path=None):
     DTM-style yaml, with flat resolution/origin_x/origin_y/width/height keys).
 
     `grid_meta_path`, if given, overrides which yaml is read -- this is for
-    rasters like `<world>_slope.npy` that hold values computed straight off
+    rasters holding values (e.g. slope in degrees) computed straight off
     the DTM array (same shape, origin, and resolution as `<world>_dtm.npy`)
     but whose own sibling yaml describes a DIFFERENT, resampled grid (the
     map_server-style PGM used for costmaps). In that case the geometry must
@@ -126,8 +126,7 @@ def _ramp_water(t):
     return 0.10 * one, 0.45 * one, 0.90 * one
 
 
-# Absolute slope thresholds in DEGREES, matching map_tools/slope_costmap.py's
-# warn_deg/lethal_deg defaults exactly. These must stay ABSOLUTE, never derived
+# Absolute slope thresholds in DEGREES. These must stay ABSOLUTE, never derived
 # from the input array's own min/max/percentiles -- a relative ramp would make
 # a flat world look artificially steep (or a steep one look flat).
 SLOPE_SAFE_DEG = 10.0
@@ -287,10 +286,10 @@ def main(argv=None):
     ap.add_argument("--grid-meta", default=None,
                     help="yaml to read grid geometry (resolution/origin_x/"
                          "origin_y) from, overriding the default of the "
-                         "sibling <dtm-stem>.yaml. Needed for rasters like "
-                         "<world>_slope.npy, which are computed on the DTM "
-                         "grid but whose own sibling yaml describes a "
-                         "different, resampled grid -- point this at the "
+                         "sibling <dtm-stem>.yaml. Needed for rasters computed "
+                         "on the DTM grid but whose own sibling yaml "
+                         "describes a different, resampled grid -- point "
+                         "this at the "
                          "matching <world>_dtm.yaml instead.")
     ap.add_argument("--topic", default="/dtm_cloud")
     ap.add_argument("--frame", default="map")

@@ -115,22 +115,7 @@ PY
         --topic /water_cloud --colormap water --z-offset "${DTM_OFF}" \
         > /tmp/dtm_water.log 2>&1 &
     fi
-    if [ -f "/repo/maps/${DTM_WORLD}_slope.npy" ]; then
-      # SAME offset as the terrain -- never its own --z-align, which would
-      # flatten the slope layer onto the terrain floor and detach it from the
-      # relief it is meant to sit on.
-      # The slope .npy holds DEGREES, not metres, so it must never supply its
-      # own geometry (plotting degrees as z produced spiky "mountains" tens of
-      # metres tall that lined up with nothing). --dtm supplies the GEOMETRY
-      # (heights, on the DTM's own grid/yaml), and --color-from supplies the
-      # slope raster purely for colour -- the overlay drapes on the real
-      # terrain surface instead of floating above it.
-      python3 /repo/scripts/publish_dtm_cloud.py --dtm "/repo/maps/${DTM_WORLD}_dtm.npy" \
-        --color-from "/repo/maps/${DTM_WORLD}_slope.npy" \
-        --topic /slope_cloud --colormap slope --z-offset "${DTM_OFF}" \
-        > /tmp/dtm_slope.log 2>&1 &
-    fi
-    echo "[operator] DTM layers publishing for world '${DTM_WORLD}' (/dtm_cloud, /water_cloud, /slope_cloud)"
+    echo "[operator] DTM layers publishing for world '${DTM_WORLD}' (/dtm_cloud, /water_cloud)"
   fi
 fi
 

@@ -3,14 +3,12 @@
 One terminal per step. Each block sets its own ROS env, so copy-paste as-is.
 
 > **Park is the default.** To run the same demo in the **lake** world, change
-> the things below — everything else is identical. Note step 2 needs BOTH
-> `map:=` and `slope_map:=`: they must come from the SAME world, or the two
-> static layers disagree on grid size and one truncates the other.
+> the things below — everything else is identical.
 >
 > | Step | Park (default) | Lake |
 > |---|---|---|
 > | 1 | `./load-park-world.sh` | `./load-park-world.sh --world lake` |
-> | 2 | `roslaunch launch/move_base_gps_map.launch` | append `map:=$HOME/Documents/Husky_viz/maps/lake_map.yaml slope_map:=$HOME/Documents/Husky_viz/maps/lake_slope.yaml` |
+> | 2 | `roslaunch launch/move_base_gps_map.launch` | append `map:=$HOME/Documents/Husky_viz/maps/lake_map.yaml` |
 > | 3 | `_objects_path:=…/maps/park_objects.yaml` | `…/maps/lake_objects.yaml` |
 >
 > Lake is self-contained in `models_lake_opt/` (low-poly visuals *and* the original
@@ -39,30 +37,6 @@ cd ~/Documents/Husky_viz
 Wait for Gazebo to show the park + robot, then ~30–60 s for the pose to settle.
 
 ## Step 2 — Navigation + map
-
-### Terrain slope layer
-
-The global costmap carries a `slope` layer so the planner routes around steep
-uphill and downhill ground. It is precomputed from the world's DTM -- regenerate
-it whenever the DTM changes or you want different thresholds:
-
-    python3 -m map_tools.slope_costmap lake      # the sloped demo world
-    python3 -m map_tools.slope_costmap park      # flat: produces an all-free layer
-
-Writes `maps/<world>_slope.{npy,pgm,yaml}`. The `.pgm` is what move_base
-consumes (via a second `map_server` on `/slope_map`); the `.npy` holds the slope
-in DEGREES and is for inspection and future terrain work, not for the planner.
-
-Note `*.pgm` is gitignored and the map PGMs are force-added, so a regenerated
-slope PGM will NOT show up in `git status` -- commit it with
-`git add -f maps/<world>_slope.pgm` or the tracked raster silently goes stale
-against the thresholds its YAML claims.
-
-Thresholds are absolute degrees, defaulting to free below 10 deg, a graded
-ramp 10-18 deg, and lethal above 18 deg. Retune with `--warn-deg` /
-`--lethal-deg` and regenerate -- the PGM cannot reinterpret itself.
-
-Expected output: lake ~0.8% lethal / ~14% graded; park 0% of both.
 
 Start these **three** nodes, each in its own new terminal (Step 1 is Terminal 1). All three must be running.
 
