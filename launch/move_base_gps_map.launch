@@ -9,7 +9,7 @@
   ASSUMED ALREADY RUNNING (started by load-park-world.sh), same as
   move_base_gps.launch. Absolute config paths per repo convention.
 
-  The costmap is the plain object map only -- no terrain layer, no terrain mask.
+  The costmap is the plain object map only - no terrain layer, no terrain mask.
   With track_unknown_space false nothing is unknown, so NavfnROS.allow_unknown
   in planner_gps.yaml is inert.
 
