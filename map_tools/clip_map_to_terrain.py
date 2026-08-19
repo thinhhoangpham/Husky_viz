@@ -111,6 +111,49 @@ class ClipResult(object):
         return 100.0 * self.discarded_count / self.orig_occupied_count
 
 
+UNKNOWN = 205
+
+
+def mask_unknown_cells(pixels, dtm_heights, map_ox, map_oy, map_res,
+                        dtm_ox, dtm_oy, dtm_res):
+    """Return a copy of `pixels` with UNKNOWN (205) written at every cell
+    that has no terrain: either its DTM cell is NaN, or it falls outside the
+    DTM's footprint entirely. Cells with valid terrain are left unchanged,
+    whether they were free or occupied.
+
+    `pixels` and `dtm_heights` are both row 0 = LOWEST y (internal
+    convention). An OCCUPIED object cell with no terrain underneath it is
+    also masked to unknown -- an object marker floating over off-mesh void
+    (e.g. a prop beyond the terrain edge) is not meaningful ground info
+    either, and masking it keeps the rule simple and total: "no terrain ->
+    unknown", with no special case for occupied vs free.
+    """
+    height, width = pixels.shape
+    dtm_height, dtm_width = dtm_heights.shape
+
+    out = pixels.copy()
+
+    rows = np.arange(height)
+    cols = np.arange(width)
+    world_y = map_oy + (rows + 0.5) * map_res
+    world_x = map_ox + (cols + 0.5) * map_res
+
+    dtm_row = np.floor((world_y - dtm_oy) / dtm_res).astype(np.int64)
+    dtm_col = np.floor((world_x - dtm_ox) / dtm_res).astype(np.int64)
+
+    in_bounds = ((dtm_row >= 0) & (dtm_row < dtm_height))[:, None] & \
+                ((dtm_col >= 0) & (dtm_col < dtm_width))[None, :]
+
+    has_terrain = np.zeros((height, width), dtype=bool)
+    r_clip = np.clip(dtm_row, 0, dtm_height - 1)
+    c_clip = np.clip(dtm_col, 0, dtm_width - 1)
+    sampled = dtm_heights[r_clip[:, None], c_clip[None, :]]
+    has_terrain = in_bounds & ~np.isnan(sampled)
+
+    out[~has_terrain] = UNKNOWN
+    return out
+
+
 def compute_clip(pixels, map_ox, map_oy, map_res, dtm_ox, dtm_oy, dtm_res,
                   dtm_width, dtm_height):
     """Compute the crop window and stats. Returns (clipped_pixels, ClipResult).
@@ -173,7 +216,8 @@ def math_ceil(x):
     return math.ceil(x - 1e-9)  # tiny epsilon guards against fp round-up
 
 
-def build(world, maps_dir="maps", out_suffix="_clipped", dry_run=False):
+def build(world, maps_dir="maps", out_suffix="_clipped", dry_run=False,
+          mask_unknown=False):
     map_yaml = os.path.join(maps_dir, "%s_map.yaml" % world)
     map_pgm = os.path.join(maps_dir, "%s_map.pgm" % world)
     dtm_yaml = os.path.join(maps_dir, "%s_dtm.yaml" % world)
@@ -187,6 +231,14 @@ def build(world, maps_dir="maps", out_suffix="_clipped", dry_run=False):
         pixels, map_ox, map_oy, map_res,
         dtm_meta["origin_x"], dtm_meta["origin_y"], dtm_meta["resolution"],
         dtm_meta["width"], dtm_meta["height"])
+
+    if mask_unknown:
+        dtm_npy = os.path.join(maps_dir, "%s_dtm.npy" % world)
+        dtm_heights = np.load(dtm_npy)
+        clipped = mask_unknown_cells(
+            clipped, dtm_heights, result.clip_origin_x, result.clip_origin_y,
+            map_res, dtm_meta["origin_x"], dtm_meta["origin_y"],
+            dtm_meta["resolution"])
 
     out_base = os.path.join(maps_dir, "%s_map%s" % (world, out_suffix))
     if not dry_run:
@@ -206,11 +258,15 @@ def main(argv=None):
     ap.add_argument("--out-suffix", default="_clipped")
     ap.add_argument("--dry-run", action="store_true",
                     help="report the numbers without writing files")
+    ap.add_argument("--mask-unknown", action="store_true",
+                    help="write pixel 205 (unknown) at every cell with no "
+                         "terrain (NaN DTM or outside the DTM footprint), "
+                         "regardless of the source object map's value there")
     args = ap.parse_args(argv)
 
     try:
         result = build(args.world, args.maps_dir, args.out_suffix,
-                       args.dry_run)
+                       args.dry_run, args.mask_unknown)
     except (ValueError, IOError, OSError) as exc:
         sys.stderr.write("error: %s\n" % exc)
         return 1

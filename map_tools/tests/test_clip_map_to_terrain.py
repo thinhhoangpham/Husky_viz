@@ -2,15 +2,19 @@ import numpy as np
 import pytest
 
 from map_tools.clip_map_to_terrain import (
-    compute_clip, read_pgm, write_pgm, build, main,
+    compute_clip, mask_unknown_cells, read_pgm, write_pgm, build, main,
+    UNKNOWN,
 )
 
 
 def _fake_world(tmp_path, name, map_pixels, map_res, map_ox, map_oy,
-                 dtm_ox, dtm_oy, dtm_res, dtm_width, dtm_height):
-    """Write a minimal <name>_map.{yaml,pgm} + <name>_dtm.yaml set.
+                 dtm_ox, dtm_oy, dtm_res, dtm_width, dtm_height,
+                 dtm_heights=None):
+    """Write a minimal <name>_map.{yaml,pgm} + <name>_dtm.yaml (+.npy) set.
 
     map_pixels: internal convention array, row 0 = LOWEST y.
+    dtm_heights: optional row0=LOWEST-y float array; if given, also writes
+    <name>_dtm.npy (needed for --mask-unknown tests).
     """
     maps = tmp_path / "maps"
     maps.mkdir(exist_ok=True)
@@ -28,6 +32,9 @@ def _fake_world(tmp_path, name, map_pixels, map_res, map_ox, map_oy,
         "resolution: %f\norigin_x: %f\norigin_y: %f\n"
         "width: %d\nheight: %d\n"
         % (dtm_res, dtm_ox, dtm_oy, dtm_width, dtm_height))
+
+    if dtm_heights is not None:
+        np.save(str(maps / ("%s_dtm.npy" % name)), dtm_heights.astype(np.float32))
 
     return maps
 
@@ -155,3 +162,134 @@ def test_build_reports_expected_dims_and_discard_counts(tmp_path):
     assert (result.orig_width, result.orig_height) == (10, 10)
     assert (result.clip_width, result.clip_height) == (5, 5)
     assert result.discarded_count == 1
+
+
+def test_mask_unknown_nan_terrain_becomes_unknown_even_if_source_was_free():
+    pixels = np.full((4, 4), 254, dtype=np.uint8)  # all free
+    dtm = np.zeros((4, 4), dtype=np.float32)
+    dtm[2, 2] = np.nan  # no terrain at this cell
+
+    out = mask_unknown_cells(pixels, dtm, map_ox=0.0, map_oy=0.0, map_res=1.0,
+                              dtm_ox=0.0, dtm_oy=0.0, dtm_res=1.0)
+
+    assert out[2, 2] == UNKNOWN
+    # every other cell keeps its original free value
+    mask = np.ones((4, 4), dtype=bool)
+    mask[2, 2] = False
+    assert np.all(out[mask] == 254)
+
+
+def test_mask_unknown_valid_terrain_cells_keep_original_value():
+    pixels = np.full((4, 4), 254, dtype=np.uint8)
+    pixels[1, 1] = 0  # occupied, but has terrain
+    dtm = np.zeros((4, 4), dtype=np.float32)  # all valid terrain
+
+    out = mask_unknown_cells(pixels, dtm, map_ox=0.0, map_oy=0.0, map_res=1.0,
+                              dtm_ox=0.0, dtm_oy=0.0, dtm_res=1.0)
+
+    assert np.array_equal(out, pixels)
+
+
+def test_mask_unknown_occupied_cell_on_nan_terrain_becomes_unknown():
+    # Chosen behaviour: no-terrain wins over occupied -- an object marker
+    # over off-mesh void is not meaningful ground info either, so the rule
+    # stays total ("no terrain -> unknown") with no occupied special case.
+    pixels = np.full((4, 4), 254, dtype=np.uint8)
+    pixels[1, 1] = 0  # occupied
+    dtm = np.zeros((4, 4), dtype=np.float32)
+    dtm[1, 1] = np.nan  # ...but no terrain underneath it
+
+    out = mask_unknown_cells(pixels, dtm, map_ox=0.0, map_oy=0.0, map_res=1.0,
+                              dtm_ox=0.0, dtm_oy=0.0, dtm_res=1.0)
+
+    assert out[1, 1] == UNKNOWN
+
+
+def test_mask_unknown_cell_outside_dtm_footprint_becomes_unknown():
+    # Object map extends beyond the DTM footprint entirely (small DTM).
+    pixels = np.full((6, 6), 254, dtype=np.uint8)
+    dtm = np.zeros((3, 3), dtype=np.float32)  # covers only [0,3]x[0,3]
+
+    out = mask_unknown_cells(pixels, dtm, map_ox=0.0, map_oy=0.0, map_res=1.0,
+                              dtm_ox=0.0, dtm_oy=0.0, dtm_res=1.0)
+
+    # Cells within [0,3]x[0,3] keep free; cells beyond become unknown.
+    assert np.all(out[0:3, 0:3] == 254)
+    assert np.all(out[3:6, :] == UNKNOWN)
+    assert np.all(out[:, 3:6] == UNKNOWN)
+
+
+def test_without_mask_unknown_output_identical_to_current_behaviour(tmp_path):
+    map_pixels = np.full((10, 10), 254, dtype=np.uint8)
+    map_pixels[1, 1] = 0
+    map_pixels[9, 9] = 0
+    dtm_heights = np.zeros((5, 5), dtype=np.float32)
+    dtm_heights[0, 0] = np.nan  # present but irrelevant without the flag
+    maps = _fake_world(tmp_path, "nomask", map_pixels,
+                       map_res=1.0, map_ox=0.0, map_oy=0.0,
+                       dtm_ox=0.0, dtm_oy=0.0, dtm_res=1.0,
+                       dtm_width=5, dtm_height=5, dtm_heights=dtm_heights)
+
+    result_plain = build("nomask", str(maps), out_suffix="_plain")
+    result_masked_off = build("nomask", str(maps), out_suffix="_flagoff",
+                              mask_unknown=False)
+
+    plain = read_pgm(str(maps / "nomask_map_plain.pgm"))
+    flagoff = read_pgm(str(maps / "nomask_map_flagoff.pgm"))
+    assert np.array_equal(plain, flagoff)
+    assert result_plain.clip_width == result_masked_off.clip_width
+    assert result_plain.clip_height == result_masked_off.clip_height
+
+
+def test_build_with_mask_unknown_writes_unknown_pixels(tmp_path):
+    map_pixels = np.full((10, 10), 254, dtype=np.uint8)
+    map_pixels[1, 1] = 0
+    dtm_heights = np.zeros((10, 10), dtype=np.float32)
+    dtm_heights[5:, :] = np.nan  # top half of the DTM has no mesh coverage
+    maps = _fake_world(tmp_path, "maskworld", map_pixels,
+                       map_res=1.0, map_ox=0.0, map_oy=0.0,
+                       dtm_ox=0.0, dtm_oy=0.0, dtm_res=1.0,
+                       dtm_width=10, dtm_height=10, dtm_heights=dtm_heights)
+
+    build("maskworld", str(maps), out_suffix="_masked", mask_unknown=True)
+    out = read_pgm(str(maps / "maskworld_map_masked.pgm"))
+
+    assert np.all(out[5:, :] == UNKNOWN)
+    assert np.all(out[:5, :] == map_pixels[:5, :])
+
+
+def test_decoding_masked_pgm_under_trinary_semantics_yields_unknown(tmp_path):
+    map_pixels = np.full((6, 6), 254, dtype=np.uint8)
+    map_pixels[0, 0] = 0  # occupied, has terrain -- stays occupied
+    dtm_heights = np.zeros((6, 6), dtype=np.float32)
+    dtm_heights[3, 3] = np.nan
+    maps = _fake_world(tmp_path, "decodeworld", map_pixels,
+                       map_res=1.0, map_ox=0.0, map_oy=0.0,
+                       dtm_ox=0.0, dtm_oy=0.0, dtm_res=1.0,
+                       dtm_width=6, dtm_height=6, dtm_heights=dtm_heights)
+
+    build("decodeworld", str(maps), out_suffix="_decode", mask_unknown=True)
+    px = read_pgm(str(maps / "decodeworld_map_decode.pgm"))
+
+    p = (255.0 - px.astype(float)) / 255.0
+    occ = np.where(p > 0.65, 100, np.where(p < 0.196, 0, -1))
+
+    assert occ[3, 3] == -1
+    assert occ[0, 0] == 100
+    mask = np.ones((6, 6), dtype=bool)
+    mask[3, 3] = False
+    mask[0, 0] = False
+    assert np.all(occ[mask] == 0)
+
+
+def test_existing_clipped_case_still_passes_with_mask_unknown_param_default(tmp_path):
+    # Sanity: build() signature accepts the new kwarg but defaults to the
+    # pre-existing behaviour when omitted (regression guard for callers).
+    map_pixels = np.full((10, 10), 254, dtype=np.uint8)
+    map_pixels[1, 1] = 0
+    maps = _fake_world(tmp_path, "sig", map_pixels,
+                       map_res=1.0, map_ox=0.0, map_oy=0.0,
+                       dtm_ox=0.0, dtm_oy=0.0, dtm_res=1.0,
+                       dtm_width=5, dtm_height=5)
+    result = build("sig", str(maps))
+    assert (result.clip_width, result.clip_height) == (5, 5)
