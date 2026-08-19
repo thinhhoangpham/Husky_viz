@@ -154,6 +154,93 @@ def mask_unknown_cells(pixels, dtm_heights, map_ox, map_oy, map_res,
     return out
 
 
+def _edt_1d_sq(f):
+    """Exact squared distance transform of a 1-D array of ANY-distance
+    seeds, using the Felzenszwalt & Huttenlocher lower-envelope-of-parabolas
+    algorithm. `f` holds 0 at seed positions and a large sentinel (>= any
+    possible true squared distance) elsewhere. Operates along axis -1;
+    caller loops/transposes for 2-D. Pure numpy/stdlib, O(n) per line."""
+    n = f.shape[0]
+    INF = 1e20
+    d = np.empty(n, dtype=np.float64)
+    v = np.zeros(n, dtype=np.int64)      # locations of parabolas in envelope
+    z = np.empty(n + 1, dtype=np.float64)  # boundaries between parabolas
+    k = 0
+    v[0] = 0
+    z[0] = -INF
+    z[1] = INF
+    for q in range(1, n):
+        while True:
+            p = v[k]
+            s = ((f[q] + q * q) - (f[p] + p * p)) / (2.0 * q - 2.0 * p)
+            if s <= z[k]:
+                k -= 1
+                if k < 0:
+                    k = 0
+                    break
+            else:
+                break
+        k += 1
+        v[k] = q
+        z[k] = s
+        z[k + 1] = INF
+
+    k = 0
+    for q in range(n):
+        while z[k + 1] < q:
+            k += 1
+        p = v[k]
+        d[q] = (q - p) * (q - p) + f[p]
+    return d
+
+
+def _euclidean_distance_to_seeds(seed_mask):
+    """Exact Euclidean distance (in CELLS) from every cell to the nearest
+    True cell in `seed_mask`, via the separable squared-EDT algorithm
+    (columns then rows). No scipy dependency."""
+    height, width = seed_mask.shape
+    INF = 1e20
+    f = np.where(seed_mask, 0.0, INF)
+
+    # Pass 1: down each column.
+    for c in range(width):
+        f[:, c] = _edt_1d_sq(f[:, c])
+
+    # Pass 2: across each row.
+    for r in range(height):
+        f[r, :] = _edt_1d_sq(f[r, :])
+
+    return np.sqrt(f)
+
+
+def erode_unknown_cells(pixels, metres, resolution):
+    """Return a copy of `pixels` with UNKNOWN (205) additionally written at
+    every cell whose centre lies within `metres` (Euclidean, true distance
+    computed from `resolution`) of any cell that is already UNKNOWN in the
+    input. Only ever adds unknown cells -- never reverts one to free/occupied.
+
+    Chosen behaviour for OCCUPIED cells inside the erosion band: they are
+    also turned to UNKNOWN, for the same reason `mask_unknown_cells` already
+    treats "no terrain" as total -- an object marker sitting right at the
+    edge of a void is not trustworthy ground info either, and the whole
+    point of --erode is a keep-out margin the planner must not enter, so an
+    occupied cell there should not be quietly treated as a safer boundary
+    than free space is.
+    """
+    if metres <= 0:
+        return pixels.copy()
+
+    seed_mask = pixels == UNKNOWN
+    if not seed_mask.any():
+        return pixels.copy()
+
+    dist_cells = _euclidean_distance_to_seeds(seed_mask) * resolution
+
+    out = pixels.copy()
+    out[dist_cells <= metres] = UNKNOWN
+    return out
+
+
 def compute_clip(pixels, map_ox, map_oy, map_res, dtm_ox, dtm_oy, dtm_res,
                   dtm_width, dtm_height):
     """Compute the crop window and stats. Returns (clipped_pixels, ClipResult).
@@ -217,7 +304,11 @@ def math_ceil(x):
 
 
 def build(world, maps_dir="maps", out_suffix="_clipped", dry_run=False,
-          mask_unknown=False, no_crop=False):
+          mask_unknown=False, no_crop=False, erode=0.0):
+    if erode > 0 and not mask_unknown:
+        raise ValueError("--erode requires --mask-unknown (eroding is "
+                          "meaningless if no cells are marked unknown yet)")
+
     map_yaml = os.path.join(maps_dir, "%s_map.yaml" % world)
     map_pgm = os.path.join(maps_dir, "%s_map.pgm" % world)
     dtm_yaml = os.path.join(maps_dir, "%s_dtm.yaml" % world)
@@ -259,6 +350,15 @@ def build(world, maps_dir="maps", out_suffix="_clipped", dry_run=False,
             map_res, dtm_meta["origin_x"], dtm_meta["origin_y"],
             dtm_meta["resolution"])
 
+        if erode > 0:
+            before_unknown = int((clipped == UNKNOWN).sum())
+            clipped = erode_unknown_cells(clipped, erode, map_res)
+            result.eroded_count = int((clipped == UNKNOWN).sum()) - before_unknown
+        else:
+            result.eroded_count = 0
+    else:
+        result.eroded_count = 0
+
     out_base = os.path.join(maps_dir, "%s_map%s" % (world, out_suffix))
     if not dry_run:
         write_pgm(out_base + ".pgm", clipped)
@@ -286,11 +386,18 @@ def main(argv=None):
                          "source object map's exact width, height, origin "
                          "and resolution (needed so --mask-unknown output "
                          "stays grid-aligned with other costmap layers)")
+    ap.add_argument("--erode", type=float, default=0.0,
+                    help="after --mask-unknown, additionally mark as "
+                         "unknown every cell within this many METRES "
+                         "(true Euclidean distance) of any no-terrain "
+                         "cell, so the robot footprint cannot overhang "
+                         "the terrain edge. Requires --mask-unknown.")
     args = ap.parse_args(argv)
 
     try:
         result = build(args.world, args.maps_dir, args.out_suffix,
-                       args.dry_run, args.mask_unknown, args.no_crop)
+                       args.dry_run, args.mask_unknown, args.no_crop,
+                       args.erode)
     except (ValueError, IOError, OSError) as exc:
         sys.stderr.write("error: %s\n" % exc)
         return 1
@@ -303,6 +410,9 @@ def main(argv=None):
     print("  occupied cells discarded : %d / %d (%.2f%%)"
           % (result.discarded_count, result.orig_occupied_count,
              result.discarded_pct))
+    if args.erode > 0:
+        print("  eroded to unknown        : %d additional cells (--erode %.2f m)"
+              % (result.eroded_count, args.erode))
     if not args.dry_run:
         print("  -> %s_map%s.{pgm,yaml}"
               % (os.path.join(args.maps_dir, args.world), args.out_suffix))

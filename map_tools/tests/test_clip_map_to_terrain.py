@@ -2,8 +2,8 @@ import numpy as np
 import pytest
 
 from map_tools.clip_map_to_terrain import (
-    compute_clip, mask_unknown_cells, read_pgm, write_pgm, build, main,
-    UNKNOWN,
+    compute_clip, mask_unknown_cells, erode_unknown_cells, read_pgm,
+    write_pgm, build, main, UNKNOWN,
 )
 
 
@@ -349,6 +349,128 @@ def test_no_crop_alone_reproduces_input_byte_for_byte(tmp_path):
     input_bytes = (maps / "nocroponly_map.pgm").read_bytes()
     output_bytes = (maps / "nocroponly_map_pure.pgm").read_bytes()
     assert input_bytes == output_bytes
+
+
+def test_erode_marks_cells_within_true_distance_unknown():
+    # Straight terrain-edge fixture: unknown seed occupies row 0 (an entire
+    # row), free elsewhere. res=0.2 m/cell -> 1.0 m = 5 cells.
+    pixels = np.full((10, 10), 254, dtype=np.uint8)
+    pixels[0, :] = UNKNOWN
+    res = 0.2
+
+    out = erode_unknown_cells(pixels, metres=1.0, resolution=res)
+
+    # Cell centre distance from row 0 (seed row) to row r is r*res (nearest
+    # seed cell is directly above/below along the column -- straight edge).
+    # row 5 centre-to-centre distance = 5*0.2 = 1.0 -> eroded (<=).
+    assert np.all(out[5, :] == UNKNOWN)
+    # row 6 = 1.2 m -> must NOT be eroded.
+    assert np.all(out[6, :] == 254)
+
+
+def test_erode_is_euclidean_not_chebyshev():
+    # A single unknown seed cell at (0,0). A diagonal cell at (5,5) is at
+    # chebyshev distance 5 cells but true Euclidean distance 5*sqrt(2)=7.07
+    # cells. res=0.15 -> 1.0 m = 6.667 cells. A chebyshev kernel would
+    # (wrongly) erode (5,5) since max(5,5)=5 < 6.667; Euclidean must NOT,
+    # since 7.07 > 6.667.
+    pixels = np.full((10, 10), 254, dtype=np.uint8)
+    pixels[0, 0] = UNKNOWN
+    res = 0.15
+
+    out = erode_unknown_cells(pixels, metres=1.0, resolution=res)
+
+    assert out[5, 5] == 254  # NOT eroded -- true Euclidean distance too far
+
+    # Sanity: a cell at true Euclidean distance well within 1.0 m IS eroded.
+    # (4,0): 4 cells * 0.15 = 0.6 m <= 1.0 m.
+    assert out[4, 0] == UNKNOWN
+
+
+def test_erode_zero_leaves_output_identical_to_mask_unknown_alone(tmp_path):
+    map_pixels = np.full((10, 10), 254, dtype=np.uint8)
+    map_pixels[1, 1] = 0
+    dtm_heights = np.zeros((10, 10), dtype=np.float32)
+    dtm_heights[5:, :] = np.nan
+    maps = _fake_world(tmp_path, "erode0", map_pixels,
+                       map_res=1.0, map_ox=0.0, map_oy=0.0,
+                       dtm_ox=0.0, dtm_oy=0.0, dtm_res=1.0,
+                       dtm_width=10, dtm_height=10, dtm_heights=dtm_heights)
+
+    result_plain = build("erode0", str(maps), out_suffix="_plain",
+                         mask_unknown=True)
+    result_erode0 = build("erode0", str(maps), out_suffix="_erode0",
+                          mask_unknown=True, erode=0.0)
+
+    plain_bytes = (maps / "erode0_map_plain.pgm").read_bytes()
+    erode0_bytes = (maps / "erode0_map_erode0.pgm").read_bytes()
+    assert plain_bytes == erode0_bytes
+    assert result_plain.clip_width == result_erode0.clip_width
+
+
+def test_erode_without_mask_unknown_raises(tmp_path):
+    map_pixels = np.full((10, 10), 254, dtype=np.uint8)
+    maps = _fake_world(tmp_path, "erodeguard", map_pixels,
+                       map_res=1.0, map_ox=0.0, map_oy=0.0,
+                       dtm_ox=0.0, dtm_oy=0.0, dtm_res=1.0,
+                       dtm_width=10, dtm_height=10)
+
+    with pytest.raises(ValueError, match="mask-unknown"):
+        build("erodeguard", str(maps), mask_unknown=False, erode=1.0)
+
+
+def test_erode_cli_without_mask_unknown_reports_error(tmp_path):
+    map_pixels = np.full((10, 10), 254, dtype=np.uint8)
+    maps = _fake_world(tmp_path, "erodecli", map_pixels,
+                       map_res=1.0, map_ox=0.0, map_oy=0.0,
+                       dtm_ox=0.0, dtm_oy=0.0, dtm_res=1.0,
+                       dtm_width=10, dtm_height=10)
+
+    ret = main(["erodecli", "--maps-dir", str(maps), "--erode", "1.0"])
+    assert ret == 1
+
+
+def test_erode_only_adds_unknown_never_reverts():
+    pixels = np.full((10, 10), 254, dtype=np.uint8)
+    pixels[0, 0] = 0       # occupied
+    pixels[9, 9] = UNKNOWN  # seed
+    res = 0.5
+
+    out = erode_unknown_cells(pixels, metres=1.0, resolution=res)
+
+    # Every cell that was UNKNOWN before stays UNKNOWN.
+    assert np.all(out[pixels == UNKNOWN] == UNKNOWN)
+    # No previously-free/occupied cell that was NOT within range changed
+    # into something other than UNKNOWN or its original value.
+    changed_from_free_or_occ = (pixels != UNKNOWN) & (out != pixels)
+    assert np.all(out[changed_from_free_or_occ] == UNKNOWN)
+
+
+def test_erode_occupied_cell_within_band_becomes_unknown():
+    # Chosen behaviour: occupied cells inside the erosion band are turned
+    # unknown too, consistent with mask_unknown_cells's "no terrain wins"
+    # rule -- see erode_unknown_cells docstring.
+    pixels = np.full((6, 6), 254, dtype=np.uint8)
+    pixels[0, :] = UNKNOWN
+    pixels[1, 0] = 0  # occupied, close to the unknown edge
+    res = 1.0
+
+    out = erode_unknown_cells(pixels, metres=1.0, resolution=res)
+
+    assert out[1, 0] == UNKNOWN
+
+
+def test_build_reports_eroded_count(tmp_path):
+    map_pixels = np.full((10, 10), 254, dtype=np.uint8)
+    dtm_heights = np.zeros((10, 10), dtype=np.float32)
+    dtm_heights[5:, :] = np.nan
+    maps = _fake_world(tmp_path, "erodereport", map_pixels,
+                       map_res=1.0, map_ox=0.0, map_oy=0.0,
+                       dtm_ox=0.0, dtm_oy=0.0, dtm_res=1.0,
+                       dtm_width=10, dtm_height=10, dtm_heights=dtm_heights)
+
+    result = build("erodereport", str(maps), mask_unknown=True, erode=1.0)
+    assert result.eroded_count > 0
 
 
 def test_default_no_flags_still_crops_as_before(tmp_path):
