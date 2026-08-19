@@ -293,3 +293,76 @@ def test_existing_clipped_case_still_passes_with_mask_unknown_param_default(tmp_
                        dtm_width=5, dtm_height=5)
     result = build("sig", str(maps))
     assert (result.clip_width, result.clip_height) == (5, 5)
+
+
+def test_no_crop_mask_unknown_output_matches_input_geometry(tmp_path):
+    map_pixels = np.full((10, 10), 254, dtype=np.uint8)
+    map_pixels[1, 1] = 0
+    dtm_heights = np.zeros((10, 10), dtype=np.float32)
+    maps = _fake_world(tmp_path, "nocropworld", map_pixels,
+                       map_res=1.0, map_ox=-3.0, map_oy=-7.0,
+                       dtm_ox=0.0, dtm_oy=0.0, dtm_res=1.0,
+                       dtm_width=5, dtm_height=5, dtm_heights=None)
+    # DTM footprint (5x5 at origin 0,0) is smaller than the object map
+    # (10x10 at origin -3,-7): a normal crop would shrink the output.
+    (maps / "nocropworld_dtm.npy")
+    np.save(str(maps / "nocropworld_dtm.npy"), dtm_heights)
+
+    result = build("nocropworld", str(maps), out_suffix="_nocrop",
+                   mask_unknown=True, no_crop=True)
+
+    assert (result.clip_width, result.clip_height) == (10, 10)
+    assert (result.clip_origin_x, result.clip_origin_y) == (-3.0, -7.0)
+
+    out = read_pgm(str(maps / "nocropworld_map_nocrop.pgm"))
+    assert out.shape == (10, 10)
+
+
+def test_no_crop_mask_unknown_cells_correct(tmp_path):
+    map_pixels = np.full((6, 6), 254, dtype=np.uint8)
+    map_pixels[0, 0] = 0  # occupied, has terrain (dtm cell (0,0)=0.0) -> stays
+    dtm_heights = np.zeros((6, 6), dtype=np.float32)
+    dtm_heights[4, 4] = np.nan  # a no-terrain cell
+    maps = _fake_world(tmp_path, "nocropmask", map_pixels,
+                       map_res=1.0, map_ox=0.0, map_oy=0.0,
+                       dtm_ox=0.0, dtm_oy=0.0, dtm_res=1.0,
+                       dtm_width=6, dtm_height=6, dtm_heights=dtm_heights)
+
+    build("nocropmask", str(maps), out_suffix="_masked", mask_unknown=True,
+          no_crop=True)
+    out = read_pgm(str(maps / "nocropmask_map_masked.pgm"))
+
+    assert out[4, 4] == UNKNOWN
+    assert out[0, 0] == 0  # valid-terrain occupied cell keeps its value
+
+
+def test_no_crop_alone_reproduces_input_byte_for_byte(tmp_path):
+    map_pixels = np.full((8, 8), 254, dtype=np.uint8)
+    map_pixels[2, 3] = 0
+    maps = _fake_world(tmp_path, "nocroponly", map_pixels,
+                       map_res=1.0, map_ox=1.5, map_oy=2.5,
+                       dtm_ox=0.0, dtm_oy=0.0, dtm_res=1.0,
+                       dtm_width=3, dtm_height=3)
+
+    build("nocroponly", str(maps), out_suffix="_pure", no_crop=True)
+
+    input_bytes = (maps / "nocroponly_map.pgm").read_bytes()
+    output_bytes = (maps / "nocroponly_map_pure.pgm").read_bytes()
+    assert input_bytes == output_bytes
+
+
+def test_default_no_flags_still_crops_as_before(tmp_path):
+    # Same case as test_build_reports_expected_dims_and_discard_counts:
+    # confirms default behaviour (no --no-crop, no --mask-unknown) is
+    # byte-for-byte unchanged by the new code path.
+    map_pixels = np.full((10, 10), 254, dtype=np.uint8)
+    map_pixels[1, 1] = 0
+    map_pixels[9, 9] = 0
+    maps = _fake_world(tmp_path, "defaultworld", map_pixels,
+                       map_res=1.0, map_ox=0.0, map_oy=0.0,
+                       dtm_ox=0.0, dtm_oy=0.0, dtm_res=1.0,
+                       dtm_width=5, dtm_height=5)
+    result = build("defaultworld", str(maps))
+    assert (result.orig_width, result.orig_height) == (10, 10)
+    assert (result.clip_width, result.clip_height) == (5, 5)
+    assert result.discarded_count == 1

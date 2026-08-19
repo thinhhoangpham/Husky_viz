@@ -217,7 +217,7 @@ def math_ceil(x):
 
 
 def build(world, maps_dir="maps", out_suffix="_clipped", dry_run=False,
-          mask_unknown=False):
+          mask_unknown=False, no_crop=False):
     map_yaml = os.path.join(maps_dir, "%s_map.yaml" % world)
     map_pgm = os.path.join(maps_dir, "%s_map.pgm" % world)
     dtm_yaml = os.path.join(maps_dir, "%s_dtm.yaml" % world)
@@ -227,10 +227,29 @@ def build(world, maps_dir="maps", out_suffix="_clipped", dry_run=False,
 
     pixels = read_pgm(map_pgm)
 
-    clipped, result = compute_clip(
-        pixels, map_ox, map_oy, map_res,
-        dtm_meta["origin_x"], dtm_meta["origin_y"], dtm_meta["resolution"],
-        dtm_meta["width"], dtm_meta["height"])
+    if no_crop:
+        # Skip the rectangular crop entirely: output keeps the source
+        # object map's exact width, height, origin and resolution -- a
+        # pure pixel-wise transform, same geometry in and out. This is
+        # what the ROS costmap needs: the mask-unknown output must stay
+        # on the SAME grid as the other StaticLayer inputs (e.g. the
+        # slope layer), or costmap_2d::LayeredCostmap::resizeMap
+        # truncates whichever map arrived first.
+        clipped = pixels
+        result = ClipResult(
+            orig_width=pixels.shape[1], orig_height=pixels.shape[0],
+            clip_width=pixels.shape[1], clip_height=pixels.shape[0],
+            clip_origin_x=map_ox, clip_origin_y=map_oy,
+            col0=0, row0=0,
+            discarded_count=0,
+            orig_occupied_count=int((pixels == 0).sum()),
+            unchanged=True,
+        )
+    else:
+        clipped, result = compute_clip(
+            pixels, map_ox, map_oy, map_res,
+            dtm_meta["origin_x"], dtm_meta["origin_y"], dtm_meta["resolution"],
+            dtm_meta["width"], dtm_meta["height"])
 
     if mask_unknown:
         dtm_npy = os.path.join(maps_dir, "%s_dtm.npy" % world)
@@ -262,11 +281,16 @@ def main(argv=None):
                     help="write pixel 205 (unknown) at every cell with no "
                          "terrain (NaN DTM or outside the DTM footprint), "
                          "regardless of the source object map's value there")
+    ap.add_argument("--no-crop", action="store_true",
+                    help="skip the rectangular crop; output keeps the "
+                         "source object map's exact width, height, origin "
+                         "and resolution (needed so --mask-unknown output "
+                         "stays grid-aligned with other costmap layers)")
     args = ap.parse_args(argv)
 
     try:
         result = build(args.world, args.maps_dir, args.out_suffix,
-                       args.dry_run, args.mask_unknown)
+                       args.dry_run, args.mask_unknown, args.no_crop)
     except (ValueError, IOError, OSError) as exc:
         sys.stderr.write("error: %s\n" % exc)
         return 1
