@@ -96,6 +96,13 @@ Visualization Manager:
       Style: Flat Squares
       Topic: /water_cloud
       Value: false
+    - Alpha: 0.7
+      Class: rviz/Map
+      Color Scheme: costmap
+      Enabled: false
+      Name: Terrain slope
+      Topic: /slope_map
+      Value: false
     - Alpha: 0.5
       Class: rviz/Map
       Color Scheme: costmap
