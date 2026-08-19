@@ -194,6 +194,46 @@ def test_missing_yaml_raises_rather_than_guessing(tmp_path):
         pdc.load_grid_meta(str(npy))
 
 
+def _slope_rgb(deg_value, other_values=()):
+    """rgb888 int for a single slope-degree cell, in a grid that also
+    contains `other_values` (to probe range-independence)."""
+    z = np.array([[deg_value] + list(other_values)], dtype=np.float32)
+    pts = pdc.build_cloud_points(z, 1.0, 0.0, 0.0, colormap="slope")
+    rgb_bits = int(pts[0, 3].astype(np.float32).view(np.uint32))
+    return (rgb_bits >> 16) & 0xFF, (rgb_bits >> 8) & 0xFF, rgb_bits & 0xFF
+
+
+def test_slope_safe_band_is_green():
+    r, g, b = _slope_rgb(5.0)
+    assert g > r and g > b
+
+
+def test_slope_middle_band_is_between_green_and_red():
+    r, g, b = _slope_rgb(14.0)
+    assert r > 0 and g > 0
+    assert b == 0
+
+
+def test_slope_lethal_band_is_red():
+    r, g, b = _slope_rgb(20.0)
+    assert r > g and r > b
+
+
+def test_slope_ramp_is_absolute_not_range_dependent():
+    """The test that would catch a percentile/relative ramp: a 5 deg cell
+    must colour identically whether its grid spans nothing or 0-24 deg."""
+    narrow = _slope_rgb(5.0, other_values=[5.0])
+    wide = _slope_rgb(5.0, other_values=[0.0, 24.0])
+    assert narrow == wide
+
+
+def test_slope_ramp_handles_nan_without_crashing():
+    z = np.array([[5.0, np.nan, 20.0]], dtype=np.float32)
+    pts = pdc.build_cloud_points(z, 1.0, 0.0, 0.0, colormap="slope")
+    assert len(pts) == 2
+    assert np.isfinite(pts).all()
+
+
 def test_real_park_dtm_round_trips_if_present():
     npy = os.path.join(os.path.dirname(__file__), "..", "..", "maps",
                        "park_dtm.npy")

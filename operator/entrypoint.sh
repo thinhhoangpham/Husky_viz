@@ -115,7 +115,15 @@ PY
         --topic /water_cloud --colormap water --z-offset "${DTM_OFF}" \
         > /tmp/dtm_water.log 2>&1 &
     fi
-    echo "[operator] DTM layers publishing for world '${DTM_WORLD}' (/dtm_cloud, /water_cloud)"
+    if [ -f "/repo/maps/${DTM_WORLD}_slope.npy" ]; then
+      # SAME offset as the terrain -- never its own --z-align, which would
+      # flatten the slope layer onto the terrain floor and detach it from the
+      # relief it is meant to sit on.
+      python3 /repo/scripts/publish_dtm_cloud.py --dtm "/repo/maps/${DTM_WORLD}_slope.npy" \
+        --topic /slope_cloud --colormap slope --z-offset "${DTM_OFF}" \
+        > /tmp/dtm_slope.log 2>&1 &
+    fi
+    echo "[operator] DTM layers publishing for world '${DTM_WORLD}' (/dtm_cloud, /water_cloud, /slope_cloud)"
   fi
 fi
 

@@ -96,6 +96,18 @@ Visualization Manager:
       Style: Flat Squares
       Topic: /water_cloud
       Value: false
+    - Alpha: 1
+      Autocompute Intensity Bounds: true
+      Class: rviz/PointCloud2
+      Color: 255; 255; 255
+      Color Transformer: RGB8
+      Enabled: false
+      Name: Terrain slope (3D)
+      Size (Pixels): 3
+      Size (m): 0.25
+      Style: Flat Squares
+      Topic: /slope_cloud
+      Value: false
     - Alpha: 0.7
       Class: rviz/Map
       Color Scheme: costmap

@@ -100,7 +100,44 @@ def _ramp_water(t):
     return 0.10 * one, 0.45 * one, 0.90 * one
 
 
-COLORMAPS = {"terrain": _ramp_terrain, "water": _ramp_water}
+# Absolute slope thresholds in DEGREES, matching map_tools/slope_costmap.py's
+# warn_deg/lethal_deg defaults exactly. These must stay ABSOLUTE, never derived
+# from the input array's own min/max/percentiles -- a relative ramp would make
+# a flat world look artificially steep (or a steep one look flat).
+SLOPE_SAFE_DEG = 10.0
+SLOPE_LETHAL_DEG = 18.0
+
+
+def _ramp_slope(t):
+    """Green -> yellow -> orange -> red, keyed to ABSOLUTE slope in degrees.
+
+    `t` here is degrees, NOT a normalised [0, 1] fraction -- build_cloud_points
+    passes the raw slope values straight through for this colormap (see the
+    `colormap == "slope"` branch below), so the thresholds below read directly
+    as SLOPE_SAFE_DEG / SLOPE_LETHAL_DEG.
+
+    < SLOPE_SAFE_DEG               -> green   (free, matches costmap's 0)
+    SLOPE_SAFE_DEG..SLOPE_LETHAL_DEG -> green->yellow->orange ramp (priced)
+    >= SLOPE_LETHAL_DEG            -> red     (lethal, matches costmap's 100)
+    """
+    deg = np.clip(t, SLOPE_SAFE_DEG, SLOPE_LETHAL_DEG)
+    frac = (deg - SLOPE_SAFE_DEG) / (SLOPE_LETHAL_DEG - SLOPE_SAFE_DEG)
+    # Safe cells (t < SLOPE_SAFE_DEG) collapse frac to 0, i.e. pure green.
+    # Lethal cells (t >= SLOPE_LETHAL_DEG) collapse frac to 1, i.e. pure red.
+    r = np.where(t < SLOPE_SAFE_DEG, 0.0, np.clip(2.0 * frac, 0.0, 1.0))
+    g = np.where(t >= SLOPE_LETHAL_DEG, np.clip(2.0 * (1.0 - frac), 0.0, 1.0), 1.0)
+    g = np.where(t < SLOPE_SAFE_DEG, 1.0, g)
+    b = np.zeros_like(np.asarray(t, dtype=np.float64))
+    return r, g, b
+
+
+COLORMAPS = {"terrain": _ramp_terrain, "water": _ramp_water, "slope": _ramp_slope}
+
+# Colormaps in this set are keyed to ABSOLUTE, real-world units (e.g. degrees)
+# rather than the [0, 1] normalised fraction build_cloud_points otherwise
+# computes from the data's own min/max. build_cloud_points passes the raw
+# heights straight through to these instead of `t`.
+ABSOLUTE_COLORMAPS = {"slope"}
 
 
 Z_ALIGNMENTS = ("none", "min", "median")
@@ -142,13 +179,19 @@ def build_cloud_points(z, resolution, origin_x, origin_y, colormap="terrain",
     x = origin_x + (cols + 0.5) * resolution
     y = origin_y + (rows + 0.5) * resolution
 
-    lo = heights.min() if z_min is None else z_min
-    hi = heights.max() if z_max is None else z_max
-    span = hi - lo
-    # A perfectly flat layer (span 0, e.g. the water plane) would divide by
-    # zero; map it all to the middle of the ramp instead.
-    t = np.full_like(heights, 0.5) if span <= 0.0 else (heights - lo) / span
-    t = np.clip(t, 0.0, 1.0)
+    if colormap in ABSOLUTE_COLORMAPS:
+        # Keyed to real-world units (e.g. slope degrees), not a min/max
+        # fraction of THIS grid -- pass the raw values straight through so the
+        # colour means the same absolute thing on every world.
+        t = heights
+    else:
+        lo = heights.min() if z_min is None else z_min
+        hi = heights.max() if z_max is None else z_max
+        span = hi - lo
+        # A perfectly flat layer (span 0, e.g. the water plane) would divide by
+        # zero; map it all to the middle of the ramp instead.
+        t = np.full_like(heights, 0.5) if span <= 0.0 else (heights - lo) / span
+        t = np.clip(t, 0.0, 1.0)
 
     r, g, b = COLORMAPS[colormap](t)
     rgb_int = ((np.uint32(255 * r).astype(np.uint32) << 16)
