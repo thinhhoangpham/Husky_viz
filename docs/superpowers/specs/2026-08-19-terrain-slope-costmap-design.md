@@ -55,11 +55,11 @@ maps/<world>_dtm.npy  (float32 heights)
         v
 map_tools/slope_costmap.py          <-- offline, one pass, no ROS
         |  np.gradient -> degrees
-        |  degrees -> cost (thresholds)
+        |  degrees -> occupancy 0-100 (thresholds) -> inverted pixel
         |  resample onto <world>_map.yaml grid
         v
 maps/<world>_slope.npy   (float32 DEGREES, DTM grid)   <-- diagnostics + future fusion
-maps/<world>_slope.pgm   (cost bytes, map grid)        <-- fed to move_base
+maps/<world>_slope.pgm   (inverted occupancy, map grid)  <-- fed to move_base
 maps/<world>_slope.yaml  (grid meta + thresholds)
         |
         v
@@ -81,12 +81,22 @@ custom layer buys precision the data cannot supply.
 
 Driven by the measured lake distribution:
 
-| Slope | Cost | Meaning |
-|---|---|---|
-| < 10° (`--warn-deg`) | 0 | free, no penalty |
-| 10–18° | 1–252 linear ramp | crossable but priced; planner prefers a flatter detour |
-| > 18° (`--lethal-deg`) | 254 | lethal; planner routes around it |
-| NaN (no mesh) | 255 | unknown; NOT lethal |
+| Slope | Occupancy | PGM pixel | Resulting costmap cost | Meaning |
+|---|---|---|---|---|
+| < 10° (`--warn-deg`) | 0 | 255 | 0 | free, no penalty |
+| 10–18° | 1–99 linear ramp | 252→3 | 3–251 | crossable but priced |
+| > 18° (`--lethal-deg`) | 100 | 0 | 254 | lethal; routed around |
+| NaN (no mesh) | -1 (unknown) | 205 | NO_INFORMATION | unknown; NOT lethal |
+
+**The PGM is inverted.** `map_server` reads `occ = (255 - pixel)/255 * 100`, so
+pixel 0 = fully occupied and 255 = free — matching the convention already
+documented in `map_tools/occupancy_grid.py`. The generator therefore computes
+occupancy 0–100 from degrees and inverts on write. Getting this backwards would
+make flat ground lethal and steep ground free.
+
+Round-trip verified numerically: occ 0→px255→cost 0; occ 50→px128→cost 127;
+occ 100→px0→cost 254. Pixel 205 falls between `free_thresh` and
+`occupied_thresh`, so `map_server` emits -1 (unknown) for it.
 
 Thresholds are CLI flags so retuning is a 2-second regenerate. They are
 **absolute degrees, never percentile-derived** — a percentile stretch would turn
@@ -126,7 +136,7 @@ slope:
   trinary_costmap: false      # REQUIRED - see below
   lethal_cost_threshold: 100
   track_unknown_space: false  # NaN/off-mesh -> free, not lethal
-  unknown_cost_value: 255
+  unknown_cost_value: -1     # map_server emits -1 for the unknown band, NOT 255
   use_maximum: true           # REQUIRED - see below
 ```
 
@@ -162,7 +172,7 @@ Inflation runs last, so it seeds from the union of trees + steep terrain + lidar
 **Unit (pytest, `map_tools/tests/test_slope_costmap.py`):**
 - slope of a synthetic constant-gradient ramp equals the analytic angle
 - threshold boundaries: 9.9° -> 0, 10.1° -> >0, 17.9° -> <254, 18.1° -> 254
-- NaN in -> 255 out, never 254
+- NaN in -> unknown pixel 205 out, never 0 (lethal)
 - resample alignment: a known DTM cell lands at the correct map-grid index
 - park-like input (near-zero relief) -> all-free, no crash, no fabricated cost
 
