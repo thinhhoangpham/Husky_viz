@@ -15,7 +15,8 @@
 
   The map defaults to park; pass map:=<path> for another world, e.g.
     roslaunch launch/move_base_gps_map.launch \
-      map:=/home/thinh/Documents/Husky_viz/maps/lake_map.yaml
+      map:=/home/thinh/Documents/Husky_viz/maps/lake_map.yaml \
+      slope_map:=/home/thinh/Documents/Husky_viz/maps/lake_slope.yaml
   Everything else (planner, costmaps, remaps) is world-independent.
 -->
 <launch>
@@ -24,6 +25,19 @@
 
   <node name="map_server" pkg="map_server" type="map_server"
         args="$(arg map)" output="screen"/>
+
+  <!-- Terrain slope layer. Served as a second map on /slope_map, consumed by
+       the slope StaticLayer in the global costmap. Absolute path, matching
+       the map arg above; this repo is not a catkin package, so find(...)
+       does not resolve here.
+       Generate with: python3 -m map_tools.slope_costmap WORLD -->
+  <arg name="slope_map"
+       default="/home/thinh/Documents/Husky_viz/maps/park_slope.yaml"/>
+  <node name="slope_map_server" pkg="map_server" type="map_server"
+        args="$(arg slope_map)">
+    <remap from="map" to="/slope_map"/>
+    <remap from="map_metadata" to="/slope_map_metadata"/>
+  </node>
 
   <node pkg="move_base" type="move_base" respawn="false" name="move_base" output="screen">
 

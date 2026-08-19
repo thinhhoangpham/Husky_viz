@@ -17,9 +17,39 @@ resolution: 0.15
 
 plugins:
   - {name: static,     type: "costmap_2d::StaticLayer"}
+  - {name: slope,      type: "costmap_2d::StaticLayer"}
   - {name: obstacles,  type: "costmap_2d::ObstacleLayer"}
   - {name: inflation,  type: "costmap_2d::InflationLayer"}
 
 static:
   map_topic: /map
   subscribe_to_updates: false
+
+# Terrain steepness, precomputed offline by map_tools/slope_costmap.py from the
+# world's DTM. Free below 10 deg, a graded ramp 10-18 deg, lethal above 18 deg.
+#
+# TWO PARAMETERS HERE ARE LOAD-BEARING -- both defaults are wrong for this use:
+#
+#   trinary_costmap: false
+#     StaticLayer::interpretValue() collapses EVERY non-lethal value to
+#     FREE_SPACE when trinary is true (its default). Leaving it default would
+#     silently flatten the entire 10-18 deg graded band to zero, leaving the
+#     planner a cliff edge and nothing in between.
+#
+#   use_maximum: true
+#     StaticLayer OVERWRITES by default (use_maximum defaults to false). Since
+#     this layer runs AFTER `static`, the default would erase tree and bench
+#     costs wherever the two overlap -- a tree on flat ground would be wiped to
+#     free. With use_maximum the composite is max(tree, slope, lidar) per cell.
+#
+# track_unknown_space: false because ~31% of the lake grid is off-mesh NaN;
+# treating that as unknown inside a static_map:true costmap would carve holes in
+# a map the planner is told is fully known.
+slope:
+  map_topic: /slope_map
+  subscribe_to_updates: false
+  trinary_costmap: false
+  lethal_cost_threshold: 100
+  track_unknown_space: false
+  unknown_cost_value: -1
+  use_maximum: true
