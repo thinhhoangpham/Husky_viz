@@ -144,48 +144,75 @@ def test_cells_outside_source_get_fill():
 
 import os
 from map_tools.slope_costmap import (
-    occupancy_to_pixels, write_pgm, write_yaml, UNKNOWN_PIXEL,
+    occupancy_to_raw_pixels, write_pgm, write_yaml, UNKNOWN_PIXEL,
 )
 
 
-def test_free_occupancy_becomes_white_pixel():
-    assert occupancy_to_pixels(np.array([[0]], dtype=np.int16))[0, 0] == 255
+def test_free_occupancy_becomes_pixel_zero():
+    assert occupancy_to_raw_pixels(np.array([[0]], dtype=np.int16))[0, 0] == 0
 
 
-def test_lethal_occupancy_becomes_black_pixel():
-    assert occupancy_to_pixels(np.array([[100]], dtype=np.int16))[0, 0] == 0
+def test_lethal_occupancy_becomes_pixel_hundred():
+    assert occupancy_to_raw_pixels(np.array([[100]], dtype=np.int16))[0, 0] == 100
+
+
+def test_graded_occupancy_is_identity_not_inverted():
+    assert occupancy_to_raw_pixels(np.array([[50]], dtype=np.int16))[0, 0] == 50
 
 
 def test_unknown_becomes_the_unknown_pixel():
-    out = occupancy_to_pixels(np.array([[-1]], dtype=np.int16))
-    assert out[0, 0] == UNKNOWN_PIXEL == 205
+    out = occupancy_to_raw_pixels(np.array([[-1]], dtype=np.int16))
+    assert out[0, 0] == UNKNOWN_PIXEL == 255
 
 
-def test_inversion_roundtrips_through_map_server_formula():
-    # map_server: occ = (255 - px) / 255 * 100
+def test_raw_mode_roundtrips_identity_with_255_as_unknown():
+    # map_server raw mode: value = pixel, except pixel 255 -> occupancy -1.
     for occ_in in [0, 1, 25, 50, 75, 99, 100]:
-        px = int(occupancy_to_pixels(np.array([[occ_in]], dtype=np.int16))[0, 0])
-        occ_back = round((255 - px) / 255.0 * 100)
+        px = int(occupancy_to_raw_pixels(np.array([[occ_in]], dtype=np.int16))[0, 0])
+        occ_back = -1 if px == 255 else px
         assert occ_back == occ_in, (occ_in, px, occ_back)
 
+    # unknown
+    px = int(occupancy_to_raw_pixels(np.array([[-1]], dtype=np.int16))[0, 0])
+    occ_back = -1 if px == 255 else px
+    assert occ_back == -1
 
-def test_graded_band_is_monotonically_darker():
+
+def test_dtm_nan_survives_as_unknown_not_a_cost(tmp_path):
+    # THE REGRESSION TEST for the shipped bug: a DTM with NaN cells (open
+    # water / off-mesh) must produce PGM pixels of 255, which raw-mode
+    # semantics decode back to occupancy -1 (unknown) -- NEVER a cost value
+    # like the 20 that `mode: scale` silently produced for pixel 205.
+    from map_tools.slope_costmap import slope_degrees, slope_to_occupancy
+
+    heights = np.full((6, 6), 3.0)
+    heights[2, 2] = np.nan   # e.g. open water
+    slope = slope_degrees(heights, 0.25)
+    occ = slope_to_occupancy(slope, warn_deg=10.0, lethal_deg=18.0)
+    px = occupancy_to_raw_pixels(occ)
+
+    assert px[2, 2] == 255
+    decoded = np.where(px == 255, -1, px.astype(int))
+    assert decoded[2, 2] == -1
+
+
+def test_graded_band_is_monotonically_increasing_with_occupancy():
     occ = np.array([[0, 25, 50, 75, 100]], dtype=np.int16)
-    px = occupancy_to_pixels(occ)[0]
-    assert list(px) == sorted(px, reverse=True)
+    px = occupancy_to_raw_pixels(occ)[0]
+    assert list(px) == sorted(px)
 
 
 def test_pgm_row_zero_is_highest_y(tmp_path):
     # occ row 0 = LOWEST y. In the file, the FIRST row must be the HIGHEST y.
     occ = np.array([[0, 0], [100, 100]], dtype=np.int16)   # row 1 = high y = lethal
-    px = occupancy_to_pixels(occ)
+    px = occupancy_to_raw_pixels(occ)
     path = str(tmp_path / "t.pgm")
     write_pgm(path, px)
     with open(path, "rb") as fh:
         data = fh.read()
     body = data.split(b"255\n", 1)[1]
-    assert body[0] == 0 and body[1] == 0        # first file row = high y = black
-    assert body[2] == 255 and body[3] == 255    # last file row = low y = white
+    assert body[0] == 100 and body[1] == 100    # first file row = high y = lethal
+    assert body[2] == 0 and body[3] == 0        # last file row = low y = free
 
 
 def test_pgm_header_is_binary_p5_with_right_dimensions(tmp_path):
