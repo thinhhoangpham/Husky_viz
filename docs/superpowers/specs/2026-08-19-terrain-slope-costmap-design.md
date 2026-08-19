@@ -32,9 +32,12 @@ Computed from the real DTMs with `np.gradient` at 0.25 m resolution:
 | World | Relief | Max slope | >10° | >15° | >18° |
 |---|---|---|---|---|---|
 | park | 0.0069 m | 0.87° | 0% | 0% | 0% |
-| lake | 2.42 m | 24.3° | 14.4% | 2.5% | ~0.8% |
+| lake | 2.42 m | 24.3° | 14.4% | 2.5% | 0.77% |
 
 Lake slope percentiles: p50 3.6°, p75 7.4°, p90 11.4°, p95 13.3°, p99 17.3°.
+
+All percentages above and below are **of valid (non-NaN) cells**, not of the whole
+grid. Lake lethal is 0.77% of valid cells = 0.53% of all cells.
 
 `maps/lake_dtm.npy` is 398x200 at 0.25 m, origin (-49.75, -25.0), with 31% NaN
 (the water hole — `lago.dae` has no mesh there).
