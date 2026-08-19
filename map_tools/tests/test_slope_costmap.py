@@ -43,3 +43,56 @@ def test_slope_is_direction_agnostic():
     a = slope_degrees(up, res)
     b = slope_degrees(down, res)
     assert np.allclose(a[1:-1, 1:-1], b[1:-1, 1:-1])
+
+
+from map_tools.slope_costmap import slope_to_occupancy, UNKNOWN_OCC
+
+
+def test_below_warn_is_free():
+    s = np.array([[0.0, 5.0, 9.9]])
+    out = slope_to_occupancy(s, warn_deg=10.0, lethal_deg=18.0)
+    assert list(out[0]) == [0, 0, 0]
+
+
+def test_at_or_above_lethal_is_full_occupancy():
+    s = np.array([[18.0, 18.1, 24.3, 90.0]])
+    out = slope_to_occupancy(s, warn_deg=10.0, lethal_deg=18.0)
+    assert list(out[0]) == [100, 100, 100, 100]
+
+
+def test_graded_band_is_strictly_between():
+    s = np.array([[10.0, 14.0, 17.9]])
+    out = slope_to_occupancy(s, warn_deg=10.0, lethal_deg=18.0)
+    assert all(1 <= v <= 99 for v in out[0]), list(out[0])
+
+
+def test_graded_band_is_monotonic():
+    s = np.linspace(10.0, 17.9, 40).reshape(1, -1)
+    out = slope_to_occupancy(s, warn_deg=10.0, lethal_deg=18.0)[0]
+    assert list(out) == sorted(out)
+
+
+def test_band_midpoint_is_near_half():
+    s = np.array([[14.0]])  # exact midpoint of 10..18
+    out = slope_to_occupancy(s, warn_deg=10.0, lethal_deg=18.0)
+    assert 45 <= out[0, 0] <= 55
+
+
+def test_nan_becomes_unknown_never_lethal():
+    s = np.array([[np.nan, 3.0]])
+    out = slope_to_occupancy(s, warn_deg=10.0, lethal_deg=18.0)
+    assert out[0, 0] == UNKNOWN_OCC == -1
+    assert out[0, 1] == 0
+
+
+def test_flat_world_produces_no_cost_at_all():
+    # The park case: 0.87 deg max relief must yield a uniformly free layer.
+    s = np.full((50, 50), 0.87)
+    out = slope_to_occupancy(s, warn_deg=10.0, lethal_deg=18.0)
+    assert out.max() == 0
+
+
+def test_thresholds_are_honoured_not_hardcoded():
+    s = np.array([[12.0]])
+    assert slope_to_occupancy(s, warn_deg=10.0, lethal_deg=18.0)[0, 0] < 100
+    assert slope_to_occupancy(s, warn_deg=5.0, lethal_deg=11.0)[0, 0] == 100
