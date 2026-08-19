@@ -217,11 +217,50 @@ def _map_grid_from_yaml(path):
     return ox, oy, float(meta["resolution"])
 
 
+def read_pgm_dimensions(path):
+    """Parse just the header of a binary P5 PGM and return (width, height).
+
+    Reads only the header tokens (magic, width, height, maxval) -- never the
+    pixel body -- so this is cheap even on a large map.
+    """
+    if not os.path.exists(path):
+        raise IOError("object map PGM not found: %s (the slope layer must be "
+                       "sized to match it, not the DTM footprint)" % path)
+
+    with open(path, "rb") as fh:
+        tokens = []
+        # P5 header: magic, width, height, maxval -- whitespace-separated,
+        # comments starting with '#' allowed between tokens.
+        while len(tokens) < 4:
+            chunk = fh.read(1)
+            if not chunk:
+                raise IOError("truncated PGM header in %s" % path)
+            if chunk in b" \t\r\n":
+                continue
+            if chunk == b"#":
+                fh.readline()
+                continue
+            token = chunk
+            while True:
+                c = fh.read(1)
+                if not c or c in b" \t\r\n":
+                    break
+                token += c
+            tokens.append(token)
+
+    magic, width, height, _maxval = tokens
+    if magic != b"P5":
+        raise ValueError("%s is not a binary P5 PGM (magic=%r)"
+                         % (path, magic))
+    return int(width), int(height)
+
+
 def build(world, maps_dir="maps", warn_deg=10.0, lethal_deg=18.0):
     """Full pipeline: DTM -> slope -> occupancy -> map grid -> PGM/YAML/NPY."""
     dtm_npy = os.path.join(maps_dir, "%s_dtm.npy" % world)
     dtm_yaml = os.path.join(maps_dir, "%s_dtm.yaml" % world)
     map_yaml = os.path.join(maps_dir, "%s_map.yaml" % world)
+    map_pgm = os.path.join(maps_dir, "%s_map.pgm" % world)
 
     heights = np.load(dtm_npy)
     dmeta = read_dtm_yaml(dtm_yaml)
@@ -231,13 +270,16 @@ def build(world, maps_dir="maps", warn_deg=10.0, lethal_deg=18.0):
     slope = slope_degrees(heights, src.resolution)
     occ_src = slope_to_occupancy(slope, warn_deg, lethal_deg)
 
-    # Destination grid: the occupancy map's origin+resolution, sized to cover
-    # the same world footprint as the DTM.
+    # Destination grid: MUST be pixel-identical to the object map's PGM, not
+    # sized from the DTM footprint. move_base loads both as StaticLayers on
+    # the same non-rolling costmap; if their dimensions differ, whichever
+    # layer's map arrives last resizes the master costmap and truncates the
+    # other (costmap_2d::StaticLayer::incomingMap -> resizeMap). Cells the
+    # DTM does not cover are filled UNKNOWN_OCC by resample_nearest, which is
+    # the correct behaviour for map area outside the DTM.
     ox, oy, res = _map_grid_from_yaml(map_yaml)
-    span_x = src.width * src.resolution
-    span_y = src.height * src.resolution
-    dst = GridSpec(ox, oy, res,
-                   int(np.ceil(span_x / res)), int(np.ceil(span_y / res)))
+    dst_width, dst_height = read_pgm_dimensions(map_pgm)
+    dst = GridSpec(ox, oy, res, dst_width, dst_height)
 
     occ_dst = resample_nearest(occ_src, src, dst, fill=UNKNOWN_OCC)
 

@@ -210,11 +210,18 @@ def test_yaml_carries_grid_and_thresholds(tmp_path):
 
 
 import pytest as _pytest  # already imported above; kept for clarity
-from map_tools.slope_costmap import read_dtm_yaml, build, main
+from map_tools.slope_costmap import read_dtm_yaml, build, main, read_pgm_dimensions
 
 
-def _fake_world(tmp_path, name, heights, res=0.25, ox=-5.0, oy=-4.0):
-    """Write a minimal <name>_dtm.{npy,yaml} + <name>_map.yaml pair."""
+def _fake_world(tmp_path, name, heights, res=0.25, ox=-5.0, oy=-4.0,
+                 map_width=None, map_height=None):
+    """Write a minimal <name>_dtm.{npy,yaml} + <name>_map.{yaml,pgm} set.
+
+    By default the object map's PGM dimensions match the DTM footprint
+    (heights.shape), but a caller can pass map_width/map_height to make them
+    deliberately differ, e.g. to prove build() sizes off the map PGM and not
+    the DTM footprint.
+    """
     maps = tmp_path / "maps"
     maps.mkdir(exist_ok=True)
     np.save(str(maps / ("%s_dtm.npy" % name)), heights.astype(np.float32))
@@ -228,6 +235,11 @@ def _fake_world(tmp_path, name, heights, res=0.25, ox=-5.0, oy=-4.0):
         "image: %s_map.pgm\nresolution: 0.150000\n"
         "origin: [%f, %f, 0.0]\nnegate: 0\n"
         "occupied_thresh: 0.65\nfree_thresh: 0.196\n" % (name, ox, oy))
+
+    mw = map_width if map_width is not None else heights.shape[1]
+    mh = map_height if map_height is not None else heights.shape[0]
+    map_pixels = np.full((mh, mw), 255, dtype=np.uint8)
+    write_pgm(str(maps / ("%s_map.pgm" % name)), map_pixels)
     return maps
 
 
@@ -290,3 +302,27 @@ def test_main_rejects_inverted_thresholds(tmp_path):
     maps = _fake_world(tmp_path, "cli2", np.full((40, 60), 3.0))
     assert main(["cli2", "--maps-dir", str(maps),
                  "--warn-deg", "20", "--lethal-deg", "10"]) != 0
+
+
+def test_build_sizes_slope_grid_to_object_map_not_dtm_footprint(tmp_path):
+    # DTM footprint is 40x60 cells at res=0.25. If build() sized the
+    # destination from that footprint (the old, buggy behaviour) it would
+    # produce a slope PGM of a DIFFERENT size than the object map's PGM
+    # (deliberately set to 50x70 here), which is exactly the StaticLayer
+    # size-mismatch bug this test guards against.
+    heights = np.full((40, 60), 3.0)
+    maps = _fake_world(tmp_path, "sized", heights, res=0.25,
+                        map_width=70, map_height=50)
+    build("sized", str(maps), warn_deg=10.0, lethal_deg=18.0)
+
+    map_w, map_h = read_pgm_dimensions(str(maps / "sized_map.pgm"))
+    slope_w, slope_h = read_pgm_dimensions(str(maps / "sized_slope.pgm"))
+    assert (slope_w, slope_h) == (map_w, map_h) == (70, 50)
+
+
+def test_build_raises_clear_error_when_object_map_pgm_missing(tmp_path):
+    heights = np.full((40, 60), 3.0)
+    maps = _fake_world(tmp_path, "nomap", heights)
+    os.remove(str(maps / "nomap_map.pgm"))
+    with pytest.raises(IOError, match="nomap_map.pgm"):
+        build("nomap", str(maps), warn_deg=10.0, lethal_deg=18.0)

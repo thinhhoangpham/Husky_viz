@@ -38,6 +38,25 @@ Wait for Gazebo to show the park + robot, then ~30–60 s for the pose to settle
 
 ## Step 2 — Navigation + map
 
+### Terrain slope layer
+
+The global costmap carries a `slope` layer so the planner routes around steep
+uphill and downhill ground. It is precomputed from the world's DTM -- regenerate
+it whenever the DTM changes or you want different thresholds:
+
+    python3 -m map_tools.slope_costmap lake      # the sloped demo world
+    python3 -m map_tools.slope_costmap park      # flat: produces an all-free layer
+
+Writes `maps/<world>_slope.{npy,pgm,yaml}`. The `.pgm` is what move_base
+consumes (via a second `map_server` on `/slope_map`); the `.npy` holds the slope
+in DEGREES and is for inspection and future terrain work, not for the planner.
+
+Thresholds are absolute degrees, defaulting to free below 10 deg, a graded
+ramp 10-18 deg, and lethal above 18 deg. Retune with `--warn-deg` /
+`--lethal-deg` and regenerate -- the PGM cannot reinterpret itself.
+
+Expected output: lake ~0.8% lethal / ~14% graded; park 0% of both.
+
 Start these **three** nodes, each in its own new terminal (Step 1 is Terminal 1). All three must be running.
 
 **Terminal 2 — map_server + move_base:**
