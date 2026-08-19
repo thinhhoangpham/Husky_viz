@@ -234,6 +234,52 @@ def test_slope_ramp_handles_nan_without_crashing():
     assert np.isfinite(pts).all()
 
 
+def test_grid_meta_override_reads_the_specified_file_not_the_sibling(tmp_path):
+    """A slope .npy is on the DTM grid, so --grid-meta must point geometry at
+    the DTM's yaml, ignoring whatever (possibly wrong-geometry) yaml sits
+    beside the slope .npy itself."""
+    npy = tmp_path / "world_slope.npy"
+    np.save(str(npy), np.zeros((2, 2), dtype=np.float32))
+    # Sibling yaml deliberately carries DIFFERENT geometry from the override,
+    # so a passing test proves the override -- not the sibling -- was read.
+    (tmp_path / "world_slope.yaml").write_text(
+        "resolution: 999.0\norigin_x: 999.0\norigin_y: 999.0\n")
+    dtm_yaml = tmp_path / "world_dtm.yaml"
+    dtm_yaml.write_text(
+        "resolution: 0.250000\norigin_x: -50.000000\norigin_y: -26.750000\n")
+    res, ox, oy = pdc.load_grid_meta(str(npy), str(dtm_yaml))
+    assert res == pytest.approx(0.25)
+    assert ox == pytest.approx(-50.0)
+    assert oy == pytest.approx(-26.75)
+
+
+def test_grid_meta_default_still_reads_the_sibling_yaml(tmp_path):
+    """Regression guard: omitting --grid-meta must mean exactly the old
+    behaviour of reading the sibling yaml."""
+    npy = tmp_path / "x_dtm.npy"
+    np.save(str(npy), np.zeros((2, 2), dtype=np.float32))
+    (tmp_path / "x_dtm.yaml").write_text(
+        "resolution: 0.250000\norigin_x: -50.000000\norigin_y: -26.750000\n")
+    res, ox, oy = pdc.load_grid_meta(str(npy))
+    assert res == pytest.approx(0.25)
+    assert ox == pytest.approx(-50.0)
+    assert oy == pytest.approx(-26.75)
+
+
+def test_map_server_style_sibling_yaml_error_mentions_grid_meta(tmp_path):
+    """A map_server-style yaml (image/origin:[x,y,z]/negate/...) has no
+    origin_x -- the error must name --grid-meta as the fix, not just list the
+    missing keys, since a future caller hitting this needs to know what to do."""
+    npy = tmp_path / "world_slope.npy"
+    np.save(str(npy), np.zeros((2, 2), dtype=np.float32))
+    (tmp_path / "world_slope.yaml").write_text(
+        "image: world_slope.pgm\nresolution: 0.250000\n"
+        "origin: [-50.0, -26.75, 0.0]\nnegate: 0\n"
+        "occupied_thresh: 0.65\nfree_thresh: 0.196\nmode: trinary\n")
+    with pytest.raises(ValueError, match="--grid-meta"):
+        pdc.load_grid_meta(str(npy))
+
+
 def test_real_park_dtm_round_trips_if_present():
     npy = os.path.join(os.path.dirname(__file__), "..", "..", "maps",
                        "park_dtm.npy")

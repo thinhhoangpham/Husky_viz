@@ -119,7 +119,12 @@ PY
       # SAME offset as the terrain -- never its own --z-align, which would
       # flatten the slope layer onto the terrain floor and detach it from the
       # relief it is meant to sit on.
+      # --grid-meta points geometry at the DTM's yaml: the slope .npy is
+      # computed straight off the DTM array (same shape/origin/resolution),
+      # but its own sibling yaml describes the resampled, map_server-style
+      # PGM grid used for costmaps -- a different geometry entirely.
       python3 /repo/scripts/publish_dtm_cloud.py --dtm "/repo/maps/${DTM_WORLD}_slope.npy" \
+        --grid-meta "/repo/maps/${DTM_WORLD}_dtm.yaml" \
         --topic /slope_cloud --colormap slope --z-offset "${DTM_OFF}" \
         > /tmp/dtm_slope.log 2>&1 &
     fi

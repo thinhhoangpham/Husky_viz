@@ -53,9 +53,20 @@ from std_msgs.msg import Header
 _NEEDED = ("resolution", "origin_x", "origin_y")
 
 
-def load_grid_meta(npy_path):
-    """(resolution, origin_x, origin_y) from the .yaml beside `npy_path`."""
-    yaml_path = os.path.splitext(npy_path)[0] + ".yaml"
+def load_grid_meta(npy_path, grid_meta_path=None):
+    """(resolution, origin_x, origin_y) for `npy_path`.
+
+    By default this reads the .yaml beside `npy_path` (the extractor's
+    DTM-style yaml, with flat resolution/origin_x/origin_y/width/height keys).
+
+    `grid_meta_path`, if given, overrides which yaml is read -- this is for
+    rasters like `<world>_slope.npy` that hold values computed straight off
+    the DTM array (same shape, origin, and resolution as `<world>_dtm.npy`)
+    but whose own sibling yaml describes a DIFFERENT, resampled grid (the
+    map_server-style PGM used for costmaps). In that case the geometry must
+    come from the DTM's yaml, not the slope's own.
+    """
+    yaml_path = grid_meta_path or (os.path.splitext(npy_path)[0] + ".yaml")
     if not os.path.exists(yaml_path):
         raise IOError(
             "missing %s -- the DTM .npy carries no geometry of its own, so "
@@ -76,7 +87,14 @@ def load_grid_meta(npy_path):
                     pass
     missing = [k for k in _NEEDED if k not in meta]
     if missing:
-        raise ValueError("%s is missing %s" % (yaml_path, ", ".join(missing)))
+        raise ValueError(
+            "%s is missing %s -- this looks like a map_server-style yaml "
+            "(image/origin:[x,y,z]/negate/...) rather than the DTM extractor's "
+            "flat resolution/origin_x/origin_y format, so it does not carry "
+            "the keys this loader needs. If %s is on a different grid than "
+            "its own geometry (e.g. a slope .npy computed on the DTM grid), "
+            "pass --grid-meta pointing at the correct DTM .yaml instead." %
+            (yaml_path, ", ".join(missing), npy_path))
     return meta["resolution"], meta["origin_x"], meta["origin_y"]
 
 
@@ -231,6 +249,14 @@ def main(argv=None):
     ap = argparse.ArgumentParser(
         description="Publish a DTM .npy as a height-coloured PointCloud2")
     ap.add_argument("--dtm", required=True, help="path to a DTM .npy")
+    ap.add_argument("--grid-meta", default=None,
+                    help="yaml to read grid geometry (resolution/origin_x/"
+                         "origin_y) from, overriding the default of the "
+                         "sibling <dtm-stem>.yaml. Needed for rasters like "
+                         "<world>_slope.npy, which are computed on the DTM "
+                         "grid but whose own sibling yaml describes a "
+                         "different, resampled grid -- point this at the "
+                         "matching <world>_dtm.yaml instead.")
     ap.add_argument("--topic", default="/dtm_cloud")
     ap.add_argument("--frame", default="map")
     ap.add_argument("--rate", type=float, default=1.0,
@@ -260,7 +286,7 @@ def main(argv=None):
         ap.error("--rate must be positive")
 
     z = np.load(args.dtm)
-    resolution, origin_x, origin_y = load_grid_meta(args.dtm)
+    resolution, origin_x, origin_y = load_grid_meta(args.dtm, args.grid_meta)
     total_offset = args.z_offset + compute_align_offset(z, args.z_align)
     points = build_cloud_points(z, resolution, origin_x, origin_y,
                                 colormap=args.colormap,
