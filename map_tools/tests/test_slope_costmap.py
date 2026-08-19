@@ -96,3 +96,47 @@ def test_thresholds_are_honoured_not_hardcoded():
     s = np.array([[12.0]])
     assert slope_to_occupancy(s, warn_deg=10.0, lethal_deg=18.0)[0, 0] < 100
     assert slope_to_occupancy(s, warn_deg=5.0, lethal_deg=11.0)[0, 0] == 100
+
+
+from map_tools.slope_costmap import GridSpec, resample_nearest
+
+
+def test_identical_grids_roundtrip_unchanged():
+    g = GridSpec(origin_x=-1.0, origin_y=-2.0, resolution=0.25, width=8, height=4)
+    src = np.arange(32, dtype=np.int16).reshape(4, 8)
+    out = resample_nearest(src, g, g)
+    assert np.array_equal(out, src)
+
+
+def test_upsample_preserves_world_position_of_a_marked_cell():
+    # Source: 1 m cells, origin (0,0), 4x4. Mark the cell covering world (2.5, 1.5).
+    src_grid = GridSpec(0.0, 0.0, 1.0, 4, 4)
+    src = np.zeros((4, 4), dtype=np.int16)
+    src[1, 2] = 100                      # row=1 -> y in [1,2), col=2 -> x in [2,3)
+    dst_grid = GridSpec(0.0, 0.0, 0.5, 8, 8)   # same extent, finer cells
+    out = resample_nearest(src, src_grid, dst_grid)
+    # World (2.5, 1.5) must still be 100 in the destination.
+    col = int((2.5 - dst_grid.origin_x) / dst_grid.resolution)
+    row = int((1.5 - dst_grid.origin_y) / dst_grid.resolution)
+    assert out[row, col] == 100
+    # And a cell far away must not be.
+    assert out[0, 0] == 0
+
+
+def test_offset_origin_is_accounted_for():
+    src_grid = GridSpec(-10.0, -10.0, 1.0, 20, 20)
+    src = np.zeros((20, 20), dtype=np.int16)
+    src[15, 12] = 100                    # world x in [2,3), y in [5,6)
+    dst_grid = GridSpec(0.0, 0.0, 1.0, 10, 10)   # different origin
+    out = resample_nearest(src, src_grid, dst_grid)
+    assert out[5, 2] == 100
+    assert out.sum() == 100              # exactly one cell carried over
+
+
+def test_cells_outside_source_get_fill():
+    src_grid = GridSpec(0.0, 0.0, 1.0, 2, 2)
+    src = np.zeros((2, 2), dtype=np.int16)
+    dst_grid = GridSpec(0.0, 0.0, 1.0, 4, 4)     # extends past the source
+    out = resample_nearest(src, src_grid, dst_grid, fill=-1)
+    assert out[0, 0] == 0        # inside source
+    assert out[3, 3] == -1       # outside source

@@ -64,3 +64,58 @@ def slope_to_occupancy(slope_deg, warn_deg=10.0, lethal_deg=18.0):
 
     occ[known & (s >= lethal_deg)] = 100
     return occ
+
+
+class GridSpec(object):
+    """Geometry of a raster: where cell (0,0) sits in the world and how big
+    cells are. Row 0 is the LOWEST y (the .npy convention used by extract_dtm).
+    """
+
+    def __init__(self, origin_x, origin_y, resolution, width, height):
+        self.origin_x = float(origin_x)
+        self.origin_y = float(origin_y)
+        self.resolution = float(resolution)
+        self.width = int(width)
+        self.height = int(height)
+
+    def cell_centres(self):
+        """World (x, y) of every cell centre, as (xs[width], ys[height])."""
+        xs = self.origin_x + (np.arange(self.width) + 0.5) * self.resolution
+        ys = self.origin_y + (np.arange(self.height) + 0.5) * self.resolution
+        return xs, ys
+
+    def __repr__(self):
+        return ("GridSpec(origin=(%.3f, %.3f), res=%.3f, %dx%d)"
+                % (self.origin_x, self.origin_y, self.resolution,
+                   self.width, self.height))
+
+
+def resample_nearest(src, src_grid, dst_grid, fill=UNKNOWN_OCC):
+    """Nearest-neighbour resample from one grid geometry to another.
+
+    The DTM and the occupancy map do NOT share a grid (different resolution
+    AND different origin). Without this step every slope cell lands in the
+    wrong place in the costmap.
+
+    Nearest-neighbour, not interpolation: the values are already-classified
+    occupancy, and averaging a lethal cell with a free one would invent a
+    meaningless intermediate.
+    """
+    src = np.asarray(src)
+    xs, ys = dst_grid.cell_centres()
+
+    cols = np.floor((xs - src_grid.origin_x) / src_grid.resolution).astype(int)
+    rows = np.floor((ys - src_grid.origin_y) / src_grid.resolution).astype(int)
+
+    col_ok = (cols >= 0) & (cols < src_grid.width)
+    row_ok = (rows >= 0) & (rows < src_grid.height)
+
+    out = np.full((dst_grid.height, dst_grid.width), fill, dtype=src.dtype)
+    if not col_ok.any() or not row_ok.any():
+        return out
+
+    inside = np.outer(row_ok, col_ok)
+    picked = src[np.clip(rows, 0, src_grid.height - 1)[:, None],
+                 np.clip(cols, 0, src_grid.width - 1)[None, :]]
+    out[inside] = picked[inside]
+    return out
