@@ -3,12 +3,14 @@
 One terminal per step. Each block sets its own ROS env, so copy-paste as-is.
 
 > **Park is the default.** To run the same demo in the **lake** world, change
-> three things — everything else is identical:
+> the things below — everything else is identical. Note step 2 needs BOTH
+> `map:=` and `slope_map:=`: they must come from the SAME world, or the two
+> static layers disagree on grid size and one truncates the other.
 >
 > | Step | Park (default) | Lake |
 > |---|---|---|
 > | 1 | `./load-park-world.sh` | `./load-park-world.sh --world lake` |
-> | 2 | `roslaunch launch/move_base_gps_map.launch` | append `map:=$HOME/Documents/Husky_viz/maps/lake_map.yaml` |
+> | 2 | `roslaunch launch/move_base_gps_map.launch` | append `map:=$HOME/Documents/Husky_viz/maps/lake_map.yaml slope_map:=$HOME/Documents/Husky_viz/maps/lake_slope.yaml` |
 > | 3 | `_objects_path:=…/maps/park_objects.yaml` | `…/maps/lake_objects.yaml` |
 >
 > Lake is self-contained in `models_lake_opt/` (low-poly visuals *and* the original
@@ -50,6 +52,11 @@ it whenever the DTM changes or you want different thresholds:
 Writes `maps/<world>_slope.{npy,pgm,yaml}`. The `.pgm` is what move_base
 consumes (via a second `map_server` on `/slope_map`); the `.npy` holds the slope
 in DEGREES and is for inspection and future terrain work, not for the planner.
+
+Note `*.pgm` is gitignored and the map PGMs are force-added, so a regenerated
+slope PGM will NOT show up in `git status` -- commit it with
+`git add -f maps/<world>_slope.pgm` or the tracked raster silently goes stale
+against the thresholds its YAML claims.
 
 Thresholds are absolute degrees, defaulting to free below 10 deg, a graded
 ramp 10-18 deg, and lethal above 18 deg. Retune with `--warn-deg` /

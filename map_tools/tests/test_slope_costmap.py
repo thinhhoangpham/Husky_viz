@@ -209,7 +209,6 @@ def test_yaml_carries_grid_and_thresholds(tmp_path):
     assert "warn_deg" in text and "18.0" in text
 
 
-import pytest as _pytest  # already imported above; kept for clarity
 from map_tools.slope_costmap import read_dtm_yaml, build, main, read_pgm_dimensions
 
 
