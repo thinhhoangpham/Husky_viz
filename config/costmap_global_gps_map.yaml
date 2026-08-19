@@ -1,9 +1,20 @@
 # Global costmap for the GPS-anchored, MAP-BACKED move_base
 # (launch/move_base_gps_map.launch). Unlike costmap_global_gps.yaml (mapless,
 # rolling window), this loads the preloaded object map as a StaticLayer and
-# plans over the WHOLE world at once. Layer order is the additive-lidar rule:
-#   static (preloaded objects) -> obstacles (live lidar, ADDS) -> inflation.
-# Lidar can only ADD obstacles on top of the static map, never clear it.
+# plans over the WHOLE world at once.
+#
+# The global costmap is STATIC OBJECT FOOTPRINTS + INFLATION ONLY. There is no
+# ObstacleLayer here: live lidar is deliberately NOT consumed globally, so the
+# global plan is built purely from the known object map. This is a deliberate
+# decision made after in-sim measurement -- lidar was contributing the large
+# majority of the global costmap's lethal cells, none of them from the map.
+# The LOCAL costmap (config/costmap_local_gps.yaml) still runs its ObstacleLayer
+# and remains the sole consumer of live lidar for close-range avoidance.
+#
+# Note: config/costmap_common_gps.yaml is loaded into BOTH costmap namespaces,
+# so its `obstacles:` block still lands in the global namespace. With no
+# ObstacleLayer instantiated here, costmap_2d simply ignores those params. That
+# file must NOT be split -- the local costmap needs the very same block.
 #
 # There is no terrain layer here. The DTM is deliberately NOT consulted by the
 # costmap; terrain will be wired into sensing separately.
@@ -20,9 +31,12 @@ track_unknown_space: false
 
 resolution: 0.15
 
+# Inflation params (inflation_radius, cost_scaling_factor) come from the
+# `inflation:` block of config/costmap_common_gps.yaml, which is loaded into
+# this namespace -- the layer instance is named `inflation`, so it still reads
+# them with the obstacles layer gone. Do not duplicate them here.
 plugins:
   - {name: static,     type: "costmap_2d::StaticLayer"}
-  - {name: obstacles,  type: "costmap_2d::ObstacleLayer"}
   - {name: inflation,  type: "costmap_2d::InflationLayer"}
 
 static:
