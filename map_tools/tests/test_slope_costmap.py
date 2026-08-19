@@ -207,3 +207,86 @@ def test_yaml_carries_grid_and_thresholds(tmp_path):
     assert "resolution: 0.150000" in text
     assert "origin: [-55.491500, -30.971300, 0.0]" in text
     assert "warn_deg" in text and "18.0" in text
+
+
+import pytest as _pytest  # already imported above; kept for clarity
+from map_tools.slope_costmap import read_dtm_yaml, build, main
+
+
+def _fake_world(tmp_path, name, heights, res=0.25, ox=-5.0, oy=-4.0):
+    """Write a minimal <name>_dtm.{npy,yaml} + <name>_map.yaml pair."""
+    maps = tmp_path / "maps"
+    maps.mkdir(exist_ok=True)
+    np.save(str(maps / ("%s_dtm.npy" % name)), heights.astype(np.float32))
+    (maps / ("%s_dtm.yaml" % name)).write_text(
+        "# comment line that must be skipped\n"
+        "layer: terrain\n"
+        "resolution: %f\norigin_x: %f\norigin_y: %f\n"
+        "width: %d\nheight: %d\n"
+        % (res, ox, oy, heights.shape[1], heights.shape[0]))
+    (maps / ("%s_map.yaml" % name)).write_text(
+        "image: %s_map.pgm\nresolution: 0.150000\n"
+        "origin: [%f, %f, 0.0]\nnegate: 0\n"
+        "occupied_thresh: 0.65\nfree_thresh: 0.196\n" % (name, ox, oy))
+    return maps
+
+
+def test_read_dtm_yaml_skips_comments_and_types_values(tmp_path):
+    p = tmp_path / "d.yaml"
+    p.write_text("# a comment\nlayer: terrain\nresolution: 0.250000\n"
+                 "width: 400\nnote: free text here\n")
+    got = read_dtm_yaml(str(p))
+    assert got["layer"] == "terrain"
+    assert got["resolution"] == 0.25
+    assert got["width"] == 400
+    assert got["note"] == "free text here"
+
+
+def test_build_on_flat_world_produces_all_free(tmp_path):
+    heights = np.full((40, 60), 3.0)
+    maps = _fake_world(tmp_path, "flatland", heights)
+    stats = build("flatland", str(maps), warn_deg=10.0, lethal_deg=18.0)
+    assert stats["lethal_pct"] == 0.0
+    assert stats["graded_pct"] == 0.0
+    assert stats["free_pct"] == 100.0
+    assert os.path.exists(str(maps / "flatland_slope.pgm"))
+    assert os.path.exists(str(maps / "flatland_slope.yaml"))
+    assert os.path.exists(str(maps / "flatland_slope.npy"))
+
+
+def test_build_writes_degrees_not_cost_in_the_npy(tmp_path):
+    res = 0.25
+    heights = np.tile(np.arange(60) * res, (40, 1))   # 45 degree ramp
+    maps = _fake_world(tmp_path, "ramp", heights, res=res)
+    build("ramp", str(maps), warn_deg=10.0, lethal_deg=18.0)
+    saved = np.load(str(maps / "ramp_slope.npy"))
+    assert saved.dtype == np.float32
+    assert saved[20, 30] == pytest.approx(45.0, abs=1e-4)
+
+
+def test_build_marks_steep_ground_lethal(tmp_path):
+    res = 0.25
+    heights = np.tile(np.arange(60) * res, (40, 1))   # 45 deg everywhere
+    maps = _fake_world(tmp_path, "steep", heights, res=res)
+    stats = build("steep", str(maps), warn_deg=10.0, lethal_deg=18.0)
+    assert stats["lethal_pct"] > 90.0
+
+
+def test_build_propagates_nan_as_unknown(tmp_path):
+    heights = np.full((40, 60), 3.0)
+    heights[:20, :] = np.nan
+    maps = _fake_world(tmp_path, "holey", heights)
+    stats = build("holey", str(maps), warn_deg=10.0, lethal_deg=18.0)
+    assert stats["unknown_pct"] > 0.0
+    assert stats["lethal_pct"] == 0.0     # NaN must never become lethal
+
+
+def test_main_returns_zero_on_success(tmp_path):
+    maps = _fake_world(tmp_path, "cli", np.full((40, 60), 3.0))
+    assert main(["cli", "--maps-dir", str(maps)]) == 0
+
+
+def test_main_rejects_inverted_thresholds(tmp_path):
+    maps = _fake_world(tmp_path, "cli2", np.full((40, 60), 3.0))
+    assert main(["cli2", "--maps-dir", str(maps),
+                 "--warn-deg", "20", "--lethal-deg", "10"]) != 0
