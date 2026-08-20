@@ -48,6 +48,35 @@ SLOPING patch (the robot sits on a shore slope) rather than the ground directly
 beneath the wheels. The z_variance default is set loose enough that the EKF treats
 this as a soft constraint, not gospel.
 
+THE FRAME MATTERS -- ~frame_id, and why the wrong one silently corrupts the map EKF
+-----------------------------------------------------------------------------------
+What we publish is an ABSOLUTE elevation (DTM terrain height + measured clearance),
+not an odom-relative one. The `~frame_id` param says so; it must match the frame the
+number is actually expressed in.
+
+This is not cosmetic, because of how robot_localization consumes a pose measurement.
+In RosFilter::preparePose it looks up `world_frame <- msg.header.frame_id` from tf and
+applies that transform to the measurement before fusing (ros_filter.cpp: the
+`poseTmp.mult(targetFrameTrans, poseTmp)` step). So:
+
+  * stamped "odom", read by the ODOM filter (world_frame: odom)
+        transform is odom->odom = identity. Harmless no-op.
+  * stamped "odom", read by the MAP filter (world_frame: map)
+        transform is map->odom -- THE MAP FILTER'S OWN OUTPUT. The filter applies its
+        own estimate to its own input, so its output is added back to its measurement
+        every cycle and settles at a nonzero offset. Measured: map->odom z drifted to
+        +1.228 m, putting the robot 1.23 m above where it stood.
+  * stamped "map" (correct for this quantity)
+        the MAP filter's transform is map->map = identity, so no feedback. The ODOM
+        filter's transform is odom->map, whose z is -(map->odom).z -- and the map
+        filter now drives map->odom to ~0, so that correction vanishes. Both filters
+        converge on the same true height.
+
+Hence: run this with `_frame_id:=map` and fuse it in BOTH filters. Fusing it in
+NEITHER is not an alternative -- the map filter does not pass z through, it estimates
+it, so with no z input it estimates 0 and emits map->odom z = -(odom->base_link).z,
+cancelling the odom filter's correct height and putting the robot back underground.
+
 No Gazebo ground truth is used anywhere: only /os0_cloud_node/points, /compass/data,
 and the robot's own URDF-derived TF.
 """
@@ -120,10 +149,23 @@ def base_link_z(h_sensor, mount_dz, ground_elev=0.0):
 
 def dtm_elevation_at(dtm_z, resolution, origin_x, origin_y, x, y):
     """Terrain elevation from a DTM array at world (x, y); None if outside the
-    grid or that cell has no data (NaN). Row 0 = lowest y, matching DtmGrid."""
+    grid or that cell has no data (NaN). Row 0 = lowest y, matching DtmGrid.
+
+    np.floor, not int() truncation: truncation rounds toward zero, so a query in
+    the sub-cell strip just BELOW the origin gets index 0 instead of -1 and is
+    silently answered with cell 0's terrain instead of being rejected as
+    off-grid. Measured on the lake DTM (origin -49.75, -25.0): x = -49.85,
+    y = -20.0 returned 4.130 m under truncation and correctly returns None under
+    floor. Only the strip within one cell (0.25 m) outside the west/south edge
+    differs -- inside the grid both agree -- but answering an off-grid point with
+    a wrong elevation is exactly the silent failure this must not do. Same fix as
+    scripts/relay_path_z.py.
+    """
     import numpy as np
-    col = int((x - origin_x) / resolution)
-    row = int((y - origin_y) / resolution)
+    if not (np.isfinite(x) and np.isfinite(y)):
+        return None
+    col = int(np.floor((x - origin_x) / resolution))
+    row = int(np.floor((y - origin_y) / resolution))
     if row < 0 or col < 0 or row >= dtm_z.shape[0] or col >= dtm_z.shape[1]:
         return None
     v = dtm_z[row, col]
@@ -177,6 +219,9 @@ def main(argv=None):
     win_n = int(rospy.get_param("~smooth_window", 5))
     z_var = rospy.get_param("~z_variance", 0.05)
     dtm_path = rospy.get_param("~dtm_path", "")
+    # See THE FRAME MATTERS in the module docstring. Default "odom" preserves the
+    # historical behaviour for any existing caller; the dual-EKF setup wants "map".
+    frame_id = rospy.get_param("~frame_id", "odom")
 
     # Prior DTM supplies the terrain elevation the measured clearance sits on
     # top of. Without it we publish clearance alone, which the EKF reads as
@@ -275,7 +320,7 @@ def main(argv=None):
         # Stamp with the CLOUD's time: this height was measured from that scan, and
         # the EKF time-aligns absolute measurements by this stamp.
         od.header.stamp = msg.header.stamp
-        od.header.frame_id = "odom"
+        od.header.frame_id = frame_id
         od.child_frame_id = "base_link"
         od.pose.pose.position.z = zs
         od.pose.pose.orientation.w = 1.0

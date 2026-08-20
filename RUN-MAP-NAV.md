@@ -125,9 +125,17 @@ python3 ~/Documents/Husky_viz/landmark_loc/abs_fix_selector.py
 export ROS_IP=172.20.0.1 ROS_MASTER_URI=http://172.20.0.1:11311 ROBOT_HOST_IP=172.20.0.1
 cd ~/Documents/Husky_viz
 source /opt/ros/noetic/setup.bash
-PYTHONPATH=~/Documents/Husky_viz:$PYTHONPATH python3 ~/Documents/Husky_viz/scripts/publish_ground_height_odom.py _dtm_path:=/home/thinh/Documents/Husky_viz/maps/lake_dtm.npy
+PYTHONPATH=~/Documents/Husky_viz:$PYTHONPATH python3 ~/Documents/Husky_viz/scripts/publish_ground_height_odom.py _dtm_path:=/home/thinh/Documents/Husky_viz/maps/lake_dtm.npy _frame_id:=map
 ```
 
+> **`_frame_id:=map` is not optional either.** The published number is an ABSOLUTE
+> elevation, and robot_localization transforms a pose measurement into the filter's
+> `world_frame` before fusing it. Stamped `odom` (the node's backwards-compatible
+> default), the map EKF would apply its OWN `map->odom` output to its own input and
+> settle at a false offset (measured: `map->odom` z = 1.228 m, robot 1.23 m too high).
+> Stamped `map` that transform is the identity, so there is no feedback. Verify with
+> `rosrun tf tf_echo map odom`: z must be ~0.000, NOT ~+1.2 and NOT ~-3.8.
+>
 > Swap `lake_dtm.npy` for `park_dtm.npy` when running the park world — the DTM must match the world in Step 1.
 >
 > **`_dtm_path` is not optional.** Both EKFs fuse this topic as absolute z (`odom1` in `localization.yaml`, `odom2` in `localization_map.yaml`). Without the DTM the node publishes the robot's *clearance above the ground* (~0.13 m) instead of its absolute elevation, and the EKF reads that as altitude — sinking the robot ~3.75 m under the terrain in RViz. The node logs `no ~dtm_path: publishing CLEARANCE only` when this is wrong. Use an **absolute** path: `~` is not expanded inside `_dtm_path:=`.

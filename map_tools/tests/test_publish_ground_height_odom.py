@@ -108,3 +108,47 @@ def test_covariance_makes_only_z_meaningful():
     assert cov[14] == 0.05          # z: the one we mean
     for i in (0, 7, 21, 28, 35):    # x, y, roll, pitch, yaw
         assert cov[i] >= 1e6
+
+
+# --- dtm_elevation_at: negative-origin indexing (the int()-truncation bug) -----
+# int() rounds TOWARD ZERO, so a query in the sub-cell strip just BELOW the origin
+# gets index 0 instead of -1 and is answered with cell 0's terrain instead of being
+# rejected as off-grid. Measured on the lake DTM (origin -49.75, -25.0): x = -49.85,
+# y = -20.0 returned 4.130 m under truncation, None under floor. Inside the grid the
+# two agree; np.floor is the fix, same as scripts/relay_path_z.py.
+
+def test_negative_origin_uses_floor_not_truncation():
+    # Distinct value per cell so a wrong index is unambiguous.
+    z = np.arange(16, dtype=float).reshape(4, 4)
+    res, ox, oy = 0.25, -49.75, -25.0
+
+    # A point 0.1 m into cell 1 on both axes. Offsets are +0.35 m -> 1.4 cells.
+    # floor(1.4) = 1 (correct). int(1.4) also = 1 here, so this is the control.
+    assert ghodom.dtm_elevation_at(z, res, ox, oy, ox + 0.35, oy + 0.35) == z[1, 1]
+
+    # The real bug bites when the *offset itself* is negative, i.e. the query is
+    # below the origin: floor gives -1 (correctly rejected as off-grid) while
+    # int() gives 0 (silently returns cell 0's terrain).
+    below = ghodom.dtm_elevation_at(z, res, ox, oy, ox - 0.1, oy - 0.1)
+    assert below is None, "point below the DTM origin must be off-grid, not cell 0"
+
+    # And a point below the origin on ONE axis only must still be rejected.
+    assert ghodom.dtm_elevation_at(z, res, ox, oy, ox + 0.35, oy - 0.1) is None
+    assert ghodom.dtm_elevation_at(z, res, ox, oy, ox - 0.1, oy + 0.35) is None
+
+
+def test_negative_world_coordinates_index_correctly():
+    """Cells are selected by floor across a negative-origin grid, so each 0.25 m
+    step advances exactly one cell rather than repeating cell 0."""
+    z = np.arange(16, dtype=float).reshape(4, 4)
+    res, ox, oy = 0.25, -49.75, -25.0
+    # Walk x across the first four columns at a fixed row.
+    got = [ghodom.dtm_elevation_at(z, res, ox, oy, ox + 0.125 + i * res, oy + 0.125)
+           for i in range(4)]
+    assert got == [z[0, 0], z[0, 1], z[0, 2], z[0, 3]]
+
+
+def test_non_finite_coordinates_return_none():
+    z = np.ones((4, 4), dtype=float)
+    assert ghodom.dtm_elevation_at(z, 0.25, -49.75, -25.0, float("nan"), 0.0) is None
+    assert ghodom.dtm_elevation_at(z, 0.25, -49.75, -25.0, 0.0, float("inf")) is None
