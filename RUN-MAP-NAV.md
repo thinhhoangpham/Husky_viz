@@ -388,6 +388,21 @@ Watch the robot in a browser: **http://localhost:6080/vnc.html**. For the full w
 
 > **Rebuild after editing `operator/entrypoint.sh`:** the operator container bakes `entrypoint.sh` into its image. After changing it (resolution, RViz maximize, etc.), a plain `docker compose up` reuses the old image and your change will NOT apply — you must rebuild: `cd operator && docker compose build && docker compose up -d`.
 
+> **`DTM_WORLD` and `OBJECTS_PATH` default to DIFFERENT worlds — export both.**
+> `operator/docker-compose.yml` defaults `DTM_WORLD` to `lake` (line 28, also the
+> default in `entrypoint.sh` line 94 — see the rebuild note above) but defaults
+> `OBJECTS_PATH` to `park` (line 22). Left unset, a park run displays the LAKE's
+> terrain in RViz while resolving goal-by-name against PARK objects — misleading
+> since the two worlds' relief differs by ~346x (park DTM relief 0.007 m, an
+> essentially flat plane; lake 2.422 m), so the displayed terrain bears no relation
+> to the world actually being driven. Before `docker compose up -d`, export both to
+> match the world, e.g. for park:
+> `export DTM_WORLD=park OBJECTS_PATH=/repo/maps/park_objects.yaml`
+> (or for lake: `export DTM_WORLD=lake OBJECTS_PATH=/repo/maps/lake_objects.yaml`).
+> Per the compose file's own comment, `DTM_WORLD` must be declared in its
+> `environment:` block to reach the container at all — that mechanism is fine; only
+> the default value is wrong for a park run.
+
 ## Step 4 — Send a goal (at the `operator>` prompt)
 
 ```
