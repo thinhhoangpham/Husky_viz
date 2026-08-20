@@ -38,7 +38,7 @@ Wait for Gazebo to show the park + robot, then ~30–60 s for the pose to settle
 
 ## Step 2 — Navigation + map
 
-Start these **three** nodes, each in its own new terminal (Step 1 is Terminal 1). All three must be running.
+Start these **four** nodes, each in its own new terminal (Step 1 is Terminal 1). All four must be running.
 
 **Terminal 2 — map_server + move_base:**
 
@@ -67,6 +67,21 @@ cd ~/Documents/Husky_viz
 source /opt/ros/noetic/setup.bash
 python3 ~/Documents/Husky_viz/landmark_loc/abs_fix_selector.py
 ```
+
+**Terminal 5 — ground-height publisher** (fills `/odometry/ground_height`; this is what gives the robot its TRUE altitude):
+
+```bash
+export ROS_IP=172.20.0.1 ROS_MASTER_URI=http://172.20.0.1:11311 ROBOT_HOST_IP=172.20.0.1
+cd ~/Documents/Husky_viz
+source /opt/ros/noetic/setup.bash
+PYTHONPATH=~/Documents/Husky_viz:$PYTHONPATH python3 ~/Documents/Husky_viz/scripts/publish_ground_height_odom.py _dtm_path:=/home/thinh/Documents/Husky_viz/maps/lake_dtm.npy
+```
+
+> Swap `lake_dtm.npy` for `park_dtm.npy` when running the park world — the DTM must match the world in Step 1.
+>
+> **`_dtm_path` is not optional.** Both EKFs fuse this topic as absolute z (`odom1` in `localization.yaml`, `odom2` in `localization_map.yaml`). Without the DTM the node publishes the robot's *clearance above the ground* (~0.13 m) instead of its absolute elevation, and the EKF reads that as altitude — sinking the robot ~3.75 m under the terrain in RViz. The node logs `no ~dtm_path: publishing CLEARANCE only` when this is wrong. Use an **absolute** path: `~` is not expanded inside `_dtm_path:=`.
+>
+> Check it with `rostopic echo -n1 /odometry/ground_height/pose/pose/position/z` (expect ~3.75 m on the lake) and `rosrun tf tf_echo map base_link` (z should match, not 0.000).
 
 Both pose feeders (GPS + landmark) run at once, publishing to separate topics. The selector forwards exactly one to the EKF, and the operator switches between them live with `mode gps` / `mode landmark` (Step 4) — no relaunch, no choosing a launch file.
 

@@ -46,17 +46,47 @@ imu1_config: [false, false, false,
 imu1_differential: false
 imu1_queue_size: 10
 
-# NO absolute-z input, deliberately. We tried fusing the lidar ground-height fit
-# (scripts/publish_ground_height_odom.py) so base_link carried true elevation. It
-# worked -- and BROKE obstacle avoidance: the costmap's obstacle layer classifies
-# a point as an obstacle by its height in a fixed 0.15-1.2 m band
-# (config/costmap_common_gps.yaml), calibrated for a robot at z~0. Lifting the
-# robot to its true ~3.86 m moved the ground out of that band and the local
-# costmap filled with false obstacles (8.3% lethal cells around the robot).
+# --- Absolute z: lidar ground-height fit + prior DTM (odom1) -------------------
+# NOTHING else in this filter observes z. The wheel odometry's vz is structurally
+# zero on a skid-steer and no other input carries height, so without this block z
+# is an UNOBSERVED state -- it settles at 0 and the robot renders ~3.75 m BELOW the
+# terrain it is standing on (measured: DTM 3.747 m at the robot's x,y, map->base_link
+# z 0.000). odom1 supplies the missing measurement.
 #
-# So z stays UNOBSERVED and settles near 0. That is fine here: the whole nav stack
-# is 2D by design, nothing consumes absolute altitude, and the RViz terrain layer
-# is drawn with --z-align min so it shares the same near-zero datum as the robot
-# and the costmaps. Only ROLL and PITCH (from the compass, see imu1) are fused,
-# which is what makes the robot sit at the terrain's ANGLE -- the part that was
-# actually wanted -- at no cost to the costmap.
+# The source is scripts/publish_ground_height_odom.py, which publishes
+# /odometry/ground_height as z = ground_elev + (h_sensor - mount_dz):
+#   * h_sensor  - the SENSOR's height above the local ground, from a plane fit to
+#                 the lidar's low returns after de-rotating by the compass's
+#                 gravity-referenced roll/pitch. Sensor-derived.
+#   * mount_dz  - the fixed base_link->os0_lidar offset, read from TF, not hardcoded.
+#   * ground_elev - terrain elevation under the robot from the prior DTM
+#                 (~dtm_path). REQUIRED: without it the node publishes CLEARANCE
+#                 only, the EKF reads that as absolute elevation, and the robot
+#                 sinks under the map again. The node logs a warning when ~dtm_path
+#                 is unset -- if the robot renders low, check that first.
+# No Gazebo ground truth is involved: the clearance is measured by the lidar and the
+# DTM is an offline map file.
+#
+# We fuse z ONLY -- no x, y (meaningless in that message; its covariance sets them
+# to 1e6), no orientation (roll/pitch come from imu1, yaw from the compass), no
+# velocities. Absolute (differential: false), because it is a direct measurement of
+# elevation, not a delta.
+#
+# KNOWN CONSEQUENCE -- PRESERVED FROM THE EARLIER REVERT, STILL TRUE:
+# the costmap's obstacle layer classifies a point as an obstacle by its height in a
+# fixed 0.15-1.2 m band (config/costmap_common_gps.yaml), and that band was
+# calibrated for a robot sitting at z~0. Raising the robot to its true elevation
+# moved the ground out of that band and previously filled the local costmap with
+# false obstacles -- measured at ~8.3% lethal cells around the robot. That is why
+# this input was reverted once before. It is re-enabled here because the robot's z
+# must be TRUE; the costmap band is deliberately NOT touched in this change, so
+# expect the false-lethal behaviour to return until the band is addressed
+# separately. Watch the local costmap when running with this enabled.
+odom1: odometry/ground_height
+odom1_config: [false, false, true,
+               false, false, false,
+               false, false, false,
+               false, false, false,
+               false, false, false]
+odom1_differential: false
+odom1_queue_size: 10

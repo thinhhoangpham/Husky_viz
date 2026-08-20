@@ -21,7 +21,8 @@
 #                                            imu/data is mounted 90deg wrong)
 #   imu1  = compass/data                     ABSOLUTE yaw (drift-free heading
 #                                            anchor; added by the compass fix)
-#   odom1 = odometry/gps                     ABSOLUTE x,y from navsat_transform
+#   odom1 = odometry/abs_fix                 ABSOLUTE x,y (navsat OR landmark)
+#   odom2 = odometry/ground_height           ABSOLUTE z (lidar ground fit + DTM)
 #
 # THE ODOM-SPOOF ATTACK SURFACE:
 # odom0 is husky_velocity_controller/odom, exactly as in the odom-frame filter.
@@ -110,10 +111,35 @@ odom1_config: [true,  true,  false,
 odom1_differential: false
 odom1_queue_size: 10
 
-# --- NO absolute-z input, deliberately ----------------------------------------
-# Same reasoning as the odom filter (localization.yaml): fusing the lidar
-# ground-height fit gave the robot its true ~3.86 m elevation but pushed the
-# ground outside the costmap obstacle layer's fixed 0.15-1.2 m height band,
-# filling the local costmap with false obstacles. z therefore stays unobserved
-# and near 0, matching the 2D nav stack and the --z-align'd RViz terrain layer.
-# Roll and pitch ARE fused (imu1, compass) so the robot still tilts with terrain.
+# --- Absolute z: lidar ground-height fit + prior DTM (odom2) ------------------
+# THIS FILTER ALSO NEEDS IT -- the dual-EKF trap again. This filter owns map->odom,
+# so even with the odom filter observing z, an unobserved z here would flatten the
+# composed map->base_link that RViz and every map-frame consumer actually read.
+# Both filters must observe z, exactly as both must have two_d_mode off.
+#
+# Source: scripts/publish_ground_height_odom.py -> /odometry/ground_height, which is
+# z = ground_elev + (h_sensor - mount_dz): lidar-measured clearance above the local
+# ground plus the terrain elevation under the robot from the prior DTM (~dtm_path).
+# The node MUST be launched with ~dtm_path or it publishes clearance only and the
+# robot sinks ~3.75 m under the terrain -- the exact bug this input fixes. No Gazebo
+# ground truth: lidar fit + an offline map file.
+#
+# z ONLY. Not x/y (odom1/abs_fix owns those), not orientation (imu1/compass), not
+# velocity. Absolute (differential: false) -- it is a direct elevation measurement.
+#
+# KNOWN CONSEQUENCE -- PRESERVED FROM THE EARLIER REVERT, STILL TRUE:
+# the costmap obstacle layer keys on a fixed 0.15-1.2 m height band
+# (config/costmap_common_gps.yaml) calibrated for a robot at z~0. Giving the robot
+# its true ~3.86 m elevation pushed the ground outside that band and filled the
+# local costmap with false obstacles -- ~8.3% lethal cells around the robot. That is
+# why this was reverted before. It is back because z must be TRUE; the costmap band
+# is deliberately out of scope in this change, so expect that behaviour to return
+# until the band is fixed separately.
+odom2: odometry/ground_height
+odom2_config: [false, false, true,
+               false, false, false,
+               false, false, false,
+               false, false, false,
+               false, false, false]
+odom2_differential: false
+odom2_queue_size: 10
