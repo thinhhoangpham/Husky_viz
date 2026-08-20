@@ -66,46 +66,35 @@ EOF
   #
   # DTM_WORLD picks which map to publish (default lake; set DTM_WORLD=park for
   # the park). Empty DTM_WORLD disables both layers.
-  # The water layer MUST use the SAME z offset as the terrain, not its own
-  # --z-align: aligning it independently flattens it onto the terrain floor and
-  # destroys the water/terrain height relationship (i.e. the shoreline).
-  # Drawn with --z-align min so the terrain's lowest point sits at z=0, sharing
-  # the datum used by the robot (z unobserved, settles near 0 -- see
-  # localization.yaml) and by the 2D costmaps (always drawn at z=0). All three
-  # then agree. Publishing at TRUE elevation instead put the terrain at 3.5-5.9 m
-  # while the costmaps stayed at 0, ~4 m apart.
-  # The water layer takes the terrain's offset EXPLICITLY, never its own
-  # --z-align: aligning it independently flattens it onto the terrain floor and
-  # destroys the water/terrain height relationship (i.e. the shoreline).
-  # DTM_Z_OFFSET aligns the map to the frame the robot actually renders in.
-  # base_link is pinned at z=0 (z is unobserved -- see localization.yaml) and the
-  # lidar sits ~0.83 m above it, so the ground the robot SEES lands near z=-0.83,
-  # NOT 0. Aligning the DTM's minimum to 0 therefore floated the map ~0.6-0.8 m
-  # above the lidar's own ground returns. Instead offset the DTM by
+  #
+  # DATUM: TRUE WORLD ELEVATION. The DTM is published unshifted (offset 0), so
+  # terrain renders at its real height -- 3.5-5.9 m in the lake world. The robot
+  # now renders there too: commit 07cd63c fused absolute z (lidar ground-plane
+  # fit + DTM prior), so base_link sits ON the terrain at ~4.2 m instead of at 0.
+  # scripts/relay_costmap_z.py lifts the global costmap to the DTM minimum for
+  # the same reason. Robot, terrain and costmap therefore share ONE datum, and
+  # what RViz draws is what is physically true.
+  #
+  # HISTORY -- this used to be the other way round, deliberately. Before 07cd63c
+  # z was UNOBSERVED: base_link was pinned at 0 and the 2D costmaps are always
+  # published at 0, so the terrain was pulled DOWN to meet them, by
   #     -(sensor_height + terrain_elevation_at_spawn)
-  # so the terrain under the robot coincides with the ground the lidar reports.
-  # Override with DTM_Z_OFFSET=<metres> if the robot starts elsewhere.
+  # (the lidar sits ~0.83 m up, so the ground it SEES lands near z=-0.83, not 0
+  # -- aligning the DTM minimum to 0 floated it ~0.6-0.8 m above the lidar's own
+  # ground returns). That was correct while the robot was the thing stuck at
+  # zero. Now that the robot carries true altitude, dragging the terrain down
+  # would leave the ROBOT floating ~4 m above it -- the same bug inverted. The
+  # newer decision wins, so the shift is gone.
+  #
+  # Override with DTM_Z_OFFSET=<metres> to shift both layers (e.g. back to the
+  # old nav-datum behaviour) -- the water layer always takes the terrain's
+  # offset EXPLICITLY, never its own --z-align, which would flatten it onto the
+  # terrain floor and destroy the water/terrain height relationship (i.e. the
+  # shoreline).
   DTM_WORLD="${DTM_WORLD:-lake}"
   if [ -n "${DTM_WORLD}" ] && [ -f "/repo/maps/${DTM_WORLD}_dtm.npy" ]; then
-    DTM_OFF="${DTM_Z_OFFSET:-}"
-    if [ -z "${DTM_OFF}" ]; then
-      DTM_OFF=$(python3 - <<'PY' 2>/dev/null
-import numpy as np, yaml, os
-w = os.environ.get("DTM_WORLD", "lake")
-z = np.load("/repo/maps/%s_dtm.npy" % w)
-m = yaml.safe_load(open("/repo/maps/%s_dtm.yaml" % w))
-# spawn x,y per world (the pose load-park-world.sh spawns the Husky at)
-spawn = {"lake": (-47.07, -15.04), "park": (45.64, 0.02)}.get(w)
-res, ox, oy = m["resolution"], m["origin_x"], m["origin_y"]
-c = int((spawn[0] - ox) / res); r = int((spawn[1] - oy) / res)
-here = z[r, c]
-if not np.isfinite(here):
-    here = np.nanmin(z)
-SENSOR_H = 0.826          # base_link -> os0_lidar, from the URDF
-print("%.4f" % (-(SENSOR_H + float(here))))
-PY
-)
-    fi
+    # 0 = true world elevation (see the DATUM note above). No computed shift.
+    DTM_OFF="${DTM_Z_OFFSET:-0}"
     python3 /repo/scripts/publish_dtm_cloud.py --dtm "/repo/maps/${DTM_WORLD}_dtm.npy" \
       --topic /dtm_cloud --z-offset "${DTM_OFF}" > /tmp/dtm_terrain.log 2>&1 &
     if [ -f "/repo/maps/${DTM_WORLD}_water.npy" ]; then

@@ -101,7 +101,7 @@ Visualization Manager:
       Color Scheme: costmap
       Enabled: true
       Name: Costmap (global)
-      Topic: /move_base/global_costmap/costmap
+      Topic: /move_base/global_costmap/costmap_z
       Value: true
     - Alpha: 0.7
       Class: rviz/Map

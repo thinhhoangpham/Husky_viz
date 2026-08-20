@@ -89,7 +89,7 @@ mask will **not** appear in `git status` — commit it with
 > was never diagnosed. It may reappear. If `/move_base/global_costmap/costmap`
 > goes silent after this change, that is the known issue, not a new one.
 
-Start these **four** nodes, each in its own new terminal (Step 1 is Terminal 1). All four must be running.
+Start these **five** nodes, each in its own new terminal (Step 1 is Terminal 1). All five must be running. **Terminal 6** is optional and display-only — skip it and navigation is unaffected, only the RViz costmap overlay goes empty.
 
 **Terminal 2 — map_server + move_base:**
 
@@ -134,6 +134,42 @@ PYTHONPATH=~/Documents/Husky_viz:$PYTHONPATH python3 ~/Documents/Husky_viz/scrip
 >
 > Check it with `rostopic echo -n1 /odometry/ground_height/pose/pose/position/z` (expect ~3.75 m on the lake) and `rosrun tf tf_echo map base_link` (z should match, not 0.000).
 
+**Terminal 6 — costmap z relay** (display only; publishes `/move_base/global_costmap/costmap_z`):
+
+```bash
+export ROS_IP=172.20.0.1 ROS_MASTER_URI=http://172.20.0.1:11311 ROBOT_HOST_IP=172.20.0.1
+cd ~/Documents/Husky_viz
+source /opt/ros/noetic/setup.bash
+python3 ~/Documents/Husky_viz/scripts/relay_costmap_z.py _world:=lake
+```
+
+> Use `_world:=park` for the park world — the DTM must match the world in Step 1.
+>
+> **What it is for.** `costmap_2d` hardcodes the published `origin.position.z` to
+> 0 (`Costmap2DPublisher` keeps only `saved_origin_x_/y_`), and there is no
+> parameter that changes it — the `origin_z` that exists belongs to `VoxelLayer`
+> and is a 3-D voxel column base, not a render offset. So the global costmap
+> always arrives at z = 0, while the terrain it describes sits at 3.5–5.9 m
+> (lake). Since Step 5 gives the robot its true altitude, RViz drew the terrain
+> and robot hovering several metres above a grey sheet. This node republishes the
+> grid at the DTM's **minimum** height on a **new** topic.
+>
+> **It is display-only and cannot affect navigation.** It never writes to
+> `/move_base/global_costmap/costmap`; move_base and NavfnROS keep consuming that
+> topic byte-for-byte unchanged. Occupancy values pass through untouched, so
+> water stays **unknown**, never lethal. `operator/operator.rviz` points its
+> "Costmap (global)" display at `…/costmap_z`; skip this terminal and that
+> display is simply empty — nothing else degrades.
+>
+> **Why the minimum, and why that is approximate.** An `OccupancyGrid` is flat:
+> one origin, no per-cell height, so it can only sit at a single z and cannot
+> follow relief. At the minimum the sheet lies at or below the surface
+> everywhere and never pokes through — a sheet that intersects terrain reads as
+> a rendering fault, one beneath it reads as a projection. Cost: under the
+> highest ground it sits ~2.4 m low in the lake world (relief 2.42 m). In the
+> park world relief is 0.007 m, so the choice is immaterial. Values: park
+> **2.986 m**, lake **3.505 m**.
+
 Both pose feeders (GPS + landmark) run at once, publishing to separate topics. The selector forwards exactly one to the EKF, and the operator switches between them live with `mode gps` / `mode landmark` (Step 4) — no relaunch, no choosing a launch file.
 
 ## Step 3 — Operator
@@ -146,6 +182,14 @@ docker compose exec operator bash -lc "source /opt/ros/noetic/setup.bash && ./op
 ```
 
 Watch the robot in a browser: **http://localhost:6080/vnc.html**. For the full window (not cut off), use **http://localhost:6080/vnc.html?resize=scale**.
+
+> **Display datum: true world elevation.** The DTM cloud is published unshifted
+> (`DTM_OFF` is `0`), so terrain, the robot (true altitude since Step 5) and the
+> relayed costmap all render at real-world height and share one datum. This
+> reverses an earlier fix that pulled the terrain DOWN to z≈0 to meet a robot
+> that was pinned there; now that the robot carries true z, that shift would
+> leave it floating ~4 m above the ground. Set `DTM_Z_OFFSET=<metres>` in the
+> operator environment to shift both DTM layers back if needed.
 
 > **Rebuild after editing `operator/entrypoint.sh`:** the operator container bakes `entrypoint.sh` into its image. After changing it (resolution, RViz maximize, etc.), a plain `docker compose up` reuses the old image and your change will NOT apply — you must rebuild: `cd operator && docker compose build && docker compose up -d`.
 
