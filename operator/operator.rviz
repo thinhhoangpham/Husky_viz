@@ -108,7 +108,7 @@ Visualization Manager:
       Color Scheme: costmap
       Enabled: true
       Name: Costmap (local)
-      Topic: /move_base/local_costmap/costmap
+      Topic: /move_base/local_costmap/costmap_z
       Value: true
     - Class: rviz/Path
       Color: 25; 255; 0

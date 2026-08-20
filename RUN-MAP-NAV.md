@@ -89,7 +89,7 @@ mask will **not** appear in `git status` — commit it with
 > was never diagnosed. It may reappear. If `/move_base/global_costmap/costmap`
 > goes silent after this change, that is the known issue, not a new one.
 
-Start these **five** nodes, each in its own new terminal (Step 1 is Terminal 1). All five must be running. **Terminal 6** is optional and display-only — skip it and navigation is unaffected, only the RViz costmap overlay goes empty.
+Start these **five** nodes, each in its own new terminal (Step 1 is Terminal 1). All five must be running. **Terminals 6 and 6b** are optional and display-only — skip them and navigation is unaffected, only the RViz costmap overlays (global and local respectively) go empty.
 
 **Terminal 2 — map_server + move_base:**
 
@@ -134,7 +134,7 @@ PYTHONPATH=~/Documents/Husky_viz:$PYTHONPATH python3 ~/Documents/Husky_viz/scrip
 >
 > Check it with `rostopic echo -n1 /odometry/ground_height/pose/pose/position/z` (expect ~3.75 m on the lake) and `rosrun tf tf_echo map base_link` (z should match, not 0.000).
 
-**Terminal 6 — costmap z relay** (display only; publishes `/move_base/global_costmap/costmap_z`):
+**Terminal 6 — costmap z relay, GLOBAL** (display only; publishes `/move_base/global_costmap/costmap_z`):
 
 ```bash
 export ROS_IP=172.20.0.1 ROS_MASTER_URI=http://172.20.0.1:11311 ROBOT_HOST_IP=172.20.0.1
@@ -169,6 +169,57 @@ python3 ~/Documents/Husky_viz/scripts/relay_costmap_z.py _world:=lake
 > highest ground it sits ~2.4 m low in the lake world (relief 2.42 m). In the
 > park world relief is 0.007 m, so the choice is immaterial. Values: park
 > **2.986 m**, lake **3.505 m**.
+
+**Terminal 6b — costmap z relay, LOCAL** (display only; publishes `/move_base/local_costmap/costmap_z`):
+
+```bash
+export ROS_IP=172.20.0.1 ROS_MASTER_URI=http://172.20.0.1:11311 ROBOT_HOST_IP=172.20.0.1
+cd ~/Documents/Husky_viz
+source /opt/ros/noetic/setup.bash
+python3 ~/Documents/Husky_viz/scripts/relay_costmap_z.py _world:=lake _follow_robot:=true \
+    _in_topic:=/move_base/local_costmap/costmap \
+    _out_topic:=/move_base/local_costmap/costmap_z
+```
+
+> Use `_world:=park` for the park world. This is a SECOND instance of the same
+> node as Terminal 6 — no new script — differing only in its parameters.
+>
+> **Why a second instance, and why `_follow_robot`.** The local costmap has the
+> same z = 0 problem as the global one, but the fixed DTM-minimum height that
+> Terminal 6 uses would be wrong for it. The local costmap is
+> `rolling_window: true`, 10×10 m, in the `odom` frame, and it TRAVELS WITH THE
+> ROBOT (`config/costmap_local_gps.yaml`); pinned to the map minimum, its patch
+> would sink further below the ground the higher the robot climbed.
+> `_follow_robot:=true` instead looks the robot up in tf (`map`→`base_link`) on
+> every costmap message and samples the DTM over the window's own footprint,
+> taking the **minimum** over that window.
+>
+> **Why the window minimum and not the single cell under the robot.** The
+> "never poke through the terrain" rule still has to hold, and on the lake it is
+> not a formality: a single 10 m window spans up to **2.007 m** of the map's
+> 2.422 m total relief, and 79% of windows exceed 0.5 m (median 0.78 m). A sheet
+> at the robot's own ground height would cut visibly through the slope ahead
+> across most of the map. The window minimum keeps it underneath everywhere
+> while still tracking the robot — mean gap under the robot **1.033 m → 0.430 m**
+> versus the global minimum, worst case **2.409 m → 1.371 m**.
+>
+> **Why not the robot's fused z.** Since Step 5 the EKF fuses absolute z, so
+> `base_link` z is a real altitude — but it is terrain *plus* clearance, so a
+> sheet there floats above the ground and pokes through it. It would also wire
+> the pose *estimate* into the display: under drift or a GPS spoof the sheet
+> would move with the corrupted pose and make it look self-consistent. The
+> display stays anchored to the offline DTM instead.
+>
+> **Display-only, exactly like Terminal 6.** It never writes to
+> `/move_base/local_costmap/costmap`; move_base's own local planner (DWA) keeps
+> consuming that topic byte-for-byte unchanged, and the node refuses to start if
+> `_in_topic` and `_out_topic` are equal. `operator/operator.rviz` points its
+> "Costmap (local)" display at `…/costmap_z`; skip this terminal and that display
+> is simply empty.
+>
+> If tf is not yet up, or the robot wanders off the DTM, the node holds the last
+> good z (logged, throttled) rather than dropping the sheet to 0 — and publishes
+> nothing at all until the first valid sample, so the bug can never flash back.
 
 **Terminal 7 — terrain-relative cloud filter** (fills `/os0_cloud_node/points_above_terrain`; **the local costmap's only obstacle source**):
 
