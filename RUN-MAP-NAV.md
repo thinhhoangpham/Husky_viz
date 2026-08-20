@@ -138,7 +138,11 @@ PYTHONPATH=~/Documents/Husky_viz:$PYTHONPATH python3 ~/Documents/Husky_viz/scrip
 >
 > Swap `lake_dtm.npy` for `park_dtm.npy` when running the park world — the DTM must match the world in Step 1.
 >
-> **`_dtm_path` is not optional.** Both EKFs fuse this topic as absolute z (`odom1` in `localization.yaml`, `odom2` in `localization_map.yaml`). Without the DTM the node publishes the robot's *clearance above the ground* (~0.13 m) instead of its absolute elevation, and the EKF reads that as altitude — sinking the robot ~3.75 m under the terrain in RViz. The node logs `no ~dtm_path: publishing CLEARANCE only` when this is wrong. Use an **absolute** path: `~` is not expanded inside `_dtm_path:=`.
+> **`_dtm_path` is not optional.** Both EKFs fuse this topic as absolute z (`odom1` in `localization.yaml`, `odom2` in `localization_map.yaml`), and the DTM is the node's ONLY terrain source — it publishes `terrain(x, y) + a fixed chassis clearance`, so with no DTM there is no absolute elevation to publish at all. The node logs `~dtm_path is required` and exits rather than degrading. Use an **absolute** path: `~` is not expanded inside `_dtm_path:=`.
+>
+> The clearance is a CONSTANT read once from TF as `-(base_link->base_footprint).z` = **0.13228 m** on this Husky; the node logs `clearance = 0.1323 m (from TF base_link->base_footprint)` at startup. It is no longer measured from a lidar ground-plane fit — that fit read 0.08 m on flat ground but 0.41 m on a slope, which pushed every ground return onto the 0.40 m lower bound of the obstacle band and filled the local costmap with false ground. Override with `_clearance:=<metres>` for a robot with no `base_footprint`.
+>
+> If the robot drives over a cell the DTM does not cover (off-mesh, or open water), the node publishes **nothing** and warns `is off the DTM`; it does not hold a stale z.
 >
 > Check it with `rostopic echo -n1 /odometry/ground_height/pose/pose/position/z` (expect ~3.75 m on the lake) and `rosrun tf tf_echo map base_link` (z should match, not 0.000).
 
