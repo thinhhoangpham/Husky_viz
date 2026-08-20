@@ -21,30 +21,29 @@ plugins:
   - {name: inflation,  type: "costmap_2d::InflationLayer"}
 
 # The LOCAL costmap is the sole consumer of live lidar (the global costmap has
-# no ObstacleLayer -- see config/costmap_global_gps_map.yaml). It reads the
-# TERRAIN-RELATIVE FILTERED cloud, not the raw sensor topic.
-#
-# Everything else about the observation source -- sensor_frame, data_type,
-# marking/clearing, ranges -- comes from the `obstacles:` block of
+# no ObstacleLayer -- see config/costmap_global_gps.yaml), so the entire
+# observation config lives in the `obstacles:` block of
 # config/costmap_common_gps.yaml, which is loaded into this namespace FIRST.
-# Only the topic is overridden here, and only here, so the global namespace is
-# untouched.
+# There is deliberately NO `obstacles:` override here.
 #
-# WHY. costmap_2d decides "is this point an obstacle?" with a scalar test on
-# absolute z in the costmap frame, which is only correct if the ground is a
-# horizontal plane at a fixed height. On sloped or elevated terrain it marks
-# the GROUND as lethal -- the crescent of false obstacles 2-5 m ahead of the
-# robot (measured: 6355 lethal cells all inside 6 m, while the nearest real
-# mapped landmark was 7.88 m away). costmap_2d exposes no hook to make that
-# test terrain-relative, so the decision is made upstream instead:
-# scripts/filter_cloud_above_terrain.py samples the world's DTM at each point's
-# own (x, y) and republishes only the returns 0.40-3.00 m above the ground
-# beneath THAT point. The costmap's own height gate is opened to +/-1000 m in
-# costmap_common_gps.yaml so it can never override that decision.
+# WHY NO OVERRIDE. Commit 7d4f7d7 put an `obstacles: os0: topic:` override in
+# this file to point the single observation source at the terrain-relative
+# filtered cloud. That fixed marking and broke clearing: the filtered cloud has
+# the ground deliberately stripped out, so the layer got marks but almost no
+# raytracing rays to clear with, and lethal cells accumulated until the robot
+# was boxed in by phantoms (measured: ~4600 lethal cells, nearest 0.73 m, while
+# the nearest real tree was 15.21 m away).
+#
+# The layer now has TWO sources instead -- os0_mark off the filtered cloud and
+# os0_clear off the raw cloud -- and both are declared together in
+# costmap_common_gps.yaml so the whole marking/clearing story reads in one
+# place. It lands in the global namespace too, where the absence of an
+# ObstacleLayer makes it inert; that is expected and harmless.
+#
+# Do NOT reintroduce an `obstacles:` block here to "override just the topic".
+# rosparam MERGES dicts, so a partial override cannot remove or rename a source
+# and can only resurrect a stale one. Edit costmap_common_gps.yaml instead.
 #
 # The filter node must be running (RUN-MAP-NAV.md, Terminal 7). If it is not,
-# this topic has no publisher and the local costmap sees NO obstacles at all --
-# check for the publisher first before debugging avoidance behaviour.
-obstacles:
-  os0:
-    topic: /os0_cloud_node/points_above_terrain
+# /os0_cloud_node/points_above_terrain has no publisher and NOTHING is ever
+# marked -- check for the publisher first before debugging avoidance behaviour.

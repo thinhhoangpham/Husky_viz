@@ -302,10 +302,13 @@ python3 ~/Documents/Husky_viz/scripts/filter_cloud_above_terrain.py _world:=lake
 
 > Use `_world:=park` for the park world — the DTM must match the world in Step 1.
 >
-> **This terminal is not optional.** `config/costmap_local_gps.yaml` points the
-> local costmap's observation source at `/os0_cloud_node/points_above_terrain`.
-> Skip this node and that topic has no publisher, so the local costmap sees **no
-> obstacles at all** and close-range avoidance is inert. If the robot ignores an
+> **This terminal is not optional.** `config/costmap_common_gps.yaml` points the
+> local costmap's **marking** source (`os0_mark`) at
+> `/os0_cloud_node/points_above_terrain`. Skip this node and that topic has no
+> publisher, so **nothing is ever marked** and close-range avoidance is inert.
+> (The separate `os0_clear` source raytraces off the raw
+> `/os0_cloud_node/points` to clear free space — clearing keeps working without
+> this node, but there is nothing left to clear.) If the robot ignores an
 > obstacle, check `rostopic info /os0_cloud_node/points_above_terrain` for a
 > publisher before debugging anything else.
 >

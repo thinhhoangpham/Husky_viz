@@ -23,7 +23,8 @@ obstacles:
   # THERE ARE TWO SEPARATE HEIGHT GATES AND BOTH MUST BE NEUTERED.
   #
   #   1. LAYER-LEVEL  -> `obstacles: max_obstacle_height` (right here).
-  #   2. PER-SOURCE   -> `obstacles: os0: {min,max}_obstacle_height` (below).
+  #   2. PER-SOURCE   -> `obstacles: os0_mark/os0_clear:` {min,max}_obstacle_height
+  #                      (below -- one pair per observation source).
   #
   # ObstacleLayer applies its OWN layer-level gate independently of, and in
   # addition to, whatever each observation source declares. Commit 7d4f7d7
@@ -70,43 +71,77 @@ obstacles:
   # ---------------------------------------------------------------------------
   max_obstacle_height: 50.0
 
+  # ---------------------------------------------------------------------------
+  # TWO SOURCES, ONE SENSOR: MARKING AND CLEARING READ DIFFERENT TOPICS.
+  #
+  # costmap_2d clears an obstacle layer by RAYTRACING along each return: a ray
+  # that reached a point proves the space in FRONT of that point is free. Ground
+  # returns therefore do most of the useful clearing work.
+  #
+  # Commit 7d4f7d7 pointed the local costmap's single source at the terrain-
+  # relative FILTERED cloud, which deliberately strips the ground out. The layer
+  # then got marks but almost no clearing rays, so marks accumulated forever and
+  # the robot was boxed in by phantom obstacles. Measured on a clean run: robot
+  # 54.7 m from goal, moved 0.088 m in 10 s, ~4600 lethal cells with the nearest
+  # at 0.73 m while the nearest REAL tree was 15.21 m away; lethal cells grew
+  # monotonically 12199 -> 12609 over 8 s with nothing real in range.
+  # Cloud sizes at that moment: raw 15466 pts (11536 within raytrace_range),
+  # filtered 1178 pts (794 within) -- 14x fewer rays to clear with.
+  #
+  # So the two decisions are split across two topics of the SAME sensor:
+  #   os0_mark  -> filtered cloud, decides WHAT IS AN OBSTACLE. The terrain-
+  #                relative height test in scripts/filter_cloud_above_terrain.py
+  #                (band 0.40-3.00 m above the ground beneath each point) is the
+  #                only height test that is correct on sloped/elevated terrain.
+  #   os0_clear -> RAW cloud, decides WHAT IS FREE. It MUST include the ground
+  #                returns; those are the rays that clear the near field.
+  #
+  # Do not collapse these back into one source in either direction: marking off
+  # the raw cloud reinstates the false-ground-obstacle crescent, and clearing
+  # off the filtered cloud reinstates this boxing-in bug.
+  #
   # The OS0 is a 3D PointCloud2, which costmap_2d reads natively -- no
-  # pointcloud_to_laserscan bridge needed. This observation block MIRRORS the
-  # one in repo-root config/costmap_common.yaml exactly, only the ranges are
-  # opened up (5.0 / 6.0) because the map-frame costmap is drift-free and can
-  # safely see obstacles a little further out.
-  observation_sources: os0
-  os0:
+  # pointcloud_to_laserscan bridge needed. Ranges are opened up (5.0 / 6.0)
+  # relative to repo-root config/costmap_common.yaml because the map-frame
+  # costmap is drift-free and can safely see obstacles a little further out.
+  #
+  # BOTH sources keep min/max_obstacle_height at -1000/1000. For os0_mark that
+  # is gate 2 of 2 being neutered so the terrain-relative filter is not second-
+  # guessed (see the long note above). For os0_clear it matters just as much:
+  # any height gate there would discard the LOW ground rays, i.e. exactly the
+  # ones that do the useful clearing, and the bug would come straight back.
+  #
+  # costmap_2d's gate is a scalar comparison against z in the COSTMAP frame
+  # (odom for the local costmap) -- NOT robot-relative. Measured in the lake
+  # world, ground returns smear across absolute z 4.24..4.56 m and that smear
+  # MOVES as the robot drives, while the SAME returns sit within 7 mm of each
+  # other when measured against their own terrain cell. Any value here is an
+  # absolute-z test and is wrong by construction.
+  #
+  # The filter node must be running (RUN-MAP-NAV.md, Terminal 7). If it is not,
+  # /os0_cloud_node/points_above_terrain has no publisher, nothing is ever
+  # marked, and obstacle avoidance is inert -- check for the publisher first
+  # before debugging avoidance behaviour.
+  # ---------------------------------------------------------------------------
+  observation_sources: os0_mark os0_clear
+
+  os0_mark:
     sensor_frame: os0_lidar
     data_type: PointCloud2
-    # NOTE: the LOCAL costmap overrides this topic in
-    # config/costmap_local_gps.yaml to point at the terrain-relative filtered
-    # cloud. This raw topic remains the default here only because this file is
-    # also loaded into the global namespace, which instantiates no
-    # ObstacleLayer and therefore ignores the whole block.
+    topic: /os0_cloud_node/points_above_terrain
+    marking: true
+    clearing: false
+    min_obstacle_height: -1000.0
+    max_obstacle_height: 1000.0
+    obstacle_range: 5.0
+    raytrace_range: 6.0
+
+  os0_clear:
+    sensor_frame: os0_lidar
+    data_type: PointCloud2
     topic: /os0_cloud_node/points
-    marking: true             # add obstacles where rays hit
-    clearing: true            # clear free space along the ray
-    # THE PER-SOURCE HEIGHT GATE. DELIBERATELY NEUTERED. This is gate 2 of 2;
-    # gate 1 is the layer-level max_obstacle_height at the top of this block,
-    # and BOTH must stay wide or the layer discards the cloud on its own.
-    #
-    # costmap_2d's gate is a scalar comparison against z in the COSTMAP frame.
-    # That assumes flat ground at a known height, which is false on any world
-    # with relief: measured in the lake world, ground returns smear across
-    # absolute z 4.24..4.56 m and that smear MOVES as the robot drives, while
-    # the SAME returns sit within 7 mm of each other when measured against
-    # their own terrain cell. The old 0.15-1.2 m band was the cause of the
-    # crescent of false lethal cells 2-5 m ahead of the robot, and after commit
-    # 07cd63c gave the robot true altitude it referred to a band ~4 m
-    # UNDERGROUND, so it could not have been selecting obstacles at all.
-    #
-    # The real test now lives in scripts/filter_cloud_above_terrain.py, which
-    # looks the terrain height up per point from the world's DTM and keeps only
-    # returns 0.40-3.00 m above the ground BENEATH THAT POINT. These bounds are
-    # opened wide so this gate can never fire and second-guess it. Do not
-    # re-tighten them: any value here is an absolute-z test and is wrong by
-    # construction.
+    marking: false
+    clearing: true
     min_obstacle_height: -1000.0
     max_obstacle_height: 1000.0
     obstacle_range: 5.0
