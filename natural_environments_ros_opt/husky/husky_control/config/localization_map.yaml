@@ -22,9 +22,17 @@
 #   imu1  = compass/data                     ABSOLUTE yaw (drift-free heading
 #                                            anchor; added by the compass fix)
 #   odom1 = odometry/abs_fix                 ABSOLUTE x,y (navsat OR landmark)
-#   (no z input -- z is INHERITED through odom->base_link from the odom filter;
-#    fusing odometry/ground_height here too double-counts it. See the odom2
-#    block at the end of this file for the measurement that proved it.)
+#   odom2 = odometry/ground_height           ABSOLUTE z (DTM terrain + chassis
+#                                            clearance), stamped "map". Fused HERE
+#                                            TOO, not inherited -- this filter
+#                                            estimates z rather than passing it
+#                                            through. The odom filter fuses the
+#                                            SAME number off a SECOND topic,
+#                                            /odometry/ground_height_odom, stamped
+#                                            "odom", because each filter needs the
+#                                            measurement in its own world_frame.
+#                                            See the odom2 block at the end of this
+#                                            file; the frame stamp is load-bearing.
 #
 # THE ODOM-SPOOF ATTACK SURFACE:
 # odom0 is husky_velocity_controller/odom, exactly as in the odom-frame filter.
@@ -113,42 +121,77 @@ odom1_config: [true,  true,  false,
 odom1_differential: false
 odom1_queue_size: 10
 
-# --- Absolute z: NOT fused here, DELIBERATELY (no odom2) ----------------------
-# This filter used to fuse odom2 = odometry/ground_height, the same absolute-z
-# measurement the odom filter fuses as odom1. That was WRONG and is removed.
+# --- Absolute z: odometry/ground_height, stamped "map" (odom2) ---------------
+# The same absolute-elevation measurement the odom filter fuses -- but NOT the
+# same topic. scripts/publish_ground_height_odom.py publishes the identical
+# number twice, differing only in header.frame_id:
+#     /odometry/ground_height        stamped "map"    <- THIS filter (odom2)
+#     /odometry/ground_height_odom   stamped "odom"   <- the odom filter (odom1)
 #
-# WHY IT WAS WRONG:
-# This filter does not publish a pose -- it publishes map->odom, a CORRECTION
-# between two frames. robot_localization estimates base_link's pose in
-# world_frame (map), then emits map->odom = (map->base_link) - (odom->base_link),
-# taking odom->base_link from tf. The robot's true height therefore ALREADY
-# reaches map->base_link through the odom filter, which observes it. Re-observing
-# the same absolute height here applies it a second time, and the surplus lands
-# in map->odom, which should sit near ZERO in z.
+# WHY TWO TOPICS AND NOT ONE. robot_localization transforms a pose measurement
+# into world_frame before fusing: preparePose looks up
+# `world_frame <- msg.header.frame_id` (ros_filter.cpp ~2713) and applies it with
+# poseTmp.mult(targetFrameTrans, poseTmp) (~3021). That transform is the identity
+# only when the stamp equals the filter's own world_frame -- and the two filters
+# have DIFFERENT world_frames (map here, odom there). One stamp therefore cannot
+# serve both: whichever filter it does not match applies a live tf lookup, i.e.
+# one of the filters' own outputs, to its own input.
 #
-# It is worse than a static offset, because it feeds back. The message is stamped
-# frame_id "odom" (scripts/publish_ground_height_odom.py), so it is an ODOM-frame
-# measurement. robot_localization transforms an absolute pose measurement into
-# world_frame before fusing; here that means applying the CURRENT map->odom
-# estimate to the filter's own input. The filter's output is added back to its
-# measurement each cycle and settles at a nonzero offset.
+# THE HISTORY, because all three wirings were tried and the first two were wrong.
+# Write M = (map->base_link).z, O = (odom->base_link).z, T = the true height.
+# This filter emits map->odom = M - O (mapOdomTrans.mult(worldBaseLinkTrans,
+# baseLinkOdomTrans), ros_filter.cpp ~2025).
 #
-# MEASURED, with odom2 enabled:
-#     /odometry/ground_height  z = 3.768   the measurement, correct
-#     odom -> base_link        z = 3.769   correct, the odom filter applied it
-#     map  -> odom             z = 1.228   WRONG, should be ~0
-#     map  -> base_link        z = 4.997   = 3.768 + 1.228, the double count
-# The robot believed it was 1.23 m higher than it was, which put the GROUND
-# inside scripts/filter_cloud_above_terrain.py's 0.40..3.00 m band and filled the
-# local costmap with 26227 false lethal cells starting 0.51 m from the robot.
+# 1. ONE topic stamped "odom", fused in both  ->  RUNAWAY IN THIS FILTER.
+#    Here targetFrameTrans is map<-odom, z = +(M - O) -- this filter's OWN output
+#    fed back into its own input: M := T + (M - O). Measured:
+#        /odometry/ground_height  z = 3.768   the measurement, correct
+#        odom -> base_link        z = 3.769   correct
+#        map  -> odom             z = 1.228   WRONG, should be ~0
+#        map  -> base_link        z = 4.997   = 3.768 + 1.228, the double count
 #
-# THE COMMENT THAT USED TO BE HERE INVOKED THE "DUAL-EKF trap". That rule is real
-# for two_d_mode (see the two_d_mode block above: a filter with it ON forces z to
-# zero, so BOTH filters must have it off) but it does NOT transfer to an absolute
-# MEASUREMENT input. two_d_mode is a constraint this filter would impose on its
-# own output; ground height is an observation the other filter already accounts
-# for. Leaving z unconstrained here is correct -- it is inherited, not unobserved.
+# 1b. Removed from this filter entirely  ->  OVERCORRECTION.
+#    This filter does not PASS z THROUGH; it ESTIMATES it. Nothing else here
+#    observes z (odom0 z flag false, imu0/imu1 are orientation-only, odom1
+#    abs_fix has its z flag false and carries z=0.0 anyway), so the estimate sat
+#    at its initial 0 and the filter published the negated height. Measured:
+#        /odometry/ground_height  z =  3.839
+#        odom -> base_link        z = +3.839  correct
+#        map  -> odom             z = -3.839  WRONG, cancels it exactly
+#        map  -> base_link        z = -0.000  robot back underground
 #
-# The historical warning about the costmap height band being calibrated for a
-# robot at z~0 still stands and is preserved in localization.yaml, next to the
-# odom1 input that legitimately supplies the robot's true elevation.
+# 2. ONE topic stamped "map", fused in both  ->  FIXED HERE, BROKE THE ODOM ONE.
+#    This filter became correct (map<-map is the identity, M := T), but the odom
+#    filter then applied odom<-map, z = -(M - O), fusing T - (M - O) = O: its own
+#    estimate. The measurement cancelled itself, so ITS z went unobserved and
+#    froze wherever it had drifted. Measured:
+#        /odometry/ground_height  z = 3.893   the measurement
+#        /odometry/filtered_odom  z = 5.927   O, frozen 2.034 m high
+#        map  -> odom             z = -2.034  = M - O, exactly hides the error
+#        map  -> base_link        z = 3.893   correct TOTAL, wrong SPLIT
+#    Not cosmetic: the local costmap runs in the odom frame
+#    (config/costmap_local_gps.yaml, global_frame: odom) and consumed the 2 m
+#    error directly.
+#
+# 3. TWO topics, each stamped in its own filter's world_frame.  <- CURRENT.
+#    Both transforms are the identity, so M := T and O := T directly, and
+#    map->odom = M - O = 0. Every frame reports the true height at once.
+#    The odom-stamped copy is NOT compensated by map->odom -- it is the identical
+#    raw number. Compensating it would reintroduce exactly the output-into-input
+#    feedback that broke wirings 1 and 2.
+#
+# Expected in tf once this is right, ALL FOUR AT ONCE:
+#     map->odom z ~= 0.000, odom->base_link z ~= map->base_link z ~=
+#     /odometry/ground_height z, and /odometry/filtered_odom z the same.
+#
+# We fuse z ONLY -- the message's x, y and orientation are meaningless and its
+# covariance sets them to 1e6. Absolute (differential: false): it is a direct
+# measurement of elevation, not a delta.
+odom2: odometry/ground_height
+odom2_config: [false, false, true,
+               false, false, false,
+               false, false, false,
+               false, false, false,
+               false, false, false]
+odom2_differential: false
+odom2_queue_size: 10
