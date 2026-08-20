@@ -19,6 +19,57 @@ publish_frequency: 3.0
 transform_tolerance: 0.5
 
 obstacles:
+  # ---------------------------------------------------------------------------
+  # THERE ARE TWO SEPARATE HEIGHT GATES AND BOTH MUST BE NEUTERED.
+  #
+  #   1. LAYER-LEVEL  -> `obstacles: max_obstacle_height` (right here).
+  #   2. PER-SOURCE   -> `obstacles: os0: {min,max}_obstacle_height` (below).
+  #
+  # ObstacleLayer applies its OWN layer-level gate independently of, and in
+  # addition to, whatever each observation source declares. Commit 7d4f7d7
+  # widened only the per-source pair and therefore fixed just half the problem:
+  # the layer-level value stayed at costmap_2d's stock default of 2.0 and kept
+  # silently discarding the entire cloud. Measured symptom: a mapped tree 3.38 m
+  # ahead, 244 filtered returns on it inside obstacle_range, and 0 lethal cells;
+  # raising this one parameter at runtime produced 493 lethal cells instantly.
+  #
+  # BOTH GATES TEST ABSOLUTE z IN THE COSTMAP FRAME (odom for the local
+  # costmap). They are NOT robot-relative, despite what the names suggest. The
+  # 2.0 default only ever appeared to work because base_link used to sit at
+  # z ~ 0; since commit 07cd63c gave the robot true altitude (base_link ~3.84 m)
+  # every real return is above 2.0 m, so the layer threw away all of them.
+  #
+  # VALUE: 50.0 is the DECLARED MAXIMUM of this parameter -- see
+  # /opt/ros/noetic/include/costmap_2d/ObstaclePluginConfig.h (min 0.0,
+  # max 50.0, default 2.0). Anything larger is silently clamped down to 50.0,
+  # which is exactly what `dynparam set ... 1000.0` did. 50.0 is far above
+  # anything in this world (terrain 3.5..5.9 m, tree canopy ~7.6 m in odom) with
+  # room for the robot's altitude to vary, so this gate can never fire.
+  #
+  # There is NO layer-level `min_obstacle_height`: ObstaclePluginConfig declares
+  # max_obstacle_height only, and the minimum exists solely per-source (it is a
+  # constructor argument of costmap_2d::ObservationBuffer). Adding one here
+  # would be a dead parameter -- do not.
+  #
+  # The REAL obstacle-height decision now lives in
+  # scripts/filter_cloud_above_terrain.py, which tests each point's height ABOVE
+  # THE TERRAIN DIRECTLY BENEATH IT (band 0.40..3.00 m), so it stays correct on
+  # slopes and at any robot altitude. The 3.00 m upper bound is DELIBERATE
+  # overhead clearance so the robot can drive UNDER tree canopies: measured in
+  # this world, 400 of 416 cells carrying canopy returns have nothing at all in
+  # the 0.40-3.00 m band, i.e. they are pure overhang. Drop that upper bound and
+  # the ground beneath every tree becomes lethal. KEEP IT.
+  #
+  # SCOPE NOTE -- DO NOT "CLEAN THIS UP" BY SPLITTING THE FILE. This file is
+  # loaded into BOTH the global_costmap and local_costmap namespaces
+  # (launch/move_base_gps_map.launch). The global costmap instantiates NO
+  # ObstacleLayer at all (commit ecb0634, a deliberate decision), so this whole
+  # block lands in the global namespace and is simply ignored. That is expected
+  # and harmless. Splitting the file to "tidy" it removes these params from the
+  # local costmap and reinstates the bug.
+  # ---------------------------------------------------------------------------
+  max_obstacle_height: 50.0
+
   # The OS0 is a 3D PointCloud2, which costmap_2d reads natively -- no
   # pointcloud_to_laserscan bridge needed. This observation block MIRRORS the
   # one in repo-root config/costmap_common.yaml exactly, only the ranges are
@@ -36,7 +87,9 @@ obstacles:
     topic: /os0_cloud_node/points
     marking: true             # add obstacles where rays hit
     clearing: true            # clear free space along the ray
-    # THE HEIGHT GATE HERE IS DELIBERATELY NEUTERED -- see below.
+    # THE PER-SOURCE HEIGHT GATE. DELIBERATELY NEUTERED. This is gate 2 of 2;
+    # gate 1 is the layer-level max_obstacle_height at the top of this block,
+    # and BOTH must stay wide or the layer discards the cloud on its own.
     #
     # costmap_2d's gate is a scalar comparison against z in the COSTMAP frame.
     # That assumes flat ground at a known height, which is false on any world
