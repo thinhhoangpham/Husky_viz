@@ -28,15 +28,34 @@ obstacles:
   os0:
     sensor_frame: os0_lidar
     data_type: PointCloud2
+    # NOTE: the LOCAL costmap overrides this topic in
+    # config/costmap_local_gps.yaml to point at the terrain-relative filtered
+    # cloud. This raw topic remains the default here only because this file is
+    # also loaded into the global namespace, which instantiates no
+    # ObstacleLayer and therefore ignores the whole block.
     topic: /os0_cloud_node/points
     marking: true             # add obstacles where rays hit
     clearing: true            # clear free space along the ray
-    # Height gate in the costmap frame. Ground sits near z=0 and canopy well
-    # above the robot, so 0.15-1.2 m keeps trunks/benches and drops both. This
-    # is the most failure-prone setting: too low and the ground itself becomes
-    # an obstacle.
-    min_obstacle_height: 0.15
-    max_obstacle_height: 1.2
+    # THE HEIGHT GATE HERE IS DELIBERATELY NEUTERED -- see below.
+    #
+    # costmap_2d's gate is a scalar comparison against z in the COSTMAP frame.
+    # That assumes flat ground at a known height, which is false on any world
+    # with relief: measured in the lake world, ground returns smear across
+    # absolute z 4.24..4.56 m and that smear MOVES as the robot drives, while
+    # the SAME returns sit within 7 mm of each other when measured against
+    # their own terrain cell. The old 0.15-1.2 m band was the cause of the
+    # crescent of false lethal cells 2-5 m ahead of the robot, and after commit
+    # 07cd63c gave the robot true altitude it referred to a band ~4 m
+    # UNDERGROUND, so it could not have been selecting obstacles at all.
+    #
+    # The real test now lives in scripts/filter_cloud_above_terrain.py, which
+    # looks the terrain height up per point from the world's DTM and keeps only
+    # returns 0.40-3.00 m above the ground BENEATH THAT POINT. These bounds are
+    # opened wide so this gate can never fire and second-guess it. Do not
+    # re-tighten them: any value here is an absolute-z test and is wrong by
+    # construction.
+    min_obstacle_height: -1000.0
+    max_obstacle_height: 1000.0
     obstacle_range: 5.0
     raytrace_range: 6.0
 

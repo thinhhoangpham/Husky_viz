@@ -19,3 +19,32 @@ resolution: 0.05
 plugins:
   - {name: obstacles,  type: "costmap_2d::ObstacleLayer"}
   - {name: inflation,  type: "costmap_2d::InflationLayer"}
+
+# The LOCAL costmap is the sole consumer of live lidar (the global costmap has
+# no ObstacleLayer -- see config/costmap_global_gps_map.yaml). It reads the
+# TERRAIN-RELATIVE FILTERED cloud, not the raw sensor topic.
+#
+# Everything else about the observation source -- sensor_frame, data_type,
+# marking/clearing, ranges -- comes from the `obstacles:` block of
+# config/costmap_common_gps.yaml, which is loaded into this namespace FIRST.
+# Only the topic is overridden here, and only here, so the global namespace is
+# untouched.
+#
+# WHY. costmap_2d decides "is this point an obstacle?" with a scalar test on
+# absolute z in the costmap frame, which is only correct if the ground is a
+# horizontal plane at a fixed height. On sloped or elevated terrain it marks
+# the GROUND as lethal -- the crescent of false obstacles 2-5 m ahead of the
+# robot (measured: 6355 lethal cells all inside 6 m, while the nearest real
+# mapped landmark was 7.88 m away). costmap_2d exposes no hook to make that
+# test terrain-relative, so the decision is made upstream instead:
+# scripts/filter_cloud_above_terrain.py samples the world's DTM at each point's
+# own (x, y) and republishes only the returns 0.40-3.00 m above the ground
+# beneath THAT point. The costmap's own height gate is opened to +/-1000 m in
+# costmap_common_gps.yaml so it can never override that decision.
+#
+# The filter node must be running (RUN-MAP-NAV.md, Terminal 7). If it is not,
+# this topic has no publisher and the local costmap sees NO obstacles at all --
+# check for the publisher first before debugging avoidance behaviour.
+obstacles:
+  os0:
+    topic: /os0_cloud_node/points_above_terrain

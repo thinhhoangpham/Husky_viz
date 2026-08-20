@@ -170,6 +170,61 @@ python3 ~/Documents/Husky_viz/scripts/relay_costmap_z.py _world:=lake
 > park world relief is 0.007 m, so the choice is immaterial. Values: park
 > **2.986 m**, lake **3.505 m**.
 
+**Terminal 7 — terrain-relative cloud filter** (fills `/os0_cloud_node/points_above_terrain`; **the local costmap's only obstacle source**):
+
+```bash
+export ROS_IP=172.20.0.1 ROS_MASTER_URI=http://172.20.0.1:11311 ROBOT_HOST_IP=172.20.0.1
+cd ~/Documents/Husky_viz
+source /opt/ros/noetic/setup.bash
+python3 ~/Documents/Husky_viz/scripts/filter_cloud_above_terrain.py _world:=lake
+```
+
+> Use `_world:=park` for the park world — the DTM must match the world in Step 1.
+>
+> **This terminal is not optional.** `config/costmap_local_gps.yaml` points the
+> local costmap's observation source at `/os0_cloud_node/points_above_terrain`.
+> Skip this node and that topic has no publisher, so the local costmap sees **no
+> obstacles at all** and close-range avoidance is inert. If the robot ignores an
+> obstacle, check `rostopic info /os0_cloud_node/points_above_terrain` for a
+> publisher before debugging anything else.
+>
+> **What it is for.** `costmap_2d` decides "is this point an obstacle?" with a
+> scalar comparison against **absolute z** in the costmap frame
+> (`min_obstacle_height`/`max_obstacle_height`), which is only correct if the
+> ground is a horizontal plane at a fixed height. On relief it marks the
+> **ground itself** as lethal — the crescent of false obstacles 2–5 m ahead of
+> the robot (measured once: 6355 lethal cells all within 6 m, while the nearest
+> real mapped landmark was 7.88 m away — every one of them false). Measured in
+> the lake world on a 3.9° slope (n = 16894 returns): against **its own terrain
+> cell** the ground spans just +0.083…+0.090 m and objects start at +1.2 m;
+> in **absolute z** the same ground smears over 4.24…4.56 m and that smear moves
+> as the robot drives. `costmap_2d` has no hook for a terrain-relative test, so
+> this node makes the decision upstream: it looks the terrain height up from
+> `maps/<world>_dtm.npy` at **each point's own (x, y)** and republishes only the
+> returns **0.40–3.00 m above the ground beneath that point**. The costmap's own
+> gate is opened to ±1000 m so it can never override that.
+>
+> **The band.** Ground tops out at +0.090 m with a 7 mm spread and objects start
+> near +1.2 m, so 0.40 m sits roughly mid-gap — deliberately not marginal.
+> 3.00 m clears the Husky with room for real overhangs while dropping canopy
+> (p95 = +7.19 m), which must not be marked: the robot drives under trees.
+> Override with `_min_height:=` / `_max_height:=`.
+>
+> **Points with no terrain under them are dropped** (open water, off-mesh void).
+> There is no ground reference there, so no honest height test exists, and the
+> global costmap already treats those cells as unknown keep-out. Pass
+> `_keep_off_dtm:=true` to mark them instead.
+>
+> **On a TF failure the cloud passes through UNFILTERED**, with a throttled
+> warning. Publishing an empty cloud would tell the costmap the way ahead is
+> clear, which is the one failure mode that can drive the robot into something.
+>
+> **It is not spoof-resistant.** The terrain lookup is indexed by the point's
+> map-frame position, which comes from the robot's own pose estimate; under a
+> pose spoof it reads the wrong terrain cells. It is a geometry correction for
+> the costmap, not a detector — the defences against pose corruption are the
+> landmark localizer and the drift monitors.
+
 Both pose feeders (GPS + landmark) run at once, publishing to separate topics. The selector forwards exactly one to the EKF, and the operator switches between them live with `mode gps` / `mode landmark` (Step 4) — no relaunch, no choosing a launch file.
 
 ## Step 3 — Operator
