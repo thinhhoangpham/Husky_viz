@@ -58,34 +58,72 @@ follows automatically if the wheels or ride height change.
 FOR A ROBOT WITH NO base_footprint: pass `_clearance:=<metres>` and the TF lookup is
 skipped entirely. That param also overrides the lookup for testing.
 
-THE FRAME MATTERS -- ~frame_id, and why the wrong one silently corrupts the map EKF
------------------------------------------------------------------------------------
-What we publish is an ABSOLUTE elevation (DTM terrain height + clearance), not an
-odom-relative one. The `~frame_id` param says so; it must match the frame the number
-is actually expressed in.
+ONE HEIGHT, TWO FRAMES -- why this node publishes the SAME number on TWO topics
+-------------------------------------------------------------------------------
+What we publish is an ABSOLUTE elevation (DTM terrain height + clearance). There
+are two EKFs and they do not share a `world_frame`: the odom filter's is `odom`,
+the map filter's is `map`. Both must observe this height, and each one needs it
+expressed in ITS OWN world_frame -- so one topic cannot serve both.
 
-This is not cosmetic, because of how robot_localization consumes a pose measurement.
-In RosFilter::preparePose it looks up `world_frame <- msg.header.frame_id` from tf and
-applies that transform to the measurement before fusing (ros_filter.cpp: the
-`poseTmp.mult(targetFrameTrans, poseTmp)` step). So:
+The mechanism, from robot_localization's source (ros_filter.cpp, noetic-devel):
 
-  * stamped "odom", read by the ODOM filter (world_frame: odom)
-        transform is odom->odom = identity. Harmless no-op.
-  * stamped "odom", read by the MAP filter (world_frame: map)
-        transform is map->odom -- THE MAP FILTER'S OWN OUTPUT. The filter applies its
-        own estimate to its own input, so its output is added back to its measurement
-        every cycle and settles at a nonzero offset. Measured: map->odom z drifted to
-        +1.228 m, putting the robot 1.23 m above where it stood.
-  * stamped "map" (correct for this quantity)
-        the MAP filter's transform is map->map = identity, so no feedback. The ODOM
-        filter's transform is odom->map, whose z is -(map->odom).z -- and the map
-        filter now drives map->odom to ~0, so that correction vanishes. Both filters
-        converge on the same true height.
+  * odometryCallback (line ~1786) forwards the pose part with
+    `targetFrame = worldFrameId_`.
+  * preparePose sets `finalTargetFrame = targetFrame` (line ~2666) and, for a
+    NON-differential input, `poseTmp.frame_id_ = msg->header.frame_id` (~2667).
+  * it then looks up `finalTargetFrame <- poseTmp.frame_id_` (~2713-2719) and
+    applies it to the measurement: `poseTmp.mult(targetFrameTrans, poseTmp)`
+    (~3021).
 
-Hence: run this with `_frame_id:=map` and fuse it in BOTH filters. Fusing it in
-NEITHER is not an alternative -- the map filter does not pass z through, it estimates
-it, so with no z input it estimates 0 and emits map->odom z = -(odom->base_link).z,
-cancelling the odom filter's correct height and putting the robot back underground.
+So the transform applied is literally `lookup(world_frame <- header.frame_id)`.
+It is the identity exactly when the stamp equals that filter's world_frame, and
+it is a live tf lookup -- i.e. one of the filters' own outputs -- otherwise.
+
+Writing M = (map->base_link).z and O = (odom->base_link).z, the map filter emits
+`map->odom = M - O` (mapOdomTrans.mult(worldBaseLinkTrans, baseLinkOdomTrans),
+~line 2025). With T the true height we publish, the three wirings tried are:
+
+  1. stamped "odom", fused in BOTH.
+        map filter applies (map<-odom).z = +(M-O)  =>  M := T + (M - O)
+        Runs away: measured map->odom z = +1.228, robot 1.23 m too high.
+
+  2. stamped "map", fused in BOTH.        <- the previous fix, ALSO wrong
+        map filter:  map<-map identity            =>  M := T           correct
+        odom filter: (odom<-map).z = -(M-O)       =>  O := T - (M - O)
+        Substituting M = T collapses that to O := O -- the measurement cancels
+        itself and carries NO information, so the odom filter's z is once again
+        completely UNOBSERVED and simply freezes wherever it drifted to. The
+        total stays right while the split is wrong. Measured, and reproduced
+        exactly by the algebra above:
+            /odometry/ground_height   3.893   the measurement
+            /odometry/filtered_odom   5.927   O, frozen 2.034 high
+            map->odom                -2.034   = M - O, cancels it
+            map->base_link            3.893   correct total, wrong split
+
+  3. the SAME number stamped in EACH filter's own world_frame.   <- CURRENT
+        map filter  reads /odometry/ground_height       stamped "map"
+        odom filter reads /odometry/ground_height_odom  stamped "odom"
+        Both transforms are the identity, so  M := T  and  O := T  directly.
+            map->odom = M - O = 0,  and every frame reports the true height.
+
+Note what is NOT done here: the odom-stamped copy is NOT "compensated" by the
+current map->odom. It carries the identical, uncompensated number. Compensating
+it would mean deriving an input to the filters from the filters' own output --
+the same feedback loop that made wirings 1 and 2 fail, just spelled out in
+Python instead of in tf. There is nothing to compensate: `odom <- odom` is the
+identity, so the odom filter already receives the value unmodified.
+
+WHY THE SPLIT MATTERS, not just the total
+------------------------------------------
+The LOCAL costmap runs in the `odom` frame (config/costmap_local_gps.yaml,
+`global_frame: odom`) -- deliberately, so obstacle avoidance survives a bad
+map->odom or a GPS spoof. It therefore consumes O, not the composed total, and
+under wiring 2 it saw a robot 2 m higher than reality. Anything reading only
+odom->base_link has the same exposure.
+
+~frame_id / ~frame_id_odom name the two stamps; ~topic / ~topic_odom name the
+two topics. The defaults are already the correct pair, so neither needs to be
+passed on the command line.
 
 OFF-DTM BEHAVIOUR
 -----------------
@@ -181,6 +219,29 @@ def covariance_for_z(z_variance):
     return cov
 
 
+def _height_msg(odometry_cls, stamp, frame_id, z, covariance):
+    """One absolute-height Odometry message, stamped in `frame_id`.
+
+    Called twice per tick with the SAME z, stamp and covariance and two
+    different frames -- see ONE HEIGHT, TWO FRAMES in the module docstring. The
+    message class is passed in rather than imported at module scope so this
+    file's pure functions stay importable without a ROS install, matching how
+    main() defers its own imports.
+
+    The shared `stamp` is deliberate: the two filters must fuse the same instant,
+    and robot_localization drops a message whose stamp precedes the last one it
+    saw on that topic.
+    """
+    od = odometry_cls()
+    od.header.stamp = stamp
+    od.header.frame_id = frame_id
+    od.child_frame_id = "base_link"
+    od.pose.pose.position.z = z
+    od.pose.pose.orientation.w = 1.0
+    od.pose.covariance = covariance
+    return od
+
+
 def main(argv=None):
     import numpy as np
     import rospy
@@ -194,9 +255,23 @@ def main(argv=None):
     # Explicit override for a robot with no base_footprint frame, or for testing.
     # <= 0 means "not set": look it up from TF instead.
     clearance_param = float(rospy.get_param("~clearance", 0.0))
-    # See THE FRAME MATTERS in the module docstring. Default "odom" preserves the
-    # historical behaviour for any existing caller; the dual-EKF setup wants "map".
-    frame_id = rospy.get_param("~frame_id", "odom")
+    # See ONE HEIGHT, TWO FRAMES in the module docstring. The SAME z goes out on
+    # two topics, stamped in each EKF's own world_frame, so that each filter's
+    # `lookup(world_frame <- header.frame_id)` is the identity. The defaults are
+    # already the correct pair for the dual-EKF setup; they are params only so a
+    # differently-named frame or topic can be accommodated without editing this.
+    frame_id = rospy.get_param("~frame_id", "map")
+    frame_id_odom = rospy.get_param("~frame_id_odom", "odom")
+    topic = rospy.get_param("~topic", "/odometry/ground_height")
+    topic_odom = rospy.get_param("~topic_odom", "/odometry/ground_height_odom")
+    if frame_id == frame_id_odom:
+        # Not a style nit: the whole point is that the two stamps differ. If they
+        # match, one of the two filters is applying a non-identity transform (its
+        # own output) to its own input, which is the feedback bug this fixes.
+        rospy.logfatal("[ground_height] ~frame_id and ~frame_id_odom are both "
+                       "%r; they must name the two EKFs' different world_frames "
+                       "(map and odom)", frame_id)
+        return 1
 
     # The DTM is the ONLY terrain source now that the ground-plane fit is gone, so
     # without it there is no absolute elevation to publish at all.
@@ -222,7 +297,11 @@ def main(argv=None):
         state["xy"] = (msg.pose.pose.position.x, msg.pose.pose.position.y)
 
     rospy.Subscriber("/odometry/filtered_map", Odometry, on_pose, queue_size=5)
-    pub = rospy.Publisher("/odometry/ground_height", Odometry, queue_size=5)
+    pub = rospy.Publisher(topic, Odometry, queue_size=5)
+    pub_odom = rospy.Publisher(topic_odom, Odometry, queue_size=5)
+    rospy.loginfo("[ground_height] publishing the same absolute z on %s (frame "
+                  "%r, for the map EKF) and %s (frame %r, for the odom EKF)",
+                  topic, frame_id, topic_odom, frame_id_odom)
 
     tf_buf = tf2_ros.Buffer()
     tf2_ros.TransformListener(tf_buf)
@@ -271,14 +350,14 @@ def main(argv=None):
             rate.sleep()
             continue
 
-        od = Odometry()
-        od.header.stamp = rospy.Time.now()
-        od.header.frame_id = frame_id
-        od.child_frame_id = "base_link"
-        od.pose.pose.position.z = z
-        od.pose.pose.orientation.w = 1.0
-        od.pose.covariance = covariance_for_z(z_var)
-        pub.publish(od)
+        # One measurement, two stamps. Both carry the IDENTICAL, uncompensated z
+        # and the SAME timestamp: each filter's target-frame transform is the
+        # identity, so neither needs (nor may have) a correction derived from the
+        # filters' own output.
+        stamp = rospy.Time.now()
+        cov = covariance_for_z(z_var)
+        pub.publish(_height_msg(Odometry, stamp, frame_id, z, cov))
+        pub_odom.publish(_height_msg(Odometry, stamp, frame_id_odom, z, cov))
         rospy.loginfo_throttle(
             1.0, "[ground_height] z=%.3f m (terrain %.3f + clearance %.4f) "
             "at (%.2f, %.2f)" % (z, ground_elev, clearance, x, y))

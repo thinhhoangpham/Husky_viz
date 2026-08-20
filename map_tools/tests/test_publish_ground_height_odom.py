@@ -161,3 +161,82 @@ def test_non_finite_coordinates_return_none():
     z = np.ones((4, 4), dtype=float)
     assert ghodom.dtm_elevation_at(z, 0.25, -49.75, -25.0, float("nan"), 0.0) is None
     assert ghodom.dtm_elevation_at(z, 0.25, -49.75, -25.0, 0.0, float("inf")) is None
+
+
+# --- _height_msg: the two-topic, two-stamp wiring ---------------------------
+# See ONE HEIGHT, TWO FRAMES in the script's docstring and
+# test_ekf_absolute_z_wiring.py for why there are two messages at all.
+
+
+class _Pos(object):
+    def __init__(self):
+        self.x = self.y = self.z = 0.0
+
+
+class _Quat(object):
+    def __init__(self):
+        self.x = self.y = self.z = self.w = 0.0
+
+
+class _Pose(object):
+    def __init__(self):
+        self.position = _Pos()
+        self.orientation = _Quat()
+
+
+class _PoseWithCov(object):
+    def __init__(self):
+        self.pose = _Pose()
+        self.covariance = None
+
+
+class _Header(object):
+    def __init__(self):
+        self.stamp = None
+        self.frame_id = None
+
+
+class _FakeOdometry(object):
+    """Stands in for nav_msgs/Odometry so this runs with no ROS install."""
+
+    def __init__(self):
+        self.header = _Header()
+        self.child_frame_id = None
+        self.pose = _PoseWithCov()
+
+
+def test_height_msg_stamps_the_frame_it_is_given():
+    cov = ghodom.covariance_for_z(0.05)
+    od = ghodom._height_msg(_FakeOdometry, 12.5, "map", 3.893, cov)
+    assert od.header.frame_id == "map"
+    assert od.header.stamp == 12.5
+    assert od.child_frame_id == "base_link"
+    assert od.pose.pose.position.z == 3.893
+    assert od.pose.pose.orientation.w == 1.0
+    assert od.pose.covariance is cov
+
+
+def test_the_two_copies_differ_only_in_frame_id():
+    """The odom-stamped copy carries the IDENTICAL height and timestamp -- it is
+    NOT compensated by map->odom. `odom <- odom` is already the identity, so
+    there is nothing to correct, and deriving it from the filters' own output
+    would rebuild the feedback loop the two-topic design exists to remove."""
+    cov = ghodom.covariance_for_z(0.05)
+    a = ghodom._height_msg(_FakeOdometry, 12.5, "map", 3.893, cov)
+    b = ghodom._height_msg(_FakeOdometry, 12.5, "odom", 3.893, cov)
+    assert a.header.frame_id != b.header.frame_id
+    assert a.pose.pose.position.z == b.pose.pose.position.z
+    assert a.header.stamp == b.header.stamp
+    assert a.pose.covariance == b.pose.covariance
+
+
+def test_height_msg_returns_independent_objects():
+    """Two publishers must not share one message: rospy serializes lazily, so a
+    single mutated object could go out under the wrong frame on both topics."""
+    cov = ghodom.covariance_for_z(0.05)
+    a = ghodom._height_msg(_FakeOdometry, 1.0, "map", 1.0, cov)
+    b = ghodom._height_msg(_FakeOdometry, 1.0, "odom", 1.0, cov)
+    assert a is not b
+    assert a.header is not b.header
+    a.header.frame_id = "clobbered"
+    assert b.header.frame_id == "odom"

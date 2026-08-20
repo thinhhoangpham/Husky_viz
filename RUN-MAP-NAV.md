@@ -119,22 +119,38 @@ source /opt/ros/noetic/setup.bash
 python3 ~/Documents/Husky_viz/landmark_loc/abs_fix_selector.py
 ```
 
-**Terminal 5 — ground-height publisher** (fills `/odometry/ground_height`; this is what gives the robot its TRUE altitude):
+**Terminal 5 — ground-height publisher** (fills `/odometry/ground_height` **and** `/odometry/ground_height_odom`; this is what gives the robot its TRUE altitude):
 
 ```bash
 export ROS_IP=172.20.0.1 ROS_MASTER_URI=http://172.20.0.1:11311 ROBOT_HOST_IP=172.20.0.1
 cd ~/Documents/Husky_viz
 source /opt/ros/noetic/setup.bash
-PYTHONPATH=~/Documents/Husky_viz:$PYTHONPATH python3 ~/Documents/Husky_viz/scripts/publish_ground_height_odom.py _dtm_path:=/home/thinh/Documents/Husky_viz/maps/lake_dtm.npy _frame_id:=map
+PYTHONPATH=~/Documents/Husky_viz:$PYTHONPATH python3 ~/Documents/Husky_viz/scripts/publish_ground_height_odom.py _dtm_path:=/home/thinh/Documents/Husky_viz/maps/lake_dtm.npy
 ```
 
-> **`_frame_id:=map` is not optional either.** The published number is an ABSOLUTE
-> elevation, and robot_localization transforms a pose measurement into the filter's
-> `world_frame` before fusing it. Stamped `odom` (the node's backwards-compatible
-> default), the map EKF would apply its OWN `map->odom` output to its own input and
-> settle at a false offset (measured: `map->odom` z = 1.228 m, robot 1.23 m too high).
-> Stamped `map` that transform is the identity, so there is no feedback. Verify with
-> `rosrun tf tf_echo map odom`: z must be ~0.000, NOT ~+1.2 and NOT ~-3.8.
+> **This node publishes the SAME height on TWO topics, and that is the point.**
+> `/odometry/ground_height` stamped `map` feeds the map EKF (`odom2` in
+> `localization_map.yaml`); `/odometry/ground_height_odom` stamped `odom` feeds the odom
+> EKF (`odom1` in `localization.yaml`). robot_localization transforms a pose measurement
+> into the filter's `world_frame` before fusing it, and that transform is the identity
+> only when the stamp matches — so with a single topic, whichever filter it does not
+> match applies one of the filters' own outputs to its own input. Both defaults are
+> already correct, so **no `_frame_id` argument is needed** (it used to be `_frame_id:=map`,
+> which fixed the map filter and silently left the odom filter's z 2 m high).
+>
+> Verify all four of these together — the total being right is NOT enough, since a wrong
+> split hides inside a correct total:
+>
+> ```bash
+> rosrun tf tf_echo map odom          # z ~=  0.000   (NOT +1.2, NOT -2.0, NOT -3.8)
+> rosrun tf tf_echo odom base_link    # z ~= /odometry/ground_height
+> rosrun tf tf_echo map base_link     # z ~= /odometry/ground_height
+> rostopic echo -n1 /odometry/filtered_odom/pose/pose/position/z   # ~= the same
+> ```
+>
+> The odom-frame value matters on its own: the **local costmap runs in the `odom` frame**
+> (`config/costmap_local_gps.yaml`, `global_frame: odom`), so it consumes `odom->base_link`
+> directly and a wrong split puts its obstacle heights metres off.
 >
 > Swap `lake_dtm.npy` for `park_dtm.npy` when running the park world — the DTM must match the world in Step 1.
 >
