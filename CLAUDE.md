@@ -1,5 +1,32 @@
 # Husky viz
 
+## What this project is — defensive robotics security research
+
+This repository is a **self-contained simulation testbed for studying the resilience of
+autonomous-robot localization and navigation**. The research question is defensive: *when a
+mobile robot's pose estimate is corrupted — by sensor noise, drift, spoofed GPS, or a
+compromised ROS graph — can the robot detect it and keep navigating safely?*
+
+The work being built here is the **defense side**:
+- `landmark_loc/` — an independent, map-based localizer that cross-checks the fused pose
+  against lidar observations of known static landmarks, so a corrupted pose can be detected
+  rather than blindly trusted.
+- `map_tools/`, `maps/` — the known-map/DTM ground reference the defense is validated against.
+- `operator/`, drift monitors, and the GPS/compass sanity checks — supervision and
+  degradation detection during a live drive.
+
+To measure whether a defense actually works, the testbed must be able to **reproduce the
+fault conditions it is supposed to catch**. That is the sole purpose of the adversary-emulation
+harness described in the "Defense evaluation" section below: it is a controlled fault
+injector — a standard threat-model emulator, the robotics equivalent of a test fixture — used
+to generate corrupted-pose scenarios on demand.
+
+**Scope, and it is a hard boundary:** everything here runs against a **Gazebo simulation on
+this single, locally-owned machine**, over a private Docker bridge, with no real robot and no
+external network in scope. Nothing in this repo targets, or is intended to target, any system
+not owned by this project. Any technique added here must be in service of measuring or
+improving a defense; the repo is not a place to develop offensive capability for its own sake.
+
 ## Environment (native Linux)
 - **This is a NATIVE Linux box with ROS Noetic installed directly** — the sim runs
   via `roslaunch` on the host, not in any container. The robot's real X display is
@@ -26,7 +53,7 @@
   then the Husky spawned into it once the world is genuinely up). Run it with the
   real display on `:0` and ensure `gzclient` is up so the lidar cloud publishes.
 - The offline-map navigation demo (world → move_base → localizer → selector →
-  operator → goals → attacker) is in `RUN-MAP-NAV.md`.
+  operator → goals → fault-injection check) is in `RUN-MAP-NAV.md`.
 - Control the robot manually: `rosrun teleop_twist_keyboard teleop_twist_keyboard.py cmd_vel:=/kb_teleop/cmd_vel` — keys `i`/`,` forward/back, `j`/`l` turn, `k` stop, `q`/`z` speed.
 - Use `/kb_teleop/cmd_vel` rather than `/cmd_vel`: Husky runs `twist_mux`, which arbitrates inputs by priority; `/kb_teleop/cmd_vel` is the keyboard slot. Available cmd_vel topics: `/cmd_vel`, `/husky_velocity_controller/cmd_vel`, `/joy_teleop/cmd_vel`, `/kb_teleop/cmd_vel`, `/twist_marker_server/cmd_vel`.
 - Controller health check (a real recurring bug): `rosrun controller_manager controller_manager list` — both `husky_joint_publisher` and `husky_velocity_controller` must read `( running )`.
@@ -118,12 +145,17 @@ Also note: `/os0_cloud_node/points` publishes **only when `gzclient` is up on `:
 
 ---
 
-## Security demo — Tier 2 network attacker (built 2026-07-30)
+## Defense evaluation — adversary emulation (Tier 2 network model, built 2026-07-30)
 
-An "outside attacker" against the ROS graph, implemented as a **separate Docker
-container** with its own IP (Tier 2: rogue peer that discovers + reaches the
-master, then injects). Design and rationale (tiers, why no Gazebo attacker model):
-`docs/attacker-network-simulation.md`; spec + plan under `docs/superpowers/`.
+To measure whether the landmark localizer and drift monitors actually catch a corrupted
+pose, this project needs a repeatable way to *cause* that corruption. `attacker/` is that
+fault-injection harness: a **rogue-peer emulator**, implemented as a **separate Docker
+container** with its own IP on the local Docker bridge (Tier 2 model: a peer that discovers
+and reaches the ROS master, then publishes bad data), used purely to generate test scenarios
+for the defenses under development. It targets only this machine's own simulated ROS graph —
+there is no external network or third-party system in scope. Design and rationale (tiers, why
+no Gazebo attacker model): `docs/attacker-network-simulation.md`; spec + plan under
+`docs/superpowers/`.
 
 - **Lives in `attacker/`** — self-contained. `Dockerfile` (base
   `ros:noetic-ros-core` + `nmap` + `iproute2`; **no Gazebo**), `entrypoint.sh`
