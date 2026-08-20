@@ -16,18 +16,29 @@
 # ObstacleLayer instantiated here, costmap_2d simply ignores those params. That
 # file must NOT be split -- the local costmap needs the very same block.
 #
-# There is no terrain layer here. The DTM is deliberately NOT consulted by the
-# costmap; terrain will be wired into sensing separately.
+# The static map is the TERRAIN-MASKED object map (<world>_map_terrain.pgm,
+# built by map_tools/clip_map_to_terrain.py from <world>_map.pgm + the world's
+# DTM). Every cell the DTM has no terrain for -- open water, off-mesh void --
+# is UNKNOWN there, plus a 1.0 m eroded keep-out margin. It is NOT a separate
+# layer: the mask is baked into the one StaticLayer, so the layer stack is
+# still static -> inflation and nothing else.
+#
+# Unknown, deliberately NOT lethal. Water is not a wall: a robot that drives
+# into the lake sinks, it does not collide. The correct semantics are "there is
+# no ground information here, do not plan through it" -- NO_INFORMATION plus
+# NavfnROS allow_unknown:false (config/planner_gps.yaml) -- not
+# LETHAL_OBSTACLE. Do not "fix" this by marking water occupied.
 global_frame: map
 robot_base_frame: base_link
 
 static_map: true
 rolling_window: false
-# track_unknown_space FALSE: the static map is the plain object map
-# (<world>_map.pgm), which is fully known -- every cell is either an object or
-# free ground. There are no unknown cells for this flag to track, so tracking
-# them only risks the layer inventing NO_INFORMATION where none exists.
-track_unknown_space: false
+# track_unknown_space TRUE: the static map marks every off-terrain cell
+# unknown (pixel 205), and that distinction MUST survive into the costmap.
+# With it false, StaticLayer collapses unknown to FREE and the planner routes
+# the robot across open water and off the mesh edge, where it falls (measured:
+# GPS altitude -36401 m in the lake world).
+track_unknown_space: true
 
 resolution: 0.15
 

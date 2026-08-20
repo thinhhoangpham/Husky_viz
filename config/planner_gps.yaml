@@ -9,10 +9,14 @@ controller_frequency: 5.0
 recovery_behaviour_enabled: true
 
 NavfnROS:
-  # allow_unknown TRUE: the global costmap loads the plain object map with
-  # track_unknown_space false, so nothing is ever marked unknown and this flag
-  # has nothing to act on. It is kept true to match the mapless config.
-  allow_unknown: true
+  # allow_unknown FALSE: unknown means "no terrain data here" -- open water, or
+  # beyond the terrain mesh -- and the robot must not be routed across it. With
+  # this true the planner drove the Husky off the edge of the lake world; it
+  # fell, GPS altitude -36401 m. maps/<world>_map_terrain.pgm marks off-terrain
+  # cells unknown (pixel 205) precisely so this flag has something to refuse.
+  # NOTE this applies to the MAP-BACKED launch. The mapless config keeps
+  # allow_unknown true; there, unknown just means "not yet sensed", not water.
+  allow_unknown: false
   default_tolerance: 0.1 # tolerance on the goal point for the planner
 
 TrajectoryPlannerROS:

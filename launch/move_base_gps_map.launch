@@ -2,25 +2,33 @@
 <!--
   GPS-anchored, obstacle-aware move_base WITH a preloaded static object map.
   Identical to move_base_gps.launch except:
-    (1) a map_server node publishes /map from maps/park_map.yaml, and
+    (1) a map_server node publishes /map from maps/park_map_terrain.yaml, and
     (2) the global costmap is costmap_global_gps_map.yaml (StaticLayer +
-        ObstacleLayer + Inflation, static_map true, not rolling).
+        InflationLayer, static_map true, not rolling; no ObstacleLayer).
   The robot, dual-EKF, navsat_transform and TF chain (map->odom->base_link) are
   ASSUMED ALREADY RUNNING (started by load-park-world.sh), same as
   move_base_gps.launch. Absolute config paths per repo convention.
 
-  The costmap is the plain object map only - no terrain layer, no terrain mask.
-  With track_unknown_space false nothing is unknown, so NavfnROS.allow_unknown
-  in planner_gps.yaml is inert.
+  The map is the TERRAIN-MASKED object map (<world>_map_terrain.yaml), not the
+  plain object map: cells the world's DTM has no terrain for (open water,
+  off-mesh void) are UNKNOWN in it, plus a 1.0 m eroded margin. Paired with
+  track_unknown_space:true (costmap_global_gps_map.yaml) and
+  NavfnROS.allow_unknown:false (planner_gps.yaml), the planner refuses to route
+  through them. Unknown, NOT lethal - water is a sinking hazard, not a wall.
+
+  Regenerate the masked maps after any DTM or object-map change: see the
+  "Terrain mask" section of RUN-MAP-NAV.md for the exact command. (It cannot
+  be quoted here: XML forbids a double hyphen inside a comment, and every
+  flag it needs starts with one.)
 
   The map defaults to park; pass map:=<path> for another world, e.g.
     roslaunch launch/move_base_gps_map.launch \
-      map:=/home/thinh/Documents/Husky_viz/maps/lake_map.yaml
+      map:=/home/thinh/Documents/Husky_viz/maps/lake_map_terrain.yaml
   Everything else (planner, costmaps, remaps) is world-independent.
 -->
 <launch>
 
-  <arg name="map" default="/home/thinh/Documents/Husky_viz/maps/park_map.yaml"/>
+  <arg name="map" default="/home/thinh/Documents/Husky_viz/maps/park_map_terrain.yaml"/>
 
   <node name="map_server" pkg="map_server" type="map_server"
         args="$(arg map)" output="screen"/>

@@ -8,14 +8,16 @@ One terminal per step. Each block sets its own ROS env, so copy-paste as-is.
 > | Step | Park (default) | Lake |
 > |---|---|---|
 > | 1 | `./load-park-world.sh` | `./load-park-world.sh --world lake` |
-> | 2 | `roslaunch launch/move_base_gps_map.launch` | append `map:=$HOME/Documents/Husky_viz/maps/lake_map.yaml` |
+> | 2 | `roslaunch launch/move_base_gps_map.launch` | append `map:=$HOME/Documents/Husky_viz/maps/lake_map_terrain.yaml` |
 > | 3 | `_objects_path:=…/maps/park_objects.yaml` | `…/maps/lake_objects.yaml` |
 >
 > Lake is self-contained in `models_lake_opt/` (low-poly visuals *and* the original
 > collision meshes) — no external drive needed to run it.
 > Its landmarks are `tree`, `postescable`, `lago` — and note **the lake itself is a
 > landmark, not an obstacle**: `lago` has no `<collision>`, so the lidar cannot see
-> the water and it is deliberately absent from `lake_map.pgm`. Low vegetation is
+> the water and it is deliberately absent from `lake_map.pgm`. The water IS blocked
+> for the planner, but as **unknown, not as an obstacle** — see "Terrain mask" below.
+> Low vegetation is
 > skipped in the static map too; the robot dodges it from live lidar.
 > Step 3's operator (`operate.py`) still reads `maps/park_objects.yaml` — goal-by-name
 > is park-only until that path is parameterised.
@@ -37,6 +39,55 @@ cd ~/Documents/Husky_viz
 Wait for Gazebo to show the park + robot, then ~30–60 s for the pose to settle.
 
 ## Step 2 — Navigation + map
+
+### Terrain mask — how open water is made no-go
+
+The map `map_server` loads is **not** the plain object map. It is
+`maps/<world>_map_terrain.pgm`, the object map with every cell the world's DTM
+has no terrain for — open water, and anything past the edge of the terrain mesh
+— overwritten as **unknown** (pixel 205), plus a 1.0 m eroded keep-out margin
+around that region.
+
+**Unknown, deliberately not lethal.** Driving into the lake means *sinking*, not
+hitting a wall, so the correct statement is "there is no ground information
+here, do not plan through it" (`costmap_2d` `NO_INFORMATION`) rather than
+"there is an obstacle here". Nothing marks water occupied, and nothing should.
+
+Three settings make that stick, and all three are required together:
+
+| Where | Setting | Value |
+|---|---|---|
+| `launch/move_base_gps_map.launch` | `map` arg | `maps/<world>_map_terrain.yaml` |
+| `config/costmap_global_gps_map.yaml` | `track_unknown_space` | `true` |
+| `config/planner_gps.yaml` | `NavfnROS/allow_unknown` | `false` |
+
+With any one of them flipped back, unknown collapses to free and the planner
+will route the robot across the lake and off the mesh, where it falls (measured
+previously: GPS altitude −36401 m).
+
+Regenerate after any change to the DTM or the object map:
+
+```bash
+cd ~/Documents/Husky_viz
+python3 -m map_tools.clip_map_to_terrain park --mask-unknown --no-crop --erode 1.0 --out-suffix _terrain
+python3 -m map_tools.clip_map_to_terrain lake --mask-unknown --no-crop --erode 1.0 --out-suffix _terrain
+```
+
+`--no-crop` is load-bearing: the masked map must keep the plain object map's
+exact width, height, origin and resolution. `--erode 1.0` exists because
+`costmap_2d`'s `InflationLayer` does **not** inflate `NO_INFORMATION` cells, so
+without it the planner will happily park the robot's centre on the last terrain
+cell and let its footprint (0.60 m circumscribed radius) overhang the void.
+
+Note `*.pgm` is gitignored and the map PGMs are force-added, so a regenerated
+mask will **not** appear in `git status` — commit it with
+`git add -f maps/<world>_map_terrain.pgm`.
+
+> **Known risk, expected not surprising:** commit e628992 recorded that the
+> global costmap stopped publishing under exactly this
+> `track_unknown_space: true` + `allow_unknown: false` pairing, and that symptom
+> was never diagnosed. It may reappear. If `/move_base/global_costmap/costmap`
+> goes silent after this change, that is the known issue, not a new one.
 
 Start these **four** nodes, each in its own new terminal (Step 1 is Terminal 1). All four must be running.
 
