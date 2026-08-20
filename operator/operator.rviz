@@ -114,20 +114,20 @@ Visualization Manager:
       Color: 25; 255; 0
       Enabled: true
       Name: Global plan (route)
-      Topic: /move_base/NavfnROS/plan
+      Topic: /move_base/NavfnROS/plan_z
       Value: true
     - Class: rviz/Path
       Color: 0; 255; 255
       Enabled: true
       Name: Local plan
-      Topic: /move_base/DWAPlannerROS/local_plan
+      Topic: /move_base/DWAPlannerROS/local_plan_z
       Value: true
     - Class: rviz/Pose
       Color: 255; 25; 0
       Enabled: true
       Name: Active goal
       Shape: Arrow
-      Topic: /move_base/current_goal
+      Topic: /move_base/current_goal_z
       Value: true
     - Class: rviz/MarkerArray
       Enabled: true

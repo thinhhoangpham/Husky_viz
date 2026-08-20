@@ -221,6 +221,64 @@ python3 ~/Documents/Husky_viz/scripts/relay_costmap_z.py _world:=lake _follow_ro
 > good z (logged, throttled) rather than dropping the sheet to 0 — and publishes
 > nothing at all until the first valid sample, so the bug can never flash back.
 
+**Terminal 6c — plan / goal z relay** (display only; publishes
+`/move_base/NavfnROS/plan_z`, `/move_base/DWAPlannerROS/local_plan_z`,
+`/move_base/current_goal_z`):
+
+```bash
+export ROS_IP=172.20.0.1 ROS_MASTER_URI=http://172.20.0.1:11311 ROBOT_HOST_IP=172.20.0.1
+cd ~/Documents/Husky_viz
+source /opt/ros/noetic/setup.bash
+python3 ~/Documents/Husky_viz/scripts/relay_path_z.py _world:=lake
+```
+
+> Use `_world:=park` for the park world. **One instance relays all three
+> topics** — no per-topic invocation.
+>
+> **What was broken.** The nav stack is 2-D: NavfnROS, DWAPlannerROS and
+> move_base's goal echo all emit `position.z = 0`, because a 2-D planner has no
+> concept of height. Measured live, all three sat at z = 0 while the lake
+> terrain spans 3.505–5.927 m, so the route line, the local plan and the goal
+> arrow all rendered roughly **four metres underground**, hidden beneath the DTM
+> cloud. Terminals 6 and 6b had already fixed the two costmaps; these were the
+> layers never checked.
+>
+> **Why a separate script and not another `relay_costmap_z.py` instance.** The
+> geometry is genuinely different. An `OccupancyGrid` is **one flat sheet** with
+> a single origin and no per-cell height, so Terminal 6 can only choose the
+> least-wrong single z. A `Path` is a **list of points**, so each pose takes the
+> terrain height at **its own (x, y)** and the route *drapes over the relief*
+> instead of lying on a plane — strictly better than anything the costmap relay
+> can do, and a different policy rather than a parameter of the same one.
+>
+> **Frames.** The global plan is in `map` but the local plan is in `odom`
+> (`config/costmap_local_gps.yaml`), while the DTM is in `map`. The node
+> transforms each message into `map` to sample the terrain and converts the
+> height back into the message's own frame, so the output stays in the frame its
+> header advertises. The transform is looked up **once per message, not per
+> pose**, so a mid-message tf update cannot bend the path.
+>
+> **Off-DTM points.** A point with no terrain under it (off the grid, or a NaN
+> "no mesh coverage" cell) keeps the **last valid height** along the path, so an
+> off-mesh excursion renders as a flat bridge rather than a spike to zero. If a
+> message has no valid sample anywhere it is republished **unchanged** rather
+> than dropped, so a plan is never silently missing from RViz. `_z_offset`
+> (default 0.15 m) lifts the line clear of the ground so it does not z-fight the
+> terrain cloud.
+>
+> **`/landmark_observed_markers` is NOT relayed, deliberately.** It is already
+> correct: `landmark_loc/localizer_node.py` publishes those labels in the
+> **lidar's own frame** at `cluster_top + 0.5 m`, so RViz already places them in
+> 3-D at true altitude through tf. Relaying it would add terrain height to a
+> height that already includes it. The node's `~marker_topics` is empty by
+> default for exactly this reason.
+>
+> **Display-only, exactly like Terminals 6 and 6b.** It never writes the
+> original topics — move_base consumes them — and refuses to start if any output
+> name would collide with an input. `operator/operator.rviz` points its "Global
+> plan (route)", "Local plan" and "Active goal" displays at the `…_z` topics;
+> skip this terminal and those three displays are simply empty.
+
 **Terminal 7 — terrain-relative cloud filter** (fills `/os0_cloud_node/points_above_terrain`; **the local costmap's only obstacle source**):
 
 ```bash
