@@ -22,7 +22,9 @@
 #   imu1  = compass/data                     ABSOLUTE yaw (drift-free heading
 #                                            anchor; added by the compass fix)
 #   odom1 = odometry/abs_fix                 ABSOLUTE x,y (navsat OR landmark)
-#   odom2 = odometry/ground_height           ABSOLUTE z (lidar ground fit + DTM)
+#   (no z input -- z is INHERITED through odom->base_link from the odom filter;
+#    fusing odometry/ground_height here too double-counts it. See the odom2
+#    block at the end of this file for the measurement that proved it.)
 #
 # THE ODOM-SPOOF ATTACK SURFACE:
 # odom0 is husky_velocity_controller/odom, exactly as in the odom-frame filter.
@@ -111,35 +113,42 @@ odom1_config: [true,  true,  false,
 odom1_differential: false
 odom1_queue_size: 10
 
-# --- Absolute z: lidar ground-height fit + prior DTM (odom2) ------------------
-# THIS FILTER ALSO NEEDS IT -- the dual-EKF trap again. This filter owns map->odom,
-# so even with the odom filter observing z, an unobserved z here would flatten the
-# composed map->base_link that RViz and every map-frame consumer actually read.
-# Both filters must observe z, exactly as both must have two_d_mode off.
+# --- Absolute z: NOT fused here, DELIBERATELY (no odom2) ----------------------
+# This filter used to fuse odom2 = odometry/ground_height, the same absolute-z
+# measurement the odom filter fuses as odom1. That was WRONG and is removed.
 #
-# Source: scripts/publish_ground_height_odom.py -> /odometry/ground_height, which is
-# z = ground_elev + (h_sensor - mount_dz): lidar-measured clearance above the local
-# ground plus the terrain elevation under the robot from the prior DTM (~dtm_path).
-# The node MUST be launched with ~dtm_path or it publishes clearance only and the
-# robot sinks ~3.75 m under the terrain -- the exact bug this input fixes. No Gazebo
-# ground truth: lidar fit + an offline map file.
+# WHY IT WAS WRONG:
+# This filter does not publish a pose -- it publishes map->odom, a CORRECTION
+# between two frames. robot_localization estimates base_link's pose in
+# world_frame (map), then emits map->odom = (map->base_link) - (odom->base_link),
+# taking odom->base_link from tf. The robot's true height therefore ALREADY
+# reaches map->base_link through the odom filter, which observes it. Re-observing
+# the same absolute height here applies it a second time, and the surplus lands
+# in map->odom, which should sit near ZERO in z.
 #
-# z ONLY. Not x/y (odom1/abs_fix owns those), not orientation (imu1/compass), not
-# velocity. Absolute (differential: false) -- it is a direct elevation measurement.
+# It is worse than a static offset, because it feeds back. The message is stamped
+# frame_id "odom" (scripts/publish_ground_height_odom.py), so it is an ODOM-frame
+# measurement. robot_localization transforms an absolute pose measurement into
+# world_frame before fusing; here that means applying the CURRENT map->odom
+# estimate to the filter's own input. The filter's output is added back to its
+# measurement each cycle and settles at a nonzero offset.
 #
-# KNOWN CONSEQUENCE -- PRESERVED FROM THE EARLIER REVERT, STILL TRUE:
-# the costmap obstacle layer keys on a fixed 0.15-1.2 m height band
-# (config/costmap_common_gps.yaml) calibrated for a robot at z~0. Giving the robot
-# its true ~3.86 m elevation pushed the ground outside that band and filled the
-# local costmap with false obstacles -- ~8.3% lethal cells around the robot. That is
-# why this was reverted before. It is back because z must be TRUE; the costmap band
-# is deliberately out of scope in this change, so expect that behaviour to return
-# until the band is fixed separately.
-odom2: odometry/ground_height
-odom2_config: [false, false, true,
-               false, false, false,
-               false, false, false,
-               false, false, false,
-               false, false, false]
-odom2_differential: false
-odom2_queue_size: 10
+# MEASURED, with odom2 enabled:
+#     /odometry/ground_height  z = 3.768   the measurement, correct
+#     odom -> base_link        z = 3.769   correct, the odom filter applied it
+#     map  -> odom             z = 1.228   WRONG, should be ~0
+#     map  -> base_link        z = 4.997   = 3.768 + 1.228, the double count
+# The robot believed it was 1.23 m higher than it was, which put the GROUND
+# inside scripts/filter_cloud_above_terrain.py's 0.40..3.00 m band and filled the
+# local costmap with 26227 false lethal cells starting 0.51 m from the robot.
+#
+# THE COMMENT THAT USED TO BE HERE INVOKED THE "DUAL-EKF trap". That rule is real
+# for two_d_mode (see the two_d_mode block above: a filter with it ON forces z to
+# zero, so BOTH filters must have it off) but it does NOT transfer to an absolute
+# MEASUREMENT input. two_d_mode is a constraint this filter would impose on its
+# own output; ground height is an observation the other filter already accounts
+# for. Leaving z unconstrained here is correct -- it is inherited, not unobserved.
+#
+# The historical warning about the costmap height band being calibrated for a
+# robot at z~0 still stands and is preserved in localization.yaml, next to the
+# odom1 input that legitimately supplies the robot's true elevation.
