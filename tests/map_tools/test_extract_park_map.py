@@ -102,3 +102,68 @@ def test_main_writes_three_files(tmp_path):
     assert (out / "park_map.pgm").exists()
     assert (out / "park_map.yaml").exists()
     assert (out / "park_objects.yaml").exists()
+
+
+# --- grid extent is defined by the TERRAIN, not by object positions ----------
+
+DTM = os.path.join(os.path.dirname(__file__), "..", "..", "maps", "park_dtm.yaml")
+
+
+def _map_bounds(g):
+    return (g.origin_x, g.origin_y,
+            g.origin_x + g.width * g.resolution,
+            g.origin_y + g.height * g.resolution)
+
+
+def test_terrain_extent_uses_full_dtm_grid_including_nan_cells():
+    # The FULL grid footprint, not the finite-cell bbox: NaN cells (water,
+    # off-mesh void) must fall INSIDE the map so they can be marked unknown.
+    from map_tools.extract_park_map import terrain_extent
+    from map_tools.dtm_raster import read_dtm_yaml
+    d = read_dtm_yaml(DTM)
+    x0, y0, x1, y1 = terrain_extent(DTM)
+    assert x0 == d["origin_x"] and y0 == d["origin_y"]
+    assert abs(x1 - (d["origin_x"] + d["width"] * d["resolution"])) < 1e-9
+    assert abs(y1 - (d["origin_y"] + d["height"] * d["resolution"])) < 1e-9
+
+
+def test_grid_contains_the_whole_terrain_footprint():
+    models = parse_models(WORLD)
+    g = build_grid(models, resolution=0.15, dtm_yaml=DTM)
+    from map_tools.extract_park_map import terrain_extent
+    tx0, ty0, tx1, ty1 = terrain_extent(DTM)
+    gx0, gy0, gx1, gy1 = _map_bounds(g)
+    assert gx0 <= tx0 and gy0 <= ty0 and gx1 >= tx1 and gy1 >= ty1
+
+
+def test_grid_extends_past_terrain_to_keep_an_outlying_object():
+    # An object beyond the terrain footprint must NOT be dropped -- the grid
+    # takes the union, so it stays inside the map.
+    from map_tools.extract_park_map import terrain_extent
+    tx0, ty0, tx1, ty1 = terrain_extent(DTM)
+    far = Model(name="stray", family="lamp",
+                world_x=tx1 + 20.0, world_y=ty0 + 1.0, yaw=0.0)
+    g = build_grid(list(parse_models(WORLD)) + [far], resolution=0.15, dtm_yaml=DTM)
+    gx0, gy0, gx1, gy1 = _map_bounds(g)
+    assert gx1 > tx1 + 20.0
+    assert g.is_occupied(far.world_x, far.world_y) is True
+
+
+def test_grid_ignores_object_bounds_that_are_inside_the_terrain():
+    # Objects clustered well inside the terrain must not shrink the map:
+    # the terrain, not the outermost object, sets the extent.
+    from map_tools.extract_park_map import terrain_extent
+    tx0, ty0, tx1, ty1 = terrain_extent(DTM)
+    tight = [Model(name="a", family="lamp", world_x=0.0, world_y=0.0, yaw=0.0)]
+    g = build_grid(tight, resolution=0.15, dtm_yaml=DTM)
+    gx0, gy0, gx1, gy1 = _map_bounds(g)
+    assert gx0 <= tx0 and gx1 >= tx1 and gy0 <= ty0 and gy1 >= ty1
+
+
+def test_no_dtm_falls_back_to_object_sizing_with_a_warning(capsys):
+    models = parse_models(WORLD)
+    g = build_grid(models, resolution=0.15, dtm_yaml=None)
+    assert "WARNING" in capsys.readouterr().err
+    xs = [m.world_x for m in models]
+    gx0, _, gx1, _ = _map_bounds(g)
+    assert gx0 <= min(xs) and gx1 >= max(xs)

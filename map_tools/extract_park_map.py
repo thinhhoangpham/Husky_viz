@@ -15,6 +15,7 @@ from map_tools.sdf_parse import parse_models
 from map_tools.occupancy_grid import Grid
 from map_tools.mesh_bounds import footprint
 from map_tools.park_types import PARK_TYPES
+from map_tools.dtm_raster import read_dtm_yaml
 
 # Footprint radii in metres, BEFORE costmap inflation. See the plan for rationale.
 # NOTE: the furniture entries here (bench/garden_table/lamp/trash_bin_1) are
@@ -67,9 +68,48 @@ def _box_extents(family):
 # any type with is_object=True (keyed by world_prefix, so tree_8 not 'tree').
 OBJECT_FAMILIES = tuple(t.world_prefix for t in PARK_TYPES if t.is_object)
 
+# Pad around the extreme OBJECT positions when they extend the grid past the
+# terrain. Model poses are points; their stamped footprints reach outward from
+# them, so without a pad an edge object gets clipped. 5.0 m is the old margin
+# default, comfortably larger than the biggest footprint half-extent (~1.5 m).
+OBJECT_PAD = 5.0
 
-def build_grid(models, resolution=0.15, margin=5.0, radii=None):
+
+def terrain_extent(dtm_yaml):
+    """(min_x, min_y, max_x, max_y) of the DTM's FULL grid footprint, metres.
+
+    FULL grid, deliberately -- NOT the bounding box of the finite (non-NaN)
+    cells. A NaN cell means "this world position has no terrain under it"
+    (open water in lake.world is ~30% of the DTM; off-mesh void elsewhere).
+    Those are exactly the cells the map must represent as UNKNOWN so the
+    planner refuses to route through them -- see clip_map_to_terrain.py. A cell
+    can only be unknown if it is INSIDE the map; shrinking to the finite bbox
+    would push the water back outside the map entirely, where the planner has
+    no data at all rather than data saying do-not-go. That is the same class of
+    bug as sizing from objects, so we keep the whole DTM footprint.
+    """
+    m = read_dtm_yaml(dtm_yaml)
+    ox, oy = float(m["origin_x"]), float(m["origin_y"])
+    res = float(m["resolution"])
+    return ox, oy, ox + int(m["width"]) * res, oy + int(m["height"]) * res
+
+
+def build_grid(models, resolution=0.15, margin=0.0, radii=None, dtm_yaml=None):
     """Stamp each model's footprint into a fresh occupancy grid.
+
+    Extent is the TERRAIN footprint (`dtm_yaml`, padded by `margin`), UNIONed
+    with the object extents so an object standing off the mesh is still
+    contained rather than silently clipped. The terrain is what defines how far
+    the map reaches -- objects merely sit on it. Passing dtm_yaml=None falls
+    back to the old object-only sizing, with a warning, for callers that have
+    no DTM.
+
+    `margin` is metres of pad. It used to pad point-like object POSITIONS (so a
+    footprint at the extreme edge was not clipped); around the terrain it has no
+    such job, since the DTM footprint already is the drivable extent and padding
+    it only adds cells that become unknown. Hence the default is now 0.0. The
+    object half of the union still gets its own OBJECT_PAD so no footprint is
+    clipped there.
 
     `radii` maps family -> disc radius; None means the park table, so existing
     callers are unchanged. extract_lake_map passes the lake registry's radii.
@@ -78,8 +118,28 @@ def build_grid(models, resolution=0.15, margin=5.0, radii=None):
         radii = RADII
     xs = [m.world_x for m in models]
     ys = [m.world_y for m in models]
-    g = Grid(min(xs) - margin, min(ys) - margin,
-             max(xs) + margin, max(ys) + margin, resolution)
+    obj = (min(xs) - OBJECT_PAD, min(ys) - OBJECT_PAD,
+           max(xs) + OBJECT_PAD, max(ys) + OBJECT_PAD)
+    if dtm_yaml is None:
+        sys.stderr.write(
+            "WARNING: no DTM given -- sizing the grid from OBJECT POSITIONS "
+            "only. The map's extent will not match the terrain.\n")
+        bounds = obj
+    else:
+        tx0, ty0, tx1, ty1 = terrain_extent(dtm_yaml)
+        terrain = (tx0 - margin, ty0 - margin, tx1 + margin, ty1 + margin)
+        bounds = (min(terrain[0], obj[0]), min(terrain[1], obj[1]),
+                  max(terrain[2], obj[2]), max(terrain[3], obj[3]))
+        # An object outside the terrain footprint is a real anomaly (a prop
+        # floating off the mesh), not something to quietly drop. Keep it in the
+        # map AND name it.
+        for m in models:
+            if not (tx0 <= m.world_x <= tx1 and ty0 <= m.world_y <= ty1):
+                sys.stderr.write(
+                    "WARNING: object %r at (%.2f, %.2f) lies OUTSIDE the terrain "
+                    "footprint x %.2f..%.2f y %.2f..%.2f -- grid extended to keep "
+                    "it.\n" % (m.name, m.world_x, m.world_y, tx0, tx1, ty0, ty1))
+    g = Grid(bounds[0], bounds[1], bounds[2], bounds[3], resolution)
     for m in models:
         if m.family in BOX_MESHES:
             hx, hy, cx, cy = _box_extents(m.family)
@@ -127,11 +187,18 @@ def main(argv=None):
     ap.add_argument("--out-dir", default=os.path.join(
         os.path.dirname(__file__), "..", "maps"))
     ap.add_argument("--resolution", type=float, default=0.15)
+    ap.add_argument("--dtm", default=os.path.join(
+        os.path.dirname(__file__), "..", "maps", "park_dtm.yaml"),
+        help="DTM yaml whose footprint defines the grid extent. Pass an "
+             "empty string to fall back to object-based sizing.")
+    ap.add_argument("--margin", type=float, default=0.0,
+                    help="metres of pad around the terrain footprint")
     args = ap.parse_args(argv)
 
     os.makedirs(args.out_dir, exist_ok=True)
     models = parse_models(args.world)
-    grid = build_grid(models, resolution=args.resolution)
+    grid = build_grid(models, resolution=args.resolution, margin=args.margin,
+                      dtm_yaml=(args.dtm or None))
     objects = build_objects(models)
 
     grid.write_pgm(os.path.join(args.out_dir, "park_map.pgm"))

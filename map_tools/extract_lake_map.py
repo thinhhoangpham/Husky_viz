@@ -111,6 +111,12 @@ def main(argv=None):
     ap.add_argument("--out-dir", default=os.path.join(
         os.path.dirname(__file__), "..", "maps"))
     ap.add_argument("--resolution", type=float, default=0.15)
+    ap.add_argument("--dtm", default=os.path.join(
+        os.path.dirname(__file__), "..", "maps", "lake_dtm.yaml"),
+        help="DTM yaml whose footprint defines the grid extent. Pass an "
+             "empty string to fall back to object-based sizing.")
+    ap.add_argument("--margin", type=float, default=0.0,
+                    help="metres of pad around the terrain footprint")
     args = ap.parse_args(argv)
 
     os.makedirs(args.out_dir, exist_ok=True)
@@ -124,7 +130,8 @@ def main(argv=None):
     # grid: everything except the landmark-only families, with the power line
     # expanded into its two real poles (see POLE_OFFSETS).
     stamped = _expand_poles([m for m in models if m.family not in NOT_STAMPED])
-    grid = build_grid(stamped, resolution=args.resolution, radii=LAKE_RADII)
+    grid = build_grid(stamped, resolution=args.resolution, radii=LAKE_RADII, margin=args.margin,
+                      dtm_yaml=(args.dtm or None))
 
     grid.write_pgm(os.path.join(args.out_dir, "lake_map.pgm"))
     grid.write_yaml(os.path.join(args.out_dir, "lake_map.yaml"), "lake_map.pgm")
