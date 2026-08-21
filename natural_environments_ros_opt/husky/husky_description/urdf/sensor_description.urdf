@@ -1,0 +1,37 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="example">
+
+
+
+  <!-- Stereo cameras disabled: they render offscreen every frame even with -->
+  <!-- Gazebo headless, costing CPU and memory, and nothing in the 2D RViz -->
+  <!-- costmap view displays them. Re-enable by uncommenting the block below. -->
+  <!--
+ <xacro:include filename="stereo_camera.urdf.xacro"/>
+  <xacro:stereo_camera reference="base_link" ns="husky"  frame_id="camera" update_rate="1" baseline="0.12" hfov="1.815142" width="1280" height="720" format="R8G8B8" near="0.02" far="300">
+
+  </xacro:stereo_camera>
+  -->
+
+  <xacro:include filename="OS1-64.urdf.xacro"/>
+  <!-- samples reduced 1024 to 512: at 1024 this sensor produced 39,766 points -->
+  <!-- per scan at 10 Hz, about 400,000 CPU raycasts per second, which held the -->
+  <!-- simulation at a real time factor of 0.10. 512 gives roughly 20,000 points, -->
+  <!-- matching the density actually present in park_1.bag. -->
+  <xacro:OS1-64 parent="base_link" name="os0_sensor" hz="10" samples="512">
+    <origin xyz="0.09 0 0.79" rpy="0 0 0" />
+  </xacro:OS1-64>
+  <xacro:include filename="gps.urdf.xacro"/>
+<xacro:gps_sensor></xacro:gps_sensor>
+
+  <!-- RGB cameras for the YOLO object detector, OFF by default: they force -->
+  <!-- Gazebo's offscreen renderer every frame, which costs real-time factor, -->
+  <!-- and nothing in the default lidar-only pipeline consumes them. With -->
+  <!-- HUSKY_RGB_CAMS unset the expanded URDF is byte-identical to before. -->
+  <!-- Enable with: export HUSKY_RGB_CAMS=1 (gzclient must be up on :0). -->
+  <xacro:if value="${'$(optenv HUSKY_RGB_CAMS 0)' == '1'}">
+    <xacro:include filename="rgb_cams.urdf.xacro"/>
+    <xacro:rgb_cams/>
+  </xacro:if>
+</robot>
+

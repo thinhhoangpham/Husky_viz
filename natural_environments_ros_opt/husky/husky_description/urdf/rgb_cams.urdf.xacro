@@ -1,0 +1,78 @@
+<?xml version="1.0"?>
+<!-- Two forward-facing MONO RGB cameras, yawed +/-25 deg to widen coverage.
+
+     THE GEOMETRY BELOW IS LOAD-BEARING. The committed detector weights
+     (landmark_loc/weights/park_yolo.onnx) were fine-tuned on images from this
+     exact camera setup. Changing hfov, resolution or mount changes the apparent
+     scale and image position of every object, which is precisely what a small
+     fine-tuned detector is sensitive to. See landmark_loc/weights/README.md.
+
+     These are two independent `sensor type="camera"` monos, NOT the repo's
+     separate stereo `multicamera` (1280x720, hfov 1.815). That is a different
+     sensor and these weights should not be expected to work with it.
+
+     Copied verbatim from Husky_new_simulation/urdf/sensor_description_fast.urdf.
+
+     Cameras force Gazebo's offscreen renderer, the same GL-context dependency
+     as the GPU-ray lidar: gzclient must be up on :0. -->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <xacro:macro name="rgb_cams">
+
+    <!-- FRONT-LEFT camera (+25 deg yaw) -->
+    <link name="rgb_cam_left_link"/>
+    <joint name="rgb_cam_left_joint" type="fixed">
+      <parent link="base_link"/>
+      <child link="rgb_cam_left_link"/>
+      <origin xyz="0.32 0.10 0.60" rpy="0 0 0.436"/>
+    </joint>
+    <gazebo reference="rgb_cam_left_link">
+      <sensor type="camera" name="rgb_cam_left">
+        <update_rate>2.0</update_rate>
+        <visualize>false</visualize>
+        <camera name="rgb_cam_left">
+          <horizontal_fov>1.2113</horizontal_fov>
+          <image><width>512</width><height>384</height><format>R8G8B8</format></image>
+          <clip><near>0.05</near><far>60</far></clip>
+        </camera>
+        <plugin name="rgb_cam_left_controller" filename="libgazebo_ros_camera.so">
+          <alwaysOn>true</alwaysOn>
+          <updateRate>2.0</updateRate>
+          <cameraName>rgb_cam_left</cameraName>
+          <imageTopicName>/rgb_cam_left/image_raw</imageTopicName>
+          <cameraInfoTopicName>/rgb_cam_left/camera_info</cameraInfoTopicName>
+          <frameName>rgb_cam_left_link</frameName>
+        </plugin>
+      </sensor>
+    </gazebo>
+
+    <!-- FRONT-RIGHT camera (-25 deg yaw) -->
+    <link name="rgb_cam_right_link"/>
+    <joint name="rgb_cam_right_joint" type="fixed">
+      <parent link="base_link"/>
+      <child link="rgb_cam_right_link"/>
+      <origin xyz="0.32 -0.10 0.60" rpy="0 0 -0.436"/>
+    </joint>
+    <gazebo reference="rgb_cam_right_link">
+      <sensor type="camera" name="rgb_cam_right">
+        <update_rate>2.0</update_rate>
+        <visualize>false</visualize>
+        <camera name="rgb_cam_right">
+          <horizontal_fov>1.2113</horizontal_fov>
+          <image><width>512</width><height>384</height><format>R8G8B8</format></image>
+          <clip><near>0.05</near><far>60</far></clip>
+        </camera>
+        <plugin name="rgb_cam_right_controller" filename="libgazebo_ros_camera.so">
+          <alwaysOn>true</alwaysOn>
+          <updateRate>2.0</updateRate>
+          <cameraName>rgb_cam_right</cameraName>
+          <imageTopicName>/rgb_cam_right/image_raw</imageTopicName>
+          <cameraInfoTopicName>/rgb_cam_right/camera_info</cameraInfoTopicName>
+          <frameName>rgb_cam_right_link</frameName>
+        </plugin>
+      </sensor>
+    </gazebo>
+
+  </xacro:macro>
+
+</robot>
