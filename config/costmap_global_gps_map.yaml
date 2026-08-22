@@ -44,10 +44,47 @@ resolution: 0.15
 
 # Inflation params (inflation_radius, cost_scaling_factor) come from the
 # `inflation:` block of config/costmap_common_gps.yaml, which is loaded into
-# this namespace -- the layer instance is named `inflation`, so it still reads
-# them with the obstacles layer gone. Do not duplicate them here.
+# this namespace -- the layer instance is named `inflation`, so it reads them
+# regardless of what else is in the plugins list. Do not duplicate them here.
+#
+# The obstacles layer below is being RE-ADDED, reversing commit ecb0634, which
+# dropped it after measuring that 2373 of 2760 global lethal cells came from
+# live lidar rather than the static object map -- i.e. the global plan was
+# shaped almost entirely by transient returns, not the map. That was a
+# deliberate decision and this re-add is an EXPERIMENT, not a settled
+# reversal.
+#
+# Why retried (measured 2026-08-22): with no ObstacleLayer, navfn plans
+# straight through obstacles that are absent from the static map -- bushes
+# and spawned boxes are deliberately not in it -- and the local planner is
+# then asked to resolve a plan that runs through an obstacle, and fails.
+# Measured with a spawned 1x1x1.5 m box in the park world: the robot stopped
+# with the box marked at ~1.05 m and a fully clear 5.95 m diagonal escape it
+# never took. This happened under BOTH DWAPlannerROS and
+# base_local_planner/TrajectoryPlannerROS, so it is not a local-planner-choice
+# problem.
+#
+# Precedent: this repo's OTHER nav stack (launch/move_base_park.launch with
+# config/costmap_global.yaml) already runs a global ObstacleLayer
+# successfully -- there the global costmap is a rolling 80x80 m window in the
+# odom frame with static_map:false, and the global planner does the obstacle
+# dodging. That stack's costmap_common.yaml is byte-identical to the
+# known-working reference simulation at
+# /home/thinh/Documents/Husky_new_simulation.
+#
+# Known risk to watch: unlike that rolling mapless costmap, THIS global
+# costmap is a static map-frame grid, so live marks can accumulate here and
+# are cleared only by raytracing. If lethal cells pile up and start
+# dominating the static map (the ecb0634 symptom), that is the expected
+# failure mode of this experiment.
+#
+# The layer instance below MUST be named `obstacles` -- config/costmap_common_gps.yaml
+# is already loaded into this namespace and contains an `obstacles:` block
+# (observation_sources os0_mark + os0_clear) that activates by that name.
+# Do not duplicate those observation-source params here.
 plugins:
   - {name: static,     type: "costmap_2d::StaticLayer"}
+  - {name: obstacles,  type: "costmap_2d::ObstacleLayer"}
   - {name: inflation,  type: "costmap_2d::InflationLayer"}
 
 static:

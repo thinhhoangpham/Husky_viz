@@ -35,6 +35,33 @@
 
   <node pkg="move_base" type="move_base" respawn="false" name="move_base" output="screen">
 
+    <!-- DEPLOYS THE DWA SEED FIX. base_local_planner is vendored and patched in
+         ~/husky_overlay_ws (tag 1.17.3, matching the installed package); this puts that
+         build ahead of /opt/ros/noetic/lib on the loader path so move_base picks it up.
+         Scoped to THIS node, so nothing else on the machine is affected.
+
+         Without it the STOCK library loads and the bug returns: setLocalGoal seeds DWA's
+         goal wavefront on an INSCRIBED (253) cell that updatePathCell then refuses to
+         expand from, so the flood visits 0 cells, all 300 trajectories score -2.0, and the
+         robot stops dead at exactly 0.00 velocity in open terrain and aborts with status 4.
+         Analysis: docs/dwa-unreachable-goal-investigation.md
+
+         Do NOT `source ~/husky_overlay_ws/devel/setup.bash` as an alternative — that clone
+         carries 17 UNBUILT navigation packages which then shadow the working installed ones,
+         and move_base/map_server fail with "Cannot locate node of type". Only the library
+         path is wanted, which is why this is an env tag and not a workspace overlay.
+
+         The library loads lazily when DWA is constructed, so verify against the LIVE
+         process AFTER move_base is up, not against the environment:
+           grep -o '[^ ]*libbase_local_planner.so' /proc/$(pgrep -f lib/move_base/move_base)/maps
+         It must print the husky_overlay_ws path.
+
+         NOT PORTABLE: the patched .so lives outside this repo. On a machine with no
+         ~/husky_overlay_ws build, this path simply does not exist, the stock library loads,
+         and the bug is back SILENTLY — hence the verification command above. -->
+    <env name="LD_LIBRARY_PATH"
+         value="$(env HOME)/husky_overlay_ws/devel/lib:$(env LD_LIBRARY_PATH)"/>
+
     <param name="base_global_planner" value="navfn/NavfnROS"/>
     <param name="base_local_planner"  value="dwa_local_planner/DWAPlannerROS"/>
 
