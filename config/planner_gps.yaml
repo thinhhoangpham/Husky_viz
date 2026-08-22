@@ -106,3 +106,17 @@ DWAPlannerROS:
 
   # Oscillation prevention
   oscillation_reset_dist: 0.05
+
+  # Diagnostic only: publishes /move_base/DWAPlannerROS/cost_cloud, for
+  # investigating the DWA unreachable-goal stall (see
+  # docs/dwa-unreachable-goal-investigation.md). Read-only w.r.t. control --
+  # dwa_planner.cpp reads it once at construction (line 156) and its only
+  # other use gates a single map_viz_.publishCostCloud(...) call (line 368);
+  # it cannot affect planner decisions, which are decided separately by
+  # result_traj_.cost_ < 0 after that call. Read once via
+  # private_nh.param(...), so it is NOT dynamic_reconfigure-settable --
+  # requires a move_base restart to take effect. Gotcha for the cloud reader:
+  # getCellCosts returns false for blocked/unreachable cells, so those cells
+  # are ABSENT from the cloud rather than present with a sentinel -- absence
+  # is the signal.
+  publish_cost_grid_pc: true
