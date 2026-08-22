@@ -99,6 +99,24 @@ cd ~/Documents/Husky_viz
 roslaunch launch/move_base_gps_map.launch
 ```
 
+> **The DWA seed fix deploys itself from the launch file — nothing to export here.**
+> `move_base_gps_map.launch` carries an `env` tag that puts the patched
+> `base_local_planner` from `~/husky_overlay_ws/devel/lib` ahead of `/opt/ros/noetic/lib`
+> on the loader path, scoped to the move_base node alone. Without that patch the robot
+> drives ~40 m, stops dead at exactly 0.00 velocity in open terrain, and aborts with
+> status 4. Analysis: `docs/dwa-unreachable-goal-investigation.md`.
+>
+> **It is NOT portable.** The patched library lives OUTSIDE this repo. On a machine with
+> no `~/husky_overlay_ws` build the path silently does not exist, the stock library loads,
+> and the bug is back with no warning. After move_base is fully up (the library loads
+> lazily when DWA is constructed), confirm which one is actually mapped:
+>
+> ```bash
+> grep -o '[^ ]*libbase_local_planner.so' /proc/$(pgrep -f lib/move_base/move_base)/maps
+> ```
+>
+> It must print the `husky_overlay_ws` path, not `/opt/ros/noetic/lib`.
+
 **Terminal 3 — landmark localizer** (fills `/odometry/landmark_fix` from the lidar):
 
 ```bash

@@ -233,3 +233,127 @@ Trace its callers first (launch files, `*.sh`, `attacker/`, `operator/`, `RUN-*.
 this CLAUDE.md, python imports) and update every reference in the same change. A file
 referenced by bare name or absolute path breaks silently at runtime if moved without
 fixing the caller.
+
+---
+
+## Obstacle avoidance — two fixes, both required (2026-08-22)
+
+The robot used to drive ~40 m and stop dead in open terrain, or grind against bushes it
+could see. Two INDEPENDENT defects; neither fix alone is sufficient. Full analysis and
+evidence: `docs/dwa-unreachable-goal-investigation.md`.
+
+**1. DWA seeded its goal-wavefront on a cell it also treats as a wall.**
+`setLocalGoal` accepted a seed if the cost was `!= NO_INFORMATION` (255 only), while
+`updatePathCell` refuses to expand through LETHAL (254), INSCRIBED (253) **and** 255. A 253
+cell was therefore a valid seed AND an impassable wall: the flood visited 0 cells, every
+cell kept 40001, all 300 trajectories scored -2.0, and DWA commanded exactly zero velocity.
+
+Fixed in a vendored `base_local_planner` at `~/husky_overlay_ws` (tag 1.17.3, matching the
+installed package; only that package is built). **Deployment is automatic**: an `env` tag
+inside the move_base node in `launch/move_base_gps_map.launch` puts
+`~/husky_overlay_ws/devel/lib` ahead of `/opt/ros/noetic/lib` on the loader path, scoped to
+that node. No export is needed in any terminal.
+
+**Never `source` that workspace's `setup.bash`** as an alternative — its clone carries 17
+unbuilt navigation packages that then shadow the working installed ones, and
+move_base/map_server fail with "Cannot locate node of type". Only the library path is wanted.
+
+**The patched .so lives OUTSIDE this repo, so the fix is not portable.** On a machine with
+no `~/husky_overlay_ws` build the path silently does not exist, the stock library loads, and
+the bug returns with no warning. Verify against the LIVE process (the library loads lazily
+when DWA is constructed, so check after move_base is up):
+
+    grep -o '[^ ]*libbase_local_planner.so' /proc/$(pgrep -f lib/move_base/move_base)/maps
+
+Only `launch/move_base_gps_map.launch` carries the env tag. `move_base_landmark.launch` and
+the other move_base launches still load the STOCK library and remain exposed to the bug.
+
+**2. The global plan routed through obstacles the global costmap could not see.**
+`config/costmap_global_gps_map.yaml` now has an `obstacles` ObstacleLayer between static and
+inflation. Without it navfn planned through vegetation (deliberately absent from the static
+map) and the local planner was asked to resolve a plan running through solid geometry.
+
+This REVERSES commit `ecb0634`, which removed that layer after measuring 2373/2760 (86%) of
+global lethal cells came from lidar. That did not reproduce: over a full 92 m lake drive
+global lethal rose and FELL (342→642→383), ending at 383 vs 342 static — ~11% from lidar.
+Clearing works now because the layer is fed the FILTERED cloud for marking and the RAW cloud
+for clearing (`9c27dae`), which post-dates `ecb0634`. **Watch for regression:** monotonically
+climbing global lethal cells means the `ecb0634` symptom is back.
+
+### What was DISPROVED — do not retry these
+
+- **Not a local-planner choice.** Swapping DWA for `TrajectoryPlannerROS` changed nothing;
+  it also froze, 7 m short of a box with 4.95 m clear ahead.
+- **Not scoring tuning.** Raising `occdist_scale` 0.4→1.0 made it WORSE (189 s→270 s in the
+  obstacle zone, 21→27 direction flips). Lowering `path_distance_bias` 34→15 did not help.
+  The known-working reference sim runs a far more extreme ratio (96 vs 0.02) and avoids fine.
+- **Not sensing.** Fails identically on sparse bushes, solid boxes, and a spawned box.
+- **Not unknown cells, TF errors, or the EKF z change.** 0 NO_INFORMATION cells in 516
+  samples; TF errors flat with no onset; the 2D stack discards z entirely
+  (`goal_functions.cpp:130-132` prunes on x/y only).
+- **`TrajectoryPlannerROS:` in `config/planner_gps.yaml` is INERT.** Editing it looks like a
+  change and does nothing. The live block is `DWAPlannerROS:`.
+
+---
+
+## Running a sim test — MANDATORY PROCEDURE, NO EXCEPTIONS
+
+**Every sim test follows this exact sequence. Skipping any part of it is not allowed,
+and "it's optional / display-only / not relevant to what I'm testing" is NOT a reason
+to skip.** This rule exists because skipping steps and reporting unverified guesses
+has repeatedly burned the user's time and context.
+
+### 1. Kill everything first
+Run the full teardown block from `RUN-MAP-NAV.md` ("Stop everything"). Then **read the
+survivor list** — do not trust exit code 0. The scan matches on the absolute repo path,
+so nodes started with a **relative** path (`python3 scripts/foo.py`) are NOT matched and
+survive silently. Kill those by explicit PID. Verify: no sim processes, port 11311 free,
+operator container gone, `husky_lan` gone.
+
+### 2. Start fresh — run EVERY terminal, in doc order
+No reusing a running stack. No stacking a new run on an old one. Run Steps 0-3 of
+`RUN-MAP-NAV.md` in order, **including the ones the doc calls optional**:
+Terminal 0 (network), 1 (world+robot), 2 (map_server+move_base), 3 (localizer),
+4 (selector), 5 (ground-height), **6 (costmap z relay GLOBAL)**, **6b (costmap z relay
+LOCAL)**, 6c (path/goal z relay), 7 (cloud filter), then Step 3 (operator).
+
+**Terminals 6 and 6b are NOT optional in practice.** `operator/operator.rviz` points its
+Costmap displays at `/move_base/{global,local}_costmap/costmap_z`, which ONLY those two
+relays publish. Skip them and RViz shows **"No map received"** on both costmaps — which
+looks exactly like a broken costmap and will send you chasing a nonexistent bug.
+
+For the **lake** world, three things change (see the table at the top of RUN-MAP-NAV.md):
+`./load-park-world.sh --world lake`; append
+`map:=/home/thinh/Documents/Husky_viz/maps/lake_map_terrain.yaml` to Terminal 2;
+`_objects_path:=.../lake_objects.yaml`. Export BOTH `DTM_WORLD=lake` and
+`OBJECTS_PATH=/repo/maps/lake_objects.yaml` before the operator.
+
+### 3. Report every terminal to the user
+State each terminal's status individually as you bring it up. Not a summary.
+
+### 4. Verify EVERYTHING at the end, before sending a goal
+Controllers both `( running )`; gzclient on `:0`; TF `map->odom->base_link` resolves;
+and every topic checked. Only then send the goal.
+
+### HOW TO CHECK A TOPIC CORRECTLY — three traps that produced FOUR false alarms
+
+1. **`costmap` is LATCHED and published ONCE; the live data is on `costmap_updates`.**
+   `costmap_2d` sends the full grid once (latched) and then streams incremental patches
+   on `/move_base/<ns>/costmap_updates`. Measuring `/costmap` and finding "1 msg, 0 Hz"
+   is **CORRECT AND EXPECTED — NOT A FAULT**. Measured: `/costmap` 1 msg/15 s vs
+   `/costmap_updates` 22 msgs/15 s. The `costmap_z` relays mirror `/costmap`, so their
+   output is legitimately static too.
+2. **rospy callbacks need a real spin.** Counting messages with bare `time.sleep()` in
+   the main thread silently under-counts and reports live topics as SILENT. Use
+   `rospy.Rate().sleep()` in a loop, or `rospy.wait_for_message`.
+3. **The odom EKF publishes `/odometry/filtered_odom`, NOT `/odometry/filtered`.**
+   The map EKF publishes `/odometry/filtered_map`. `/odometry/filtered` does not exist in
+   this configuration; subscribing to it reads 0 and looks like a dead EKF.
+
+Also: `rostopic echo -n1 <topic>/info` proves NOTHING about whether a topic is live — it
+returns the latched message even at 0 Hz. And a single startup
+`Timed out waiting for transform ... map does not exist` from move_base is benign; it
+recovers. `/odometry/landmark_fix` silent at idle is expected (needs motion for clusters).
+
+**Before declaring any component broken: verify with a correct method, and check how the
+component is DESIGNED to publish. Do not report a suspicion to the user as a finding.**
